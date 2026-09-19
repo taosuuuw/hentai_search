@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>EroMeta · 绅士聚合搜索</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ff4d8d'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Ccircle cx='13' cy='14' r='5' fill='none' stroke='%23fff' stroke-width='2.5'/%3E%3Cpath d='M17 18l7 7' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/css/style.css">
+<script>
+/* 主题预置：在首屏渲染前应用，避免闪白 / 闪黑 */
+try {
+  var _s = JSON.parse(localStorage.getItem('hs.settings.v2') || '{}');
+  if (_s.theme === 'light' || _s.theme === 'dark') {
+    document.documentElement.setAttribute('data-theme', _s.theme);
+  }
+  if (_s.animLevel === 'off') document.documentElement.classList.add('hs-nomotion');
+} catch (e) {}
+</script>
+</head>
+<body>
+
+<!-- ========== 应用主体（panic 模糊作用域） ========== -->
+<div id="hs-app" class="hs-app">
+  <div class="hs-bg" aria-hidden="true"></div>
+
+  <!-- 顶栏 -->
+  <header class="hs-top">
+    <a class="hs-brand" href="./" title="EroMeta">
+      <span class="hs-logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="26" height="26"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff4d8d"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#lg)"/><circle cx="13" cy="14" r="5" fill="none" stroke="#fff" stroke-width="2.5"/><path d="M17 18l7 7" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+      </span>
+      <span class="hs-brand-txt">
+        <b>EroMeta</b>
+        <i>绅士聚合搜索</i>
+      </span>
+    </a>
+
+    <div class="hs-top-actions">
+      <button id="panic-indicator" class="hs-chip hs-chip-panic" type="button"
+              aria-pressed="false" title="快速模糊（快捷键可自定义）">
+        <span class="hs-chip-dot" aria-hidden="true"></span>
+        <span class="hs-panic-ico" data-on="0" aria-hidden="true"></span>
+        <span class="hs-chip-label">遮蔽</span>
+        <span id="panic-indicator-state" class="hs-chip-state">OFF</span>
+      </button>
+
+      <button id="vpn-chip" class="hs-chip" type="button" title="重新检测网络环境">
+        <span id="vpn-chip-dot" class="hs-chip-dot"></span>
+        <span id="vpn-chip-text">网络检测中…</span>
+      </button>
+
+      <button id="theme-toggle" class="hs-icon-btn" type="button" title="切换深色/浅色模式" aria-label="切换深色/浅色模式"></button>
+      <button id="settings-btn" class="hs-icon-btn" type="button" title="设置" aria-label="设置"></button>
+    </div>
+  </header>
+
+  <main class="hs-main">
+    <!-- VPN / 网络提醒：放在搜索区之前，避免把结果推离搜索框 -->
+    <section id="vpn-banner" class="hs-banner hs-banner-slim" hidden role="status">
+      <div class="hs-banner-ico" aria-hidden="true"></div>
+      <div class="hs-banner-body">
+        <b id="vpn-banner-title">可能需要在浏览器之外开启 VPN</b>
+        <p id="vpn-banner-desc"></p>
+        <ul id="vpn-banner-list" class="hs-banner-list"></ul>
+      </div>
+      <div class="hs-banner-actions">
+        <button id="vpn-recheck" class="hs-btn hs-btn-primary" type="button">我已开启 VPN，重新检测</button>
+        <button id="vpn-proxy-enable" class="hs-btn hs-btn-ghost" type="button" hidden>改用代理绕过</button>
+        <button id="vpn-auto-proxy" class="hs-btn hs-btn-ghost" type="button">自动挑选可用代理</button>
+        <button id="vpn-continue" class="hs-btn hs-btn-ghost" type="button">仍然搜索</button>
+        <button id="vpn-dismiss" class="hs-btn hs-btn-text" type="button">忽略</button>
+      </div>
+    </section>
+
+    <!-- ========== 唯一入口：搜索框 + 拉出式筛选面板 ========== -->
+    <section class="hs-hero">
+      <h1 class="hs-h1">EroMeta <span class="hs-grad">绅士聚合搜索</span></h1>
+      <p class="hs-sub">并行检索多个信息源 · 作品类型 / 语言 / 画师 / 标签精准筛选 · 全本地运行，不上传任何查询</p>
+
+      <!-- 搜索框 + 浮层拉出式筛选面板 -->
+      <div class="hs-searchwrap" id="search-wrap">
+      <form id="search-form" class="hs-searchbar" autocomplete="off" role="search">
+        <span class="hs-sb-ico" aria-hidden="true"></span>
+        <input id="q" name="q" type="search" enterkeyhint="search"
+               placeholder="搜索标题、社团、画师、标签…  例:  [Karaage]  fate" aria-label="搜索关键词">
+        <button id="clear-q" class="hs-sb-clear" type="button" title="清空" hidden aria-label="清空">×</button>
+        <button id="search-btn" class="hs-sb-go" type="submit">
+          <span class="hs-sb-ring" aria-hidden="true"></span>
+          <span class="hs-sb-go-txt">搜索</span>
+        </button>
+      </form>
+
+      <!-- 筛选面板：从搜索框「顶部」向上展开，浮层覆盖在上方，不推挤搜索结果 -->
+      <div id="filter-panel" class="hs-sheet" data-open="0" data-ratio="0">
+        <div class="hs-sheet-body" id="sheet-body">
+          <div class="hs-sheet-inner">
+          <div class="hs-fg">
+            <label class="hs-fl">作品类型</label>
+            <div id="f-cats" class="hs-chips"></div>
+          </div>
+
+          <div class="hs-fg">
+            <label class="hs-fl">语言</label>
+            <div id="f-langs" class="hs-chips"></div>
+          </div>
+
+          <div class="hs-fg hs-fg-2">
+            <div>
+              <label class="hs-fl">猎奇 / R18G</label>
+              <div id="f-gore" class="hs-seg" data-key="gore" role="group" aria-label="R18G 筛选"></div>
+            </div>
+            <div>
+              <label class="hs-fl">AI 绘画</label>
+              <div id="f-ai" class="hs-seg" data-key="ai" role="group" aria-label="AI 绘画筛选"></div>
+            </div>
+          </div>
+
+          <div class="hs-fg hs-fg-2">
+            <div>
+              <label class="hs-fl" for="f-artist">画师 / 作者 / 社团</label>
+              <input id="f-artist" class="hs-input" type="text" placeholder="例: 大嘘 / Karaage / hiten">
+            </div>
+            <div>
+              <label class="hs-fl" for="f-order">排序</label>
+              <select id="f-order" class="hs-input hs-select">
+                <option value="relevance">相关度</option>
+                <option value="latest">最新上传</option>
+                <option value="popular">最热门</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="hs-fg hs-fg-2">
+            <div>
+              <label class="hs-fl">包含标签 <small>回车添加</small></label>
+              <div id="f-tags" class="hs-chipinput" data-role="tags"></div>
+            </div>
+            <div>
+              <label class="hs-fl">排除标签 <small>回车添加</small></label>
+              <div id="f-exclude" class="hs-chipinput" data-role="excludeTags"></div>
+            </div>
+          </div>
+
+          <div class="hs-fg hs-fg-3">
+            <div>
+              <label class="hs-fl" for="f-pages-min">页数下限</label>
+              <input id="f-pages-min" class="hs-input" type="number" min="0" step="1" placeholder="不限">
+            </div>
+            <div>
+              <label class="hs-fl" for="f-pages-max">页数上限</label>
+              <input id="f-pages-max" class="hs-input" type="number" min="0" step="1" placeholder="不限">
+            </div>
+            <div>
+              <label class="hs-fl" for="f-persource">每源结果数</label>
+              <input id="f-persource" class="hs-input" type="number" min="4" max="40" step="1" value="12">
+            </div>
+          </div>
+
+          <div class="hs-fg">
+            <label class="hs-fl">信息源（并行检索）</label>
+            <div id="f-sources" class="hs-srcgrid"></div>
+          </div>
+
+          <div class="hs-fg">
+            <label class="hs-fl">镜像域名 <small>逗号分隔。这类站点域名经常更换，某个源报「完全不可达」时在这里追加可用域名</small></label>
+            <div class="hs-fg-2">
+              <input id="f-jm-mirrors" class="hs-input" type="text" placeholder="禁漫镜像：18comic.vip, jmcomic1.me …">
+              <input id="f-wn-mirrors" class="hs-input" type="text" placeholder="紳士镜像：www.wnacg.com, wnacg.date …">
+            </div>
+          </div>
+
+          <div class="hs-fg">
+            <label class="hs-fl">自定义中文源 <small>域名失联时自己加一个能打开的镜像</small></label>
+            <div id="f-custom-list" class="hs-customlist"></div>
+            <div class="hs-proxyrow">
+              <input id="f-cs-name" class="hs-input" type="text" placeholder="名称，如 喵绅士" style="max-width:140px">
+              <input id="f-cs-domain" class="hs-input" type="text" placeholder="域名，如 www.example.com">
+              <select id="f-cs-tpl" class="hs-input hs-select hs-select-sm" title="解析模板"></select>
+              <button id="f-cs-add" class="hs-btn hs-btn-ghost" type="button">添加</button>
+            </div>
+            <p class="hs-hint">模板决定如何从该站点解析搜索结果；不确定就用「通用模板」。</p>
+          </div>
+
+          <div class="hs-fg">
+            <label class="hs-fl" for="f-proxy">CORS 代理 <small>不返回跨域头的站点必须经代理</small></label>
+            <div class="hs-proxyrow">
+              <select id="f-proxy-preset" class="hs-input hs-select hs-select-sm">
+                <option value="">不使用代理（仅直连）</option>
+                <option value="auto">自动挑选可用公共代理</option>
+                <option value="https://api.allorigins.win/raw?url={url}">AllOrigins（公共）</option>
+                <option value="https://api.codetabs.com/v1/proxy?quest={url}">codetabs（公共）</option>
+                <option value="https://corsproxy.io/?url={url}">corsproxy.io（公共）</option>
+                <option value="https://cors.isomorphic-git.org/{rawurl}">isomorphic-git（公共）</option>
+                <option value="http://127.0.0.1:8080/?url={url}">本地自建 :8080</option>
+                <option value="__custom__">自定义…</option>
+              </select>
+              <input id="f-proxy" class="hs-input" type="text" placeholder="https://your-proxy/?url={url}">
+              <button id="f-proxy-test" class="hs-btn hs-btn-ghost" type="button">测试</button>
+            </div>
+            <p class="hs-hint">留空则自动依次尝试内置公共代理（AllOrigins → codetabs → …）。公共代理会看到你的查询内容，介意隐私请自建。</p>
+          </div>
+
+          <div class="hs-fg">
+            <label class="hs-fl">本地网关 <small>禁漫官方 API / 拷贝漫画 / 哔咔 都需要「自定义请求头 + 签名」，浏览器发不出去，交给本机网关代劳</small></label>
+            <div class="hs-proxyrow">
+              <input id="f-gateway" class="hs-input" type="text" placeholder="http://127.0.0.1:8788">
+              <button id="f-gw-detect" class="hs-btn hs-btn-ghost" type="button">检测</button>
+              <button id="f-gw-open" class="hs-btn hs-btn-ghost" type="button">打开网关页</button>
+            </div>
+            <p class="hs-hint hs-gwstate" id="f-gw-state" data-state="off">未检测到本地网关</p>
+            <p class="hs-hint">还没有网关？在项目目录执行 <code>node tools/gateway.js</code>，再用 <code>http://127.0.0.1:8788/</code> 打开本页面（同源，连跨域都省了）。</p>
+          </div>
+
+          <div class="hs-fg hs-fg-actions">
+            <button id="fp-reset" class="hs-btn hs-btn-ghost" type="button">重置筛选</button>
+            <button id="fp-close" class="hs-btn hs-btn-ghost" type="button">收起</button>
+          </div>
+          </div>
+        </div>
+
+        <!-- 拉手 + 独立滑块：贴在搜索框上沿，按住向上拖动即可把面板从顶部拉出来 -->
+        <div class="hs-sheet-shell">
+          <button type="button" class="hs-sheet-grab" id="sheet-grab" aria-expanded="false" aria-controls="sheet-body">
+            <span class="hs-grip" aria-hidden="true"></span>
+            <span class="hs-sheet-label">向上拉出筛选</span>
+            <span id="filter-count" class="hs-badge" hidden>0</span>
+            <span class="hs-chev" aria-hidden="true"></span>
+          </button>
+
+          <div class="hs-slider" id="sheet-slider" role="slider" tabindex="0"
+               aria-label="筛选面板高度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+               title="按住向上拖动，把筛选面板从搜索框顶部拉出来">
+            <span class="hs-slider-track" aria-hidden="true"></span>
+            <span class="hs-slider-thumb" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 思维链：仅检索时出现；紧贴搜索框底部，默认折叠成一行清晰文字 -->
+    <section id="chain-panel" class="hs-chain" hidden data-state="collapsed">
+      <button class="hs-chain-head" id="chain-toggle" type="button" aria-expanded="false" aria-controls="chain-body">
+        <span class="hs-chain-brain" aria-hidden="true"></span>
+        <b>检索思维链</b>
+        <span id="chain-status" class="hs-chain-status">准备中</span>
+        <span class="hs-chain-spacer"></span>
+        <span id="chain-hint" class="hs-chain-hint">点击展开</span>
+        <span id="chain-timer" class="hs-chain-timer">0.0s</span>
+        <span class="hs-chev" aria-hidden="true"></span>
+      </button>
+      <div class="hs-chain-body" id="chain-body">
+        <div class="hs-chain-progress"><i id="chain-progress"></i></div>
+        <div id="chain-log" class="hs-chain-log" aria-live="polite"></div>
+        <div id="chain-sources" class="hs-chain-sources"></div>
+      </div>
+    </section>
+
+    <!-- 结果：紧跟搜索框下方 -->
+    <section class="hs-results">
+      <div id="results-head" class="hs-results-head" hidden>
+        <h2 id="results-meta" class="hs-results-meta">结果</h2>
+        <div class="hs-results-tools">
+          <div id="results-srcfilter" class="hs-chips hs-chips-sm"></div>
+          <select id="results-sort" class="hs-input hs-select hs-select-sm" title="本地重排">
+            <option value="rank">智能排序</option>
+            <option value="pages">页数多→少</option>
+            <option value="source">按信息源</option>
+            <option value="title">标题 A→Z</option>
+          </select>
+        </div>
+      </div>
+      <div id="results-grid" class="hs-grid"></div>
+      <div id="results-empty" class="hs-empty" hidden></div>
+    </section>
+  </main>
+
+  <footer class="hs-foot">
+    <span>仅索引公开可访问的第三方站点元数据 · 不托管、不缓存任何内容</span>
+    <span>·</span>
+    <span>请确认你已成年且所在地法律允许访问此类内容</span>
+    <span>·</span>
+    <button id="foot-settings" class="hs-linkbtn" type="button">设置</button>
+  </footer>
+</div>
+
+<!-- ========== 遮蔽遮罩（位于 #hs-app 之外，确保不被一起模糊） ========== -->
+<div id="panic-overlay" class="hs-panic-overlay" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="hs-panic-card">
+    <span class="hs-panic-big" aria-hidden="true"></span>
+    <b>已遮蔽</b>
+    <p id="panic-hint">按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> 或点击任意位置恢复</p>
+  </div>
+</div>
+
+<!-- ========== 成年人确认门 ========== -->
+<div id="gate" class="hs-gate" hidden>
+  <div class="hs-gate-card">
+    <h2>内容提示</h2>
+    <p>本页面是一个<strong>本地运行的元数据聚合搜索界面</strong>，用于检索第三方公开站点上的同人志信息，
+       可能包含成人向内容。页面本身不存储、不托管、不代理任何图片或作品文件。</p>
+    <ul>
+      <li>请确认你已年满 18 周岁（或你所在司法辖区的法定成年年龄）。</li>
+      <li>请确认访问此类内容在你所在地合法。</li>
+      <li>结果均来自第三方站点，版权归原作者所有；请支持正版与作者。</li>
+      <li>所有设置与查询仅保存在本机浏览器，不上传服务器。</li>
+    </ul>
+    <div class="hs-gate-actions">
+      <button id="gate-ok" class="hs-btn hs-btn-primary" type="button">我已成年，同意并继续</button>
+      <a class="hs-btn hs-btn-ghost" href="https://www.google.com" rel="noopener">离开</a>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="hs-toast" role="status" aria-live="polite"></div>
+<noscript><div class="hs-noscript">本项目需要启用 JavaScript。</div></noscript>
+
+<script src="assets/js/core.js"></script>
+<script src="assets/js/net.js"></script>
+<script src="assets/js/sources.js"></script>
+<script src="assets/js/filters.js"></script>
+<script src="assets/js/chain.js"></script>
+<script src="assets/js/results.js"></script>
+<script src="assets/js/panic.js"></script>
+<script src="assets/js/settings.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>
