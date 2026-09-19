@@ -230,7 +230,7 @@
     const fileHint = (typeof location !== 'undefined' && /^file:/.test(location.protocol))
       ? '；另外当前页面以 file:// 打开，跨域限制更严，建议用本地 HTTP 服务打开（python -m http.server 8777）'
       : '';
-    const gwHint = GW.ok ? '' : '；禁漫/哔咔/拷贝漫画 这类「需要签名 + 不返回跨域头」的站点，' +
+    const gwHint = GW.ok ? '' : '；禁漫/拷贝漫画 这类「需要签名 + 不返回跨域头」的站点，' +
       '最省事的解法是启动随附的本地网关：node tools/gateway.js，然后打开 http://127.0.0.1:' + GW.DEFAULT_PORT + '/';
     if (diag === 'offline') return '网络已断开，请检查网络或 VPN';
     if (diag === 'cors-blocked') {
@@ -291,10 +291,10 @@
       return ids.length ? ids : PROBEABLE;
     })();
     const adult = ADULT.map(id => by[id]).filter(Boolean);
-    const adultOk = adult.filter(r => r.ok).length;
+    let adultOk = adult.filter(r => r.ok).length;
     const anyTarget = adultOk > 0;
-    const blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok);
-    const blockedNames = blocked.map(r => r.label).join('、');
+    let blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok);
+    let blockedNames = blocked.map(r => r.label).join('、');
 
     let verdict, label, detail;
     if (!navigator.onLine) {
@@ -330,6 +330,35 @@
       }
     }
 
+    /* 网关在线时以网关的出口为准：浏览器的 no-cors 探针走的是浏览器自己的链路，
+       被墙的站会误报「不可达」，而网关（带本地代理）其实能打到。 */
+    if (GW.ok) {
+      try {
+        const d = (net._gwDiag && (Date.now() - net._gwDiagAt < 120000))
+          ? net._gwDiag
+          : await GW.get('/api/diag', {}, 30000);
+        net._gwDiag = d; net._gwDiagAt = Date.now();
+        const tg = d.targets || {};
+        Object.keys(tg).forEach(k => {
+          if (!tg[k] || !tg[k].ok) return;
+          targets.forEach(t => {
+            if (t.id === k && !t.ok) { t.ok = true; t.viaGateway = true; t.ms = tg[k].ms; }
+          });
+        });
+        adultOk = adult.filter(r => r.ok).length;
+        blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok);
+        blockedNames = blocked.map(r => r.label).join('、');
+        if (adultOk === adult.length && adultOk > 0) {
+          verdict = 'ok'; label = '目标可达';
+          detail = '全部目标站点均可连通（其中被墙的部分由本地网关出口打通），无需额外操作。';
+        } else if (adultOk > 0) {
+          verdict = 'partial'; label = '部分站点受限';
+          detail = adultOk + '/' + adult.length + ' 个目标站点可达，其余（' + blockedNames + '）连接失败。' +
+            '可在「筛选 → 本地网关」点「检测」跑一次网关自检，确认是不是出口的问题。';
+        }
+      } catch (e) { /* 自检失败不影响原本的判定 */ }
+    }
+
     net._cache = {
       ts: Date.now(), verdict, label, detail, targets, blocked,
       vpnLikely: verdict === 'vpn-needed' || verdict === 'partial',
@@ -344,7 +373,7 @@
 
   /* ======================================================================
      GW —— 本地网关客户端
-     禁漫/哔咔/拷贝漫画 的官方 API 需要「自定义请求头 + 签名 + AES 解密」，
+     禁漫/拷贝漫画 的官方 API 需要「自定义请求头 + 签名 + AES 解密」，
      浏览器受同源策略限制无法直接调用（这也是 jasmine / venera 这类项目
      全部是原生客户端的原因：它们用 Rust / 原生 socket 直连）。
      本项目的做法是附带一个零依赖的 Node 网关（tools/gateway.js）：
@@ -407,6 +436,25 @@
   GW.get = async function (path, params, ms) {
     const url = GW.url(path, params);
     const r = await net.fetch(url, {}, ms || 20000);
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try {
+        const j = await r.json();
+        if (j && j.error) msg = j.error;
+      } catch (e) {}
+      throw new Error(msg);
+    }
+    return r.json();
+  };
+
+  /** 调网关接口（POST JSON）：哔咔代登录这类需要请求体的接口用 */
+  GW.post = async function (path, body, ms) {
+    const url = GW.url(path);
+    const r = await net.fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body || {})
+    }, ms || 30000);
     if (!r.ok) {
       let msg = 'HTTP ' + r.status;
       try {

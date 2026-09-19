@@ -45,8 +45,8 @@
     if (el) {
       el.dataset.state = ok ? 'ok' : 'off';
       el.textContent = ok
-        ? '✓ 已连接：' + HS.net.gateway.base + '（禁漫官方 API / 拷贝漫画 / 哔咔 可用）'
-        : '未检测到（运行 node tools/gateway.js 后可解锁禁漫官方 API、拷贝漫画、哔咔）';
+        ? '✓ 已连接：' + HS.net.gateway.base + '（禁漫官方 API / 拷贝漫画 可用）'
+        : '未检测到（运行 node tools/gateway.js 后可解锁禁漫官方 API、拷贝漫画）';
     }
     if (!ok) return;
     /* 网关在的时候把「拷贝漫画」也打开，用户能在信息源里看到它 */
@@ -113,22 +113,13 @@
     u.$('#results-head').hidden = true;
     const box = u.$('#results-empty');
     box.hidden = false;
+    /* 开始页不再放说明文字：换一句随机「贤者名言」（贤者时间 neta，仿贤人语录体）。
+       每次回到这个空状态都重新抽一句。 */
+    const qs = HS.SAGE_QUOTES || [];
+    const s = qs.length ? qs[Math.floor(Math.random() * qs.length)] : null;
     box.innerHTML =
-      '<b>输入关键词即可开始</b>' +
-      '<p style="margin:8px 0 4px">会用下面的信息源并行检索：' +
-      HS.sources.enabled().map(s => u.esc(s.name)).join(' · ') +
-      (HS.sources.enabled().length < HS.sources.REG.length
-        ? '（按住搜索框上沿的滑块向上拉出筛选）' : '') + '</p>' +
-      '<div class="hs-empty-actions">' +
-      ['fate', 'blue archive', '大嘘', 'full color', 'hololive'].map(k =>
-        '<button class="hs-btn hs-btn-ghost" data-q="' + u.esc(k) + '">' + u.esc(k) + '</button>').join('') +
-      '</div>' +
-      '<p style="margin-top:14px;font-size:12px">按住搜索框上沿的滑块向上拉出筛选 · 紧急时刻按 <kbd>' +
-      u.esc(HS.panic.label(HS.settings.panicKey)) + '</kbd> 可立刻模糊整个页面（可在设置中修改）</p>';
-    u.$$('#results-empty [data-q]').forEach(b => b.addEventListener('click', () => {
-      u.$('#q').value = b.dataset.q;
-      doSearch();
-    }));
+      (s ? '<blockquote class="hs-sage"><p>' + u.esc(s.text) + '</p>' +
+        '<cite>—— ' + u.esc(s.who) + '</cite></blockquote>' : '');
   }
   /* ---------------- 搜索主流程 ---------------- */
   function setBusy(on) {
@@ -156,15 +147,26 @@
     if (f.pagesMin || f.pagesMax) bits.push('页数 ' + (f.pagesMin || 0) + '–' + (f.pagesMax || '∞'));
     if (f.gore && f.gore !== 'any') bits.push('R18G ' + ({ only: '只看', exclude: '排除' }[f.gore] || f.gore));
     if (f.ai && f.ai !== 'any') bits.push('AI 绘画 ' + ({ only: '只看', exclude: '排除' }[f.ai] || f.ai));
+    if (f.adult === 'strict') bits.push('只留已确认成人向');
     return bits.join(' · ') || '无附加条件';
   }
 
-  async function doSearch() {
+  async function doSearch(opts) {
+    /* 一个源都没启用就别发请求了：以前还有「示例数据」兜底，现在没有兜底源 */
+    if (!HS.sources.enabled().length) {
+      HS.toast('没有启用任何信息源：在筛选面板的「信息源」里勾选至少一个', 'warn', 4200);
+      HS.filtersUI.openSheet(true);
+      return;
+    }
     if (searching) return;
+    opts = opts || {};
+    const page = Math.max(1, parseInt(opts.page || 1, 10) || 1);
+    const append = page > 1;
     const q = (u.$('#q').value || '').trim();
     const f = HS.filtersUI.get();
     const hasFilter = f.artist || (f.tags || []).length || (f.langs || []).length ||
-      (f.cats || []).length || f.pagesMin || f.pagesMax || (f.gore && f.gore !== 'any') || (f.ai && f.ai !== 'any');
+      (f.cats || []).length || f.pagesMin || f.pagesMax || (f.gore && f.gore !== 'any') || (f.ai && f.ai !== 'any') ||
+      f.adult === 'strict';
 
     if (!q && !hasFilter) {
       HS.toast('请输入关键词，或展开筛选指定画师 / 标签 / 作品类型', 'warn', 3200);
@@ -174,23 +176,28 @@
     }
 
     searching = true;
+    HS.busy = true;
     searchedOnce = true;
     setBusy(true);
     u.$('#vpn-banner').hidden = true;
-    HS.results.skeletons(Math.min(HS.settings.perSource, 12));
+    if (!append) HS.results.skeletons(Math.min(HS.settings.perSource, 12));
 
     const C = HS.chain;
     C.begin();
     const srcList = HS.sources.enabled();
     C.prepareSources(srcList);
-    HS.results.streamStart(q, f);
+    HS.results.streamStart(q, f, page);
 
     try {
-      /* 1. 查询解析 */
-      const s1 = C.step('解析查询意图…');
+      /* 1. 查询解析：按意图分流（作品名 / IP 角色 / 体裁题材 → 不同检索策略） */
+      const intent = u.classifyQuery(q);
+      const intentExtra = intent.series ? '（' + intent.series + '）'
+        : (intent.genre ? '（' + intent.genre.label + '）' : '');
+      const s1 = C.step(append ? '准备追加下一批结果…' : '解析查询意图…');
       await s1.typed;
       await u.sleep(90);
-      s1.set('ok', '已解析', '解析完成：' + describeFilters(q, f));
+      s1.set('ok', intent.label,
+        '意图判定：' + intent.label + intentExtra + ' · ' + describeFilters(q, f));
       C.progress(16);
 
       /* 2. 网络探测（智能判断是否需要 VPN） */
@@ -208,10 +215,14 @@
       /* 3. 信息源选择 */
       const s3 = C.step('选择信息源（并行调度）…');
       await s3.typed;
+      const plan = HS.sources.plan(srcList.length);
       s3.set('ok', srcList.length + ' 个源', '启用：' + srcList.map(s => s.name).join(' · ') +
+        '｜每源最多 ' + plan.limit + ' 条' +
+        (plan.auto ? '（' + srcList.length + ' 个源 × ' + plan.limit + ' ≈ 目标 ' + plan.target + ' 条，源少就多要）' : '（固定每源条数）') +
         (HS.net.hasProxy() && HS.net.userProxy() !== 'auto'
-          ? '（经代理 ' + HS.net.proxyName(HS.settings.proxy) + '）'
-          : (HS.settings.autoProxy !== false ? '（自动代理链：直连 → 公共代理依次尝试）' : '（仅直连）')));
+          ? '｜经代理 ' + HS.net.proxyName(HS.settings.proxy)
+          : (HS.settings.autoProxy !== false ? '｜自动代理链' : '｜仅直连')) +
+        (page > 1 ? '｜第 ' + page + ' 页（追加）' : ''));
       C.progress(44);
 
       /* 4. 并行检索 */
@@ -219,7 +230,7 @@
       const t4 = u.now();
       let done = 0;
       const results = await HS.sources.run({
-        q, filters: f,
+        q, filters: f, page, intent,
         capMs: HS.sources.RUN_CAP_MS,
         onStart: src => C.setSource(src.id, 'run'),
         onDone: (src, r) => {
@@ -247,7 +258,7 @@
       const rawTotal = results.reduce((n, r) => n + ((r.ok && r.items) ? r.items.length : 0), 0);
       const s5 = C.step('跨源比对、去重与合并…');
       await u.sleep(140);
-      const items = HS.results.render(results, { q, f });
+      const items = HS.results.render(results, { q, f, page });
       s5.set('ok', rawTotal + ' → ' + items.length,
         '聚合完成：原始 ' + rawTotal + ' 条 → 跨源去重后 ' + items.length + ' 条');
       C.progress(92);
@@ -255,10 +266,13 @@
       /* 6. 重排 */
       const s6 = C.step('按相关度重排、归并同系列…');
       await u.sleep(140);
-      const seriesN = u.uniq(items.filter(i => i.series).map(i => i.series)).length;
+      const stacks = HS.results.stackCount ? HS.results.stackCount() : 0;
       s6.set('ok', 'Top ' + Math.min(items.length, 5),
         items.length
-          ? '重排完成：' + (seriesN ? '识别出 ' + seriesN + ' 个系列（同系列已叠成卡片，悬停展开） · ' : '') + '封面默认模糊'
+          ? '重排完成：' +
+            (stacks ? stacks + ' 组高度相符的同系列已叠成卡片（悬停展开） · ' : '') +
+            (HS.settings.blurCovers ? '封面与角标默认模糊' : '封面直接显示') +
+            ' · 单页展示，向下滚动继续加载'
           : '未得到有效结果，建议放宽语言/类型或开启代理');
       C.progress(100);
 
@@ -266,13 +280,21 @@
         status: items.length ? '完成' : '无结果',
         ok: items.length > 0,
         hint: items.length ? items.length + ' 条结果' : '无结果',
-        line: items.length
-          ? '检索完成：' + items.length + ' 个可能相关的结果'
-          : '检索完成：没有找到匹配结果'
+        line: (append ? '第 ' + page + ' 页检索完成：累计 ' : '检索完成：') +
+          items.length + ' 个可能相关的结果'
       });
+      const zhN = items.filter(i => i.zh).length;
+      const it = HS.results.intent || {};
+      const intentBit = (it.kind && it.kind !== 'empty')
+        ? ' · 策略 <b class="hs-intent">' + u.esc(it.label) + '</b>' +
+          (it.series ? '（' + u.esc(it.series) + '）' : (it.genre ? '（' + u.esc(it.genre.label) + '）' : ''))
+        : '';
       u.$('#results-meta').innerHTML =
-        '找到 <em>' + items.length + '</em> 个可能相关的结果 · 用时 ' + u.fmtMs(ms) +
-        ' · 成功源 ' + okList.length + '/' + results.length;
+        '找到 <em>' + items.length + '</em> 个可能相关的结果' + intentBit +
+        (items.length > HS.results.pageSize() ? ' · 向下滚动继续加载' : '') +
+        (zhN ? ' · <b class="hs-zh-count">' + zhN + ' 个有汉化/中文</b>' : '') +
+        ' · 用时 ' + u.fmtMs(ms) + ' · 成功源 ' + okList.length + '/' + results.length;
+      if (typeof opts.after === 'function') opts.after(items);
 
       if (items.length && failList.length && !HS.net.hasProxy()) {
         const proxied = failList.filter(r => HS.sources.byId[r.src.id] && HS.sources.byId[r.src.id].proxy);
@@ -284,8 +306,10 @@
       console.error(err);
       C.finish({ status: '出错', ok: false, line: '检索流程异常：' + ((err && err.message) || err) });
       HS.toast('检索出错：' + ((err && err.message) || err), 'err', 4200);
+      if (typeof opts.fail === 'function') opts.fail(err);
     } finally {
       searching = false;
+      HS.busy = false;
       setBusy(false);
     }
   }
@@ -384,7 +408,7 @@
 
   /* ---------------- 事件订阅 ---------------- */
   function wire() {
-    HS.bus.on('app:search', () => doSearch());
+    HS.bus.on('app:search', p => doSearch(p));
     HS.bus.on('net:recheck', () => probeNow(true, true));
     HS.bus.on('theme:set', applyTheme);
     HS.bus.on('blurcovers:set', applyBlurCovers);

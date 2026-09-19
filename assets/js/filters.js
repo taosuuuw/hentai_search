@@ -27,20 +27,36 @@
     });
   }
 
-  /* ---------------- 三段式开关（R18G / AI） ---------------- */
+  /* ---------------- 三段式开关（R18G / AI / 成人向） ---------------- */
   const SEG = [
     { v: 'any', label: '不限' },
     { v: 'only', label: '只看' },
     { v: 'exclude', label: '排除' }
   ];
+  /* 成人向只有两档：这是专门搜本子的引擎，不给「不限」这个口子（措辞 + 悬停解释都在这里） */
+  const SEG_ADULT = [
+    {
+      v: 'yes', label: '滤掉非成人向',
+      hint: '已知不是成人向的结果（青年漫 / 全年龄向）直接剔除；判不出来是不是成人向的先留着。'
+    },
+    {
+      v: 'strict', label: '只留已确认',
+      hint: '连判不出来的也剔除，只保留被明确分级为成人向的作品 —— 结果会明显变少，但更干净。'
+    }
+  ];
+  const SEG_DEFAULT = { gore: 'any', ai: 'any', adult: 'yes' };
 
   function renderSeg(host, key) {
+    const list = key === 'adult' ? SEG_ADULT : SEG;
+    const def = SEG_DEFAULT[key] || 'any';
+    /* 成人向只认 yes / strict：存量配置里如果是旧值（any），归一到 yes */
+    if (key === 'adult' && HS.filters.adult !== 'yes' && HS.filters.adult !== 'strict') HS.filters.adult = 'yes';
     host.innerHTML = '';
-    SEG.forEach(o => {
-      const on = (HS.filters[key] || 'any') === o.v;
-      const b = u.el('button', {
-        type: 'button', 'data-v': o.v, 'aria-pressed': on ? 'true' : 'false'
-      }, o.label);
+    list.forEach(o => {
+      const on = (HS.filters[key] || def) === o.v;
+      const attrs = { type: 'button', 'data-v': o.v, 'aria-pressed': on ? 'true' : 'false' };
+      if (o.hint) { attrs.title = o.hint; attrs['aria-label'] = o.label + '：' + o.hint; }
+      const b = u.el('button', attrs, o.label);
       b.addEventListener('click', () => {
         HS.filters[key] = o.v;
         u.$$('button', host).forEach(x => x.setAttribute('aria-pressed', x.dataset.v === o.v ? 'true' : 'false'));
@@ -180,6 +196,8 @@
     const maxH = maxPanelH(r);
     sheet.dataset.ratio = r.toFixed(2);
     sheet.dataset.open = r >= 0.5 ? '1' : '0';
+    /* 面板拉出时把上面的标题/说明让出来（否则会压在「hentai搜索」文字标识上） */
+    document.documentElement.classList.toggle('hs-sheet-open', r >= 0.5);
     grab.setAttribute('aria-expanded', r > 0.02 ? 'true' : 'false');
 
     if (animate === false) sheet.dataset.dragging = '1';
@@ -333,11 +351,17 @@
     u.$$('#f-ai button').forEach(b => {
       b.setAttribute('aria-pressed', (HS.filters.ai || 'any') === b.dataset.v ? 'true' : 'false');
     });
+    u.$$('#f-adult button').forEach(b => {
+      b.setAttribute('aria-pressed', (HS.filters.adult || 'yes') === b.dataset.v ? 'true' : 'false');
+    });
     const artist = u.$('#f-artist'); if (artist && artist.value !== (HS.filters.artist || '')) artist.value = HS.filters.artist || '';
     const order = u.$('#f-order'); if (order) order.value = HS.filters.order || 'relevance';
     const pmin = u.$('#f-pages-min'); if (pmin) pmin.value = HS.filters.pagesMin || '';
     const pmax = u.$('#f-pages-max'); if (pmax) pmax.value = HS.filters.pagesMax || '';
-    const per = u.$('#f-persource'); if (per) per.value = HS.settings.perSource;
+    const modeSelS = u.$('#f-persource-mode');
+    if (modeSelS) modeSelS.value = HS.settings.perSourceMode === 'fixed' ? 'fixed' : 'auto';
+    const tgt = u.$('#f-target');
+    if (tgt) tgt.value = HS.settings.perSourceMode === 'fixed' ? (HS.settings.perSource || 12) : (HS.settings.targetTotal || 60);
     const proxy = u.$('#f-proxy'); if (proxy) proxy.value = HS.settings.proxy || '';
     const preset = u.$('#f-proxy-preset');
     if (preset) {
@@ -360,6 +384,7 @@
     n += (f.langs || []).length + (f.cats || []).length;
     if (f.gore && f.gore !== 'any') n++;
     if (f.ai && f.ai !== 'any') n++;
+    if ((f.adult || 'yes') !== 'yes') n++;   // 默认就是「只要成人向」，改过才算筛选条件
     if (f.order && f.order !== 'relevance') n++;
     if (f.pagesMin) n++;
     if (f.pagesMax) n++;
@@ -423,6 +448,7 @@
     renderChips(u.$('#f-langs'), HS.LANGS, () => HS.filters.langs || [], v => { HS.filters.langs = v; });
     renderSeg(u.$('#f-gore'), 'gore');
     renderSeg(u.$('#f-ai'), 'ai');
+    renderSeg(u.$('#f-adult'), 'adult');
     renderSources();
 
     F.tagInputs.push(ChipInput(u.$('#f-tags'), 'tags', '输入标签后回车，如 full color'));
@@ -442,11 +468,48 @@
     u.$('#f-order').addEventListener('change', e => { HS.filters.order = e.target.value; F.touch(); });
     u.$('#f-pages-min').addEventListener('change', e => { HS.filters.pagesMin = e.target.value; F.touch(); });
     u.$('#f-pages-max').addEventListener('change', e => { HS.filters.pagesMax = e.target.value; F.touch(); });
-    u.$('#f-persource').addEventListener('change', e => {
-      HS.settings.perSource = u.clamp(parseInt(e.target.value, 10) || 12, 4, 40);
-      e.target.value = HS.settings.perSource;
-      HS.store.save(HS.settings);
-    });
+    /* 结果数量：自动分配（目标总数 ÷ 启用源数）或固定每源条数 */
+    const modeSel = u.$('#f-persource-mode');
+    const targetInput = u.$('#f-target');
+    const targetHint = u.$('#f-target-hint');
+    const paintTarget = () => {
+      const auto = HS.settings.perSourceMode !== 'fixed';
+      if (modeSel) modeSel.value = auto ? 'auto' : 'fixed';
+      if (targetInput) {
+        targetInput.value = auto ? (HS.settings.targetTotal || 60) : (HS.settings.perSource || 12);
+        targetInput.min = auto ? 20 : 4;
+        targetInput.max = auto ? 200 : 60;
+        targetInput.step = auto ? 10 : 1;
+      }
+      if (targetHint) {
+        const n = HS.sources.enabled().length;
+        targetHint.textContent = auto
+          ? ('自动：' + n + ' 个源 × 约 ' + HS.sources.plan(n).limit + ' 条')
+          : '固定每源条数';
+      }
+    };
+    if (modeSel) {
+      modeSel.addEventListener('change', () => {
+        HS.settings.perSourceMode = modeSel.value === 'fixed' ? 'fixed' : 'auto';
+        HS.store.save(HS.settings);
+        paintTarget();
+        HS.toast(HS.settings.perSourceMode === 'fixed'
+          ? '已改为：每个源固定取 ' + (HS.settings.perSource || 12) + ' 条'
+          : '已改为：按启用源数量自动分配（源少就每源多要）', 'ok', 3200);
+      });
+    }
+    if (targetInput) {
+      targetInput.addEventListener('change', () => {
+        const v = parseInt(targetInput.value, 10) || 0;
+        if (HS.settings.perSourceMode === 'fixed') HS.settings.perSource = u.clamp(v, 4, 60);
+        else HS.settings.targetTotal = u.clamp(v, 20, 200);
+        HS.store.save(HS.settings);
+        paintTarget();
+      });
+    }
+    HS.bus.on('filters:change', paintTarget);
+    HS.bus.on('settings:change', d => { if (!d || d.key === 'sources') paintTarget(); });
+    paintTarget();
 
     /* 镜像域名（禁漫 / 紳士 域名经常更换，允许自行追加） */
     const bindMirror = (sel, key, label) => {
@@ -530,12 +593,26 @@
     const gwState = u.$('#f-gw-state');
     const paintGw = ok => {
       if (!gwState) return;
+      const egress = (HS.net.gateway.info && HS.net.gateway.info.egress) || '';
       gwState.dataset.state = ok ? 'ok' : 'off';
       gwState.textContent = ok
-        ? '✓ 已连接 ' + HS.net.gateway.base + '（禁漫官方 API / 拷贝漫画 可用）'
+        ? '✓ 已连接 ' + HS.net.gateway.base + (egress ? '｜出口：' + egress : '')
         : '未检测到本地网关';
       const btn = u.$('#f-gw-detect');
       if (btn) btn.dataset.on = ok ? '1' : '0';
+    };
+
+    /** 网关自检：看它现在到底能打到哪些站（决定哪些源能用） */
+    const runDiag = async () => {
+      try {
+        const d = await HS.net.gateway.get('/api/diag', {}, 40000);
+        const ok = [], bad = [];
+        Object.keys(d.targets || {}).forEach(k => (d.targets[k].ok ? ok : bad).push(k));
+        HS.toast('网关出口：' + (d.egress || '直连') +
+          '｜可打通：' + (ok.join('、') || '无') +
+          (bad.length ? '｜打不通：' + bad.join('、') : ''),
+          bad.length ? 'warn' : 'ok', 7000);
+      } catch (e) { HS.toast('网关自检失败：' + e.message, 'err', 4200); }
     };
     if (gwInput) {
       gwInput.value = HS.settings.gateway || '';
@@ -554,6 +631,7 @@
         const ok = await HS.net.gateway.probe(true);
         paintGw(ok);
         HS.toast(ok ? HS.net.gateway.describe() : '未检测到网关：在项目目录执行 node tools/gateway.js', ok ? 'ok' : 'err', 4200);
+        if (ok) runDiag();
       });
     }
     if (u.$('#f-gw-open')) {

@@ -65,9 +65,23 @@
     };
     item.cats = inferCats(item);
     inferFlags(item);
+    /* 成人向判定：源自己的分级字段（o.adult）> 源本身就是成人站 > 标签/标题成人词；
+       都判不出来就是 null（未知）—— 未知不硬杀，留给跨源合并去验证。 */
+    if (typeof o.adult === 'boolean') item.adult = o.adult;
+    else if (HS.ADULT_SOURCES.indexOf(o.source) >= 0) item.adult = true;
+    else {
+      const blob = (item.tags.join(' ') + ' ' + item.title + ' ' + item.artist).toLowerCase();
+      item.adult = u.hitAny(blob, HS.ADULT_TAGS) ? true : null;
+    }
     item.series = u.matchSeries(item.tags.join(' ') + ' ' + item.title + ' ' + item.artist);
     item.key = u.normTitle(item.title) || (o.source + ':' + item.id);
+    /* 汉化 / 中文判定：结果里要特别标出，并在相似结果中排前面 */
+    const zi = u.zhInfo(item);
+    item.zh = zi.zh; item.zhMark = zi.mark; item.zhScan = zi.scan;
+    item.baseKey = u.baseTitle(item.title) || item.key;
     if (!item.cover) item.cover = u.placeholder(item.title, item.source + item.id);
+    /* 防盗链封面（pixiv / kemono / EH / hitomi…）有网关时代取，能少一批"封面显示不出来" */
+    else item.cover = u.coverViaGateway(item.cover);
     return item;
   }
   S.mk = mk;
@@ -161,15 +175,36 @@
       artist: artists.slice(0, 2).join(', '),
       pages: null, langs: lc, lang: lc[0] || '',
       year: a.year || '', cats,
+      /* MangaDex 自带分级：safe / suggestive / erotica / pornographic。
+         请求里已经把 safe 排掉了，剩下 suggestive 属于「青年漫」档 —— 明确标成非成人向 */
+      adult: /erotica|pornographic/i.test(String(a.contentRating || '')),
       tags: alt && alt !== title ? tags.concat([alt]) : tags
     });
   }
 
   async function mangadexSearch(ctx) {
-    const q = ctx.q, f = ctx.f, limit = ctx.limit;
-    const incIds = await mdResolveTags((f.tags || []).concat(
+    const q = ctx.q, f = ctx.f, limit = ctx.limit, page = ctx.page || 1;
+    const intent = ctx.intent || u.classifyQuery(q);
+    const per = u.clamp(limit, 1, 100);
+    const pageExtra = page > 1 ? { offset: String((page - 1) * per) } : null;
+    let incIds = await mdResolveTags((f.tags || []).concat(
       (f.cats || []).map(c => MD_CAT[c]).filter(Boolean)));
     const exIds = await mdResolveTags(f.excludeTags);
+    let titleQuery = q;
+    let orMode = false;
+    /* 意图分流：
+       IP / 角色 → 按标签精确查（标题查不到角色名）；
+       体裁 / 题材 → 用题材词表扩召回，多标签走 OR；
+       作品名 → 继续走 title=（尽量完全对上名字）。 */
+    if (q && intent.kind === 'character') {
+      const names = [q].concat(intent.series && intent.series !== String(q).toLowerCase() ? [intent.series] : []);
+      const ids = await mdResolveTags(names);
+      if (ids.length) { incIds = incIds.concat(ids); titleQuery = ''; }
+    } else if (q && intent.kind === 'genre' && intent.genre) {
+      const ids = await mdResolveTags(intent.genre.aliases.concat([intent.genre.key]));
+      if (ids.length) { incIds = incIds.concat(ids); orMode = true; titleQuery = ''; }
+    }
+    incIds = u.uniq(incIds);
 
     const build = extra => {
       const p = new URLSearchParams();
@@ -183,9 +218,9 @@
         if (m && m.md) p.append('availableTranslatedLanguage[]', m.md);
       });
       incIds.forEach(id => p.append('includedTags[]', id));
-      if (incIds.length > 1) p.set('includedTagsMode', 'AND');
+      if (incIds.length > 1) p.set('includedTagsMode', orMode ? 'OR' : 'AND');
       exIds.forEach(id => p.append('excludedTags[]', id));
-      if (q) p.set('title', q);
+      if (titleQuery) p.set('title', titleQuery);
       if (f.order === 'latest') p.set('order[latestUploadedChapter]', 'desc');
       else if (f.order === 'popular') p.set('order[followedCount]', 'desc');
       else if (q) p.set('order[relevance]', 'desc');
@@ -200,10 +235,10 @@
         const au = await HS.net.fetchSource(
           'https://api.mangadex.org/author?limit=4&name=' + encodeURIComponent(f.artist), { json: true });
         u.uniq(((au && au.data) || []).map(x => x.id)).slice(0, 3)
-          .forEach(id => urls.push(build({ authorOrArtist: id })));
+          .forEach(id => urls.push(build(Object.assign({ authorOrArtist: id }, pageExtra))));
       } catch (e) { /* 退化为标题检索 */ }
     }
-    if (!urls.length) urls.push(build());
+    if (!urls.length) urls.push(build(pageExtra));
 
     const pages = await Promise.all(urls.map(url =>
       HS.net.fetchSource(url, { json: true, allowProxy: true }).catch(() => null)));
@@ -225,7 +260,13 @@
   async function nhentaiSearch(ctx) {
     const q = ctx.q, f = ctx.f, limit = ctx.limit;
     const terms = [];
-    if (q) terms.push(q);
+    const intent = ctx.intent || u.classifyQuery(q);
+    /* 意图分流：IP / 角色 → 走 tag 精确查；体裁 / 题材 → 用站点通行的题材标签名 */
+    if (q) {
+      if (intent.kind === 'character') terms.push('tag:"' + q + '"');
+      else if (intent.kind === 'genre' && intent.genre) terms.push('tag:"' + intent.genre.key + '"');
+      else terms.push(q);
+    }
     if (f.artist) terms.push('artist:"' + f.artist + '"');
     (f.tags || []).forEach(t => terms.push('tag:"' + t + '"'));
     (f.excludeTags || []).forEach(t => terms.push('-tag:"' + t + '"'));
@@ -241,7 +282,8 @@
     if (nhCat) terms.push('category:' + nhCat);
     if (!terms.length) throw new Error('nhentai 需要至少一个关键词或标签');
 
-    let url = 'https://nhentai.net/api/v2/search?query=' + encodeURIComponent(terms.join(' '));
+    let url = 'https://nhentai.net/api/v2/search?query=' + encodeURIComponent(terms.join(' ')) +
+      '&page=' + Math.max(1, ctx.page || 1);
     if (f.order === 'latest') url += '&sort=date';
     else if (f.order === 'popular') url += '&sort=popular';
 
@@ -251,10 +293,15 @@
 
     return rows.slice(0, limit).map(r => {
       const title = r.english_title || r.japanese_title || ('Gallery #' + r.id);
-      const tagNames = r.tag_ids ? Object.keys(r.tag_ids).map(k => r.tag_ids[k]) : [];
+      /* nhentai v2 的 tag_ids 是「纯数字 id 数组」，站点没有名字映射可用
+         （v1 的 /api/gallery/* 已 403、/api/v2/tags 已 404），所以这里只接受
+         「看起来像标签名」的值，绝不把数字当标签显示；语言/分类靠标题兜底。 */
+      const raw = r.tag_ids;
+      const vals = Array.isArray(raw) ? [] : (raw && typeof raw === 'object' ? Object.keys(raw).map(k => raw[k]) : []);
+      const tagNames = vals.map(t => String(t)).filter(t => t && !/^\d+$/.test(t));
+      const tl = tagNames.map(t => t.toLowerCase());
       const langs = ['chinese', 'english', 'japanese', 'korean', 'spanish', 'french', 'german', 'russian']
-        .filter(l => tagNames.some(t => String(t).toLowerCase() === l));
-      const tl = tagNames.map(t => String(t).toLowerCase());
+        .filter(l => tl.indexOf(l) >= 0);
       const cats = [];
       if (tl.indexOf('imageset') >= 0) cats.push('artbook');
       if (tl.indexOf('cosplay') >= 0) cats.push('cosplay');
@@ -283,7 +330,13 @@
   async function ehentaiSearch(ctx) {
     const q = ctx.q, f = ctx.f, limit = ctx.limit;
     const terms = [];
-    if (q) terms.push(q);
+    const intent = ctx.intent || u.classifyQuery(q);
+    /* 意图分流：IP / 角色 与 体裁 / 题材 → 走 E-Hentai 的精确标签语法 "…"$ */
+    if (q) {
+      if (intent.kind === 'character') terms.push('"' + q + '"$');
+      else if (intent.kind === 'genre' && intent.genre) terms.push('"' + intent.genre.key + '"$');
+      else terms.push(q);
+    }
     if (f.artist) terms.push('artist:"' + f.artist + '"$');
     (f.tags || []).forEach(t => terms.push('"' + t + '"$'));
     (f.excludeTags || []).forEach(t => terms.push('-"' + t + '"$'));
@@ -297,7 +350,8 @@
     if (f.ai === 'exclude') terms.push('-"ai-generated"$');
     if (!terms.length) throw new Error('E-Hentai 需要至少一个关键词或标签');
 
-    const url = 'https://e-hentai.org/?f_search=' + encodeURIComponent(terms.join(' ')) + '&f_apply=Apply+Filter';
+    const url = 'https://e-hentai.org/?f_search=' + encodeURIComponent(terms.join(' ')) +
+      '&f_apply=Apply+Filter' + ((ctx.page || 1) > 1 ? '&page=' + (ctx.page - 1) : '');
     const html = await HS.net.fetchSource(url, { allowProxy: true, proxyFirst: true });
     if (/temporarily banned|Your IP address has been/i.test(html)) throw new Error('E-Hentai 拒绝了当前出口 IP');
 
@@ -353,13 +407,19 @@
       artist: r.artist || '', pages: r.pages || null,
       cats: r.cats || [],
       tags: (r.tags || []).concat(r.cats || []),
+      adult: r.adult,
       nsfw: true, note: r.note || fallbackNote || ''
     }));
   }
 
   function gwTerms(ctx) {
     const f = ctx.f || {};
-    return [ctx.q].concat(f.artist ? [f.artist] : []).filter(Boolean).join(' ').trim();
+    const intent = ctx.intent || u.classifyQuery(ctx.q);
+    /* 网关这几个源只有关键词检索：
+       IP / 角色用规范系列名命中率更高；题材保留原词（中文站对中文标签更友好） */
+    let base = ctx.q;
+    if (intent.kind === 'character' && intent.series) base = intent.series;
+    return [base].concat(f.artist ? [f.artist] : []).filter(Boolean).join(' ').trim();
   }
 
   /** 禁漫官方 APP API（经网关签名 + AES-ECB 解密） */
@@ -369,7 +429,7 @@
     if (!terms) throw new Error('禁漫天堂需要关键词或画师');
     const order = f.order === 'popular' ? 'mv' : (f.order === 'latest' ? 'mr' : 'mr');
     const res = await HS.net.gateway.get('/api/jm/search', {
-      q: terms, page: 1, o: order,
+      q: terms, page: Math.max(1, ctx.page || 1), o: order,
       hosts: String(HS.settings.jmMirrors || ''),
       web: S.jmDomains()[0] || '18comic.vip'
     }, 35000);
@@ -383,9 +443,68 @@
     const terms = gwTerms(ctx);
     if (!gwReady()) throw new Error('拷贝漫画需要本地网关来签名' + GW_HINT);
     if (!terms) throw new Error('拷贝漫画需要关键词或画师');
-    const res = await HS.net.gateway.get('/api/copymanga/search', { q: terms, page: 1, limit: 30 }, 35000);
+    const res = await HS.net.gateway.get('/api/copymanga/search', {
+      q: terms, page: Math.max(1, ctx.page || 1), limit: u.clamp(ctx.limit * 2, 20, 60)
+    }, 35000);
     const items = gwItems(res, 'copymanga', '拷贝漫画', '官方 API');
     if (!items.length) throw new Error('拷贝漫画返回 0 条');
+    return items.slice(0, ctx.limit);
+  }
+
+  /** Kemono（kemono.cr）：Patreon / Fanbox / Pixiv 等创作者内容的公开存档站 */
+  async function kemonoSearch(ctx) {
+    const terms = gwTerms(ctx);
+    if (!gwReady()) throw new Error('Kemono 不返回跨域头，需要本地网关代取' + GW_HINT);
+    if (!terms) throw new Error('Kemono 需要关键词或画师');
+    const res = await HS.net.gateway.get('/api/kemono/search', {
+      q: terms, page: Math.max(1, ctx.page || 1)
+    }, 35000);
+    const items = gwItems(res, 'kemono', 'Kemono', 'Kemono 存档站');
+    if (!items.length) throw new Error('Kemono 返回 0 条');
+    return items.slice(0, ctx.limit);
+  }
+
+  /** Pixiv（www.pixiv.net）官方搜索接口：经网关取；R-18 需要用户自己的登录 cookie */
+  async function pixivSearch(ctx) {
+    if (!gwReady()) throw new Error('Pixiv 需要本地网关代取（i.pximg.net 有防盗链）' + GW_HINT);
+    /* 网关进程如果是加这个接口之前启动的，/api/ping 里不会列出 pixiv —— 直接给可执行提示，
+       否则用户只会看到 404 不知道要重启 */
+    const gws = (HS.net.gateway.info && HS.net.gateway.info.sources) || [];
+    if (gws.length && gws.indexOf('pixiv') < 0) {
+      throw new Error('当前网关是旧进程（/api/ping 里没有 pixiv），重启一次即可：node tools/gateway.js');
+    }
+    /* 意图分流：题材用词表键名，IP / 角色用规范系列名，其余用原词 */
+    const intent = ctx.intent || u.classifyQuery(ctx.q);
+    let terms = ctx.q;
+    if (intent.kind === 'genre' && intent.genre) {
+      /* Pixiv 标签以日文为主：同义概念用日文写法（脚 → 足），其余体裁仍用词表键名 */
+      terms = intent.concept ? (intent.concept.ja || ctx.q) : intent.genre.key;
+    }
+    else if (intent.kind === 'character') terms = intent.series || ctx.q;
+    terms = String(terms || '').trim();
+    if (!terms) throw new Error('Pixiv 需要关键词');
+    const res = await HS.net.gateway.get('/api/pixiv/search', {
+      q: terms,
+      page: Math.max(1, ctx.page || 1),
+      mode: String(HS.settings.pixivMode || 'all') === 'r18' ? 'r18' : 'all',
+      cookie: String(HS.settings.pixivCookie || '').trim()
+    }, 35000);
+    const items = gwItems(res, 'pixiv', 'Pixiv', '官方搜索');
+    if (!items.length) throw new Error('Pixiv 返回 0 条');
+    return items.slice(0, ctx.limit);
+  }
+
+  /** porn-comic.com：纯 HTML 站，全站前置 Cloudflare 人机验证；网关现在会用本机
+      Chrome 跑完验证再取页面（首次约 5–8 秒，同一 URL 5 分钟内走缓存） */
+  async function porncomicSearch(ctx) {
+    const terms = gwTerms(ctx);
+    if (!gwReady()) throw new Error('porn-comic 需要本地网关代取' + GW_HINT);
+    const f = ctx.f || {};
+    const res = await HS.net.gateway.get('/api/porncomic/search', {
+      q: terms, page: Math.max(1, ctx.page || 1), extra: (f.tags || [])[0] || ''
+    }, 60000);
+    const items = gwItems(res, 'porncomic', 'porn-comic', 'HTML');
+    if (!items.length) throw new Error('porn-comic 返回 0 条');
     return items.slice(0, ctx.limit);
   }
 
@@ -508,8 +627,10 @@
 
     /* 兜底：镜像站 HTML */
     const order = f.order === 'popular' ? 'mv' : 'mr';
+    const page = Math.max(1, ctx.page || 1);
     const path = '/albums' + (catPath ? '/' + catPath : '') +
-      '?screen=' + encodeURIComponent(screen).replace(/%20/g, '+') + '&o=' + order;
+      '?screen=' + encodeURIComponent(screen).replace(/%20/g, '+') + '&o=' + order +
+      (page > 1 ? '&page=' + page : '');
     let html = '', domain = '';
     try {
       const got = await jmFetch(path);
@@ -549,13 +670,19 @@
   function wnParse(html, strip) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const out = [], seen = {};
-    const abs = href => (!href ? '' : (/^https?:/i.test(href) ? href : WN_BASE + (href.charAt(0) === '/' ? href : '/' + href)));
+    const abs = href => {
+      if (!href) return '';
+      if (/^https?:/i.test(href)) return href;
+      if (href.indexOf('//') === 0) return 'https:' + href;      // 协议相对（紳士的图床就是这种）
+      return WN_BASE + (href.charAt(0) === '/' ? href : '/' + href);
+    };
     const pick = node => {
       if (!node || !node.querySelector) return '';
       const img = node.querySelector('img');
       if (!img) return '';
       const c = img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '';
-      return /^data:/i.test(c) ? '' : c;
+      if (/^data:/i.test(c)) return '';
+      return abs(c);
     };
     const push = (node, a) => {
       const href = a.getAttribute('href') || '';
@@ -600,13 +727,18 @@
     const q = ctx.q, f = ctx.f, limit = ctx.limit;
     const catId = (f.cats || []).map(c => WN_CATE[c]).find(Boolean) || '';
     const candidates = [];
+    const wp = Math.max(1, ctx.page || 1);
     if (q) {
       /* venera/wax 现役写法：/search/?q=&f=_all&s=create_time_DESC&syn=yes&p= */
-      candidates.push('/search/?q=' + encodeURIComponent(q) + '&f=_all&s=create_time_DESC&syn=yes');
-      candidates.push('/search/?q=' + encodeURIComponent(q) + '&m=0');
-      candidates.push('/albums-index-tag-' + encodeURIComponent(q) + '.html');
+      candidates.push('/search/?q=' + encodeURIComponent(q) + '&f=_all&s=create_time_DESC&syn=yes' +
+        (wp > 1 ? '&p=' + wp : ''));
+      candidates.push('/search/?q=' + encodeURIComponent(q) + '&m=0' + (wp > 1 ? '&p=' + wp : ''));
+      if (wp === 1) candidates.push('/albums-index-tag-' + encodeURIComponent(q) + '.html');
     }
-    if (catId) candidates.push('/albums-index-cate-' + catId + '.html');
+    if (catId) {
+      candidates.push('/albums-index-cate-' + catId + '.html');
+      if (wp > 1) candidates.push('/albums-index-page-' + wp + '-cate-' + catId + '.html');
+    }
     if (!candidates.length) candidates.push('/albums.html');
 
     const merged = [], seen = {};
@@ -681,93 +813,24 @@
   }
 
   /* ======================================================================
-     7. 哔咔漫画（PicACG）
-        官方 App API 需要 HMAC 签名 + 自定义请求头：浏览器直连会被 CORS 拒绝，
-        公共 CORS 代理也不会转发这些请求头 → 必须经由服务端网关转发。
-        这里对接 HibiAPI 风格的网关；网关地址在设置里填写（可自建）。
-     ====================================================================== */
-  function picacgFindList(node, depth) {
-    depth = depth || 0;
-    if (!node || depth > 6) return null;
-    if (Array.isArray(node)) {
-      const objs = node.filter(x => x && typeof x === 'object' && !Array.isArray(x));
-      if (objs.length && objs.some(o => o.title || o.name) &&
-        objs.some(o => o.thumb || o.cover || o.image || o.thumbnail)) return objs;
-      for (const it of node) { const r = picacgFindList(it, depth + 1); if (r) return r; }
-      return null;
-    }
-    if (typeof node === 'object') {
-      for (const k of Object.keys(node)) { const r = picacgFindList(node[k], depth + 1); if (r) return r; }
-    }
-    return null;
-  }
-
-  async function picacgSearch(ctx) {
-    const q = ctx.q, f = ctx.f, limit = ctx.limit;
-    const terms = [q].concat(f.artist ? [f.artist] : []).filter(Boolean).join(' ');
-    if (!terms) throw new Error('PicACG 需要关键词或画师');
-
-    let gwErr = null;
-    /* 首选：本地网关 → 官方 APP API（HMAC-SHA256 签名） */
-    if (gwReady()) {
-      try {
-        const res = await HS.net.gateway.get('/api/picacg/search', { q: terms, page: 1, sort: 'dd' }, 35000);
-        const items = gwItems(res, 'picacg', '哔咔漫画', '官方 APP API');
-        if (items.length) return items.slice(0, limit);
-      } catch (e) { gwErr = e; }
-    }
-
-    /* 次选：自建 HibiAPI 网关 */
-    const base = String(HS.settings.picacgGateway || '').trim().replace(/\/+$/, '');
-    if (!base) {
-      if (gwErr) throw new Error('哔咔官方接口没有返回结果：' + gwErr.message);
-      throw new Error('PicACG 需要服务端网关：启动随附的本地网关' + GW_HINT +
-        '；或在 设置 → 搜索 → PicACG 网关 填写你自建的 HibiAPI 地址');
-    }
-
-    const url = base + '/api/picacg/search?keyword=' + encodeURIComponent(terms) + '&page=1';
-    const data = await HS.net.fetchSource(url, { json: true, allowProxy: false });
-    const rows = picacgFindList(data) || [];
-    if (!rows.length) throw new Error('PicACG 网关返回结构无法识别或没有结果');
-
-    return rows.slice(0, limit).map(r => {
-      const cats = (r.categories || []).map(c => String(typeof c === 'string' ? c : (c && c.title) || ''));
-      const catBlob = cats.join(' ').toLowerCase();
-      const out = [];
-      if (/同人|doujin/.test(catBlob)) out.push('doujinshi');
-      if (/單本|单本|short|短篇/.test(catBlob)) out.push('oneshot');
-      if (/長篇|长篇|连载/.test(catBlob)) out.push('serial');
-      if (/韓漫|韩漫/.test(catBlob)) out.push('hanman');
-      if (/美漫|western/.test(catBlob)) out.push('western');
-      const thumb = r.thumb || r.thumbnail || {};
-      const cover = (thumb.fileServer && thumb.path)
-        ? (thumb.fileServer + '/static/' + thumb.path)
-        : (typeof thumb === 'string' ? thumb : (r.cover || ''));
-      return mk({
-        source: 'picacg', sourceName: '哔咔漫画',
-        id: r._id || r.id,
-        title: r.title || r.name || '',
-        url: 'https://www.picacomic.com/comic/' + (r._id || r.id),
-        cover, artist: r.author || '', pages: r.pagesCount || null,
-        cats: out, tags: cats.concat(r.tags || []), nsfw: true,
-        note: '经网关返回'
-      });
-    });
-  }
-
-  /* ======================================================================
-     8. Danbooru —— 图片板 API（画师 / 标签检索强项；匿名限 2 个标签）
+     7. Danbooru —— 图片板 API（画师 / 标签检索强项；匿名限 2 个标签）
      ====================================================================== */
   async function danbooruSearch(ctx) {
     const q = ctx.q, f = ctx.f, limit = ctx.limit;
     const tags = [];
+    const intent = ctx.intent || u.classifyQuery(q);
     if (f.artist) tags.push(String(f.artist).trim().replace(/\s+/g, '_'));
     if (f.tags && f.tags.length) tags.push(String(f.tags[0]).trim().replace(/\s+/g, '_'));
-    if (!tags.length && q) tags.push(String(q).trim().replace(/\s+/g, '_'));
+    /* Danbooru 是标签板：体裁用题材标签名；作品名 / 角色名直接落到 copyright / character 标签上 */
+    if (!tags.length && q) {
+      const term = (intent.kind === 'genre' && intent.genre) ? intent.genre.key : String(q).trim();
+      tags.push(term.replace(/\s+/g, '_'));
+    }
     if (!tags.length) throw new Error('Danbooru 需要关键词、画师或标签');
 
     const url = 'https://danbooru.donmai.us/posts.json?limit=' + u.clamp(limit, 1, 50) +
-      '&tags=' + encodeURIComponent(tags.slice(0, 2).join(' '));
+      '&tags=' + encodeURIComponent(tags.slice(0, 2).join(' ')) +
+      ((ctx.page || 1) > 1 ? '&page=' + ctx.page : '');
     const data = await HS.net.fetchSource(url, { json: true, allowProxy: true });
     if (!Array.isArray(data)) throw new Error((data && data.message) || 'Danbooru 返回异常');
     if (!data.length) return [];
@@ -785,54 +848,11 @@
         title: (artist ? artist + ' · ' : '') + (ch || cp || ('post ' + p.id)),
         url: 'https://danbooru.donmai.us/posts/' + p.id,
         cover, artist, pages: null,
+        /* Danbooru 自带分级：g / s / q / e —— q、e 算成人向，g、s 明确排除 */
+        adult: p.rating === 'e' || p.rating === 'q',
         tags: u.uniq([ch, cp].filter(Boolean).concat(gen.slice(0, 10)))
       });
     }).filter(Boolean);
-  }
-
-  /* ======================================================================
-     9. Demo —— 完全离线示例源（含同系列多本，便于演示堆叠展开）
-     ====================================================================== */
-  const DEMO_BASE = [
-    { t: '[Karaage (Hiten)] Fate Quartet', a: 'Hiten', p: 26, tags: ['fate', 'saber', 'full color'], lang: 'zh' },
-    { t: '[Cior (Ken-1)] Fate Night Collection', a: 'Cior', p: 34, tags: ['fate', 'rin tohsaka', 'full color'], lang: 'zh' },
-    { t: '[Musou] Fate Gathering', a: 'Musou', p: 22, tags: ['fate', 'saber', 'netorare'], lang: 'ja' },
-    { t: '[Homunculus (Cola)] Fate Grand Order Anthology', a: 'Cola', p: 128, tags: ['fate grand order', 'anthology', 'full color'], lang: 'en' },
-    { t: '[Homunculus (Cola)] Blue Archive Compilation', a: 'Cola', p: 48, tags: ['blue archive', 'full color'], lang: 'en' },
-    { t: '[Cior (Ken-1)] Blue Archive Fanbook', a: 'Cior', p: 40, tags: ['blue archive', 'full color'], lang: 'zh' },
-    { t: '[みちきんぐ] Blue Archive Sensei Log', a: 'Michiking', p: 96, tags: ['blue archive', 'sole female'], lang: 'ja' },
-    { t: '[大嘘] 足フェチレッスン', a: '大嘘', p: 34, tags: ['footjob', 'sole female'], lang: 'ja' },
-    { t: '[Digital Lover (Nakajima Yuka)] 制服と放課後', a: 'Nakajima Yuka', p: 22, tags: ['school uniform', 'romance'], lang: 'zh' },
-    { t: '[Ashiomi Masato] Office Hours', a: 'Ashiomi Masato', p: 18, tags: ['office lady', 'stockings'], lang: 'en' },
-    { t: '[Cior (Ken-1)] Hololive Fanbook', a: 'Cior', p: 40, tags: ['hololive', 'full color'], lang: 'zh' },
-    { t: '[朝凪] 純愛アンソロジー', a: '朝凪', p: 28, tags: ['netorare', 'sole female'], lang: 'ja' },
-    { t: '[AI Art Lab] Genshin AI Collection', a: 'AI Art Lab', p: 64, tags: ['genshin impact', 'ai-generated', 'full color'], lang: 'zh' },
-    { t: '[Guro Works] Dark Fantasy R18G', a: 'Guro Works', p: 44, tags: ['guro', 'ryona', 'dark'], lang: 'ja' }
-  ];
-
-  async function demoSearch(ctx) {
-    const q = String(ctx.q || '').toLowerCase();
-    const f = ctx.f || {};
-    await u.sleep(180 + Math.random() * 260);
-    let rows = DEMO_BASE.slice();
-    if (q) {
-      const hit = rows.filter(r => (r.t + ' ' + r.a + ' ' + r.tags.join(' ')).toLowerCase().indexOf(q) >= 0);
-      rows = hit.length ? hit : rows.slice(0, 6);
-    }
-    if (f.langs && f.langs.length) {
-      const hit = rows.filter(r => f.langs.indexOf(r.lang) >= 0);
-      if (hit.length) rows = hit;
-    }
-    return rows.slice(0, ctx.limit).map((r, i) => mk({
-      source: 'demo', sourceName: '示例数据',
-      id: 'demo-' + i, title: r.t, url: '#demo',
-      cover: u.placeholder(r.a, r.t + i),
-      artist: r.a, pages: r.p,
-      lang: r.lang, langs: [r.lang], nsfw: true,
-      cats: r.tags.indexOf('anthology') >= 0 ? ['anthology'] : [],
-      tags: r.tags,
-      note: '离线示例条目，非真实结果'
-    }));
   }
 
   /* ======================================================================
@@ -982,6 +1002,24 @@
       search: copymangaSearch
     },
     {
+      id: 'kemono', name: 'Kemono', homepage: 'https://kemono.cr',
+      desc: 'Patreon / Fanbox / Pixiv 等创作者内容的公开存档站 · 官方 JSON API（每页 50 条）· 无跨域头，经本地网关取',
+      flags: ['创作者向', '需本地网关'], proxy: true, vpn: true, weight: 1.0,
+      search: kemonoSearch
+    },
+    {
+      id: 'porncomic', name: 'porn-comic', homepage: 'https://porn-comic.com',
+      desc: '欧美 3D / 同人漫画 HTML 站 · 搜索入口常被 Cloudflare 人机验证挡住（网关不能执行 JS），能过验证的出口才可用',
+      flags: ['实验性', '需本地网关', '常被 CF 挡'], proxy: true, vpn: true, weight: 0.85,
+      search: porncomicSearch
+    },
+    {
+      id: 'pixiv', name: 'Pixiv', homepage: 'https://www.pixiv.net',
+      desc: '官方插画 / 漫画搜索 · 经本地网关检索（封面由网关带 Referer 代理，绕开 i.pximg.net 防盗链）· R-18 需在设置里填自己的 PHPSESSID',
+      flags: ['插画向', '需本地网关', 'R-18 需登录'], proxy: false, vpn: true, weight: 0.62,
+      search: pixivSearch
+    },
+    {
       id: 'wnacg', name: '紳士漫畫', homepage: 'https://www.wnacg.com',
       desc: '繁體中文站 · HTML 解析 · 分类索引 + 标签检索 · 需代理',
       flags: ['中文', '需代理'], proxy: true, vpn: true, weight: 1.15,
@@ -1006,23 +1044,11 @@
       search: danbooruSearch
     },
     {
-      id: 'picacg', name: '哔咔漫画', homepage: 'https://www.picacomic.com',
-      desc: '官方 App API：HMAC-SHA256 签名 + 需登录 token，经本地网关检索（网关可代登录）',
-      flags: ['中文', '需本地网关'], proxy: false, vpn: false, weight: 1.2,
-      off: true, search: picacgSearch
-    },
-    {
       id: 'hitomi', name: 'Hitomi', homepage: 'https://hitomi.la',
       desc: 'HTML 解析（实验性）· 仅支持单词/标签检索',
       flags: ['需代理', '实验性'], proxy: true, vpn: true, weight: 0.95,
       off: true, search: hitomiSearch
     },
-    {
-      id: 'demo', name: '示例数据', homepage: '#',
-      desc: '完全离线的本地示例（含同系列多本），用于演示与断网兜底',
-      flags: ['离线'], proxy: false, vpn: false, weight: 0.4,
-      search: demoSearch
-    }
   ];
 
   REG.forEach(s => { S.list.push(s); S.byId[s.id] = s; });
@@ -1036,23 +1062,67 @@
     /* 自定义源只要配置了就参与（它们的 id 动态生成，无法预置在 sources 列表里） */
     const custom = S.customAdapters();
     const list = builtin.concat(custom);
-    return list.length ? list : REG.filter(s => s.id === 'demo');
+    return list.length ? list : [];
   };
 
   /** 供 UI 展示：内置源 + 自定义源 */
   S.allForUI = function () {
-    return REG.filter(s => !s.off || s.id === 'picacg' || s.id === 'hitomi').concat(S.customAdapters());
+    return REG.filter(s => !s.off || s.id === 'hitomi').concat(S.customAdapters());
   };
 
   /* ---------------- 并行聚合器 ---------------- */
   /* 全局上限：慢源不再拖着整个搜索不放，到点就把还没回来的源标记为超时 */
   S.RUN_CAP_MS = 22000;
 
+  /**
+   * 动态分配「每个源取多少条」：
+   *   auto  ：目标总数 ÷ 启用源数（源少就每个源多要，源多就平均分），下限 6、上限 60
+   *   fixed ：用设置里的固定值
+   * 这样只开一两个源时也能一次拿到几十条，而不是每源 12 条凑不满一页。
+   */
+  S.plan = function (nSources) {
+    const target = u.clamp(parseInt(HS.settings.targetTotal, 10) || 60, 20, 200);
+    const fixed = u.clamp(parseInt(HS.settings.perSource, 10) || 12, 4, 100);
+    const auto = HS.settings.perSourceMode !== 'fixed';
+    const n = Math.max(1, nSources || 1);
+    const limit = auto ? u.clamp(Math.ceil(target / n) + (n <= 2 ? 6 : 0), 6, 60) : fixed;
+    return { limit, target, auto, sources: n };
+  };
+
+  /* ---------------- 跨语言同义词：按目标源的标签体系挑写法 ----------------
+     dict.js 的 HS.CONCEPTS 里，同一个概念同时写着中 / 英 / 日（含罗马字）三种写法。
+     搜「脚」和搜「foot」要能打到同一批作品 —— 但直接把原词丢过去没用：
+     英文标签站里没有「脚」这个标签，中文站里也未必有 foot。
+     所以按源挑：英文标签站给 en、Pixiv 给日文、中文站给中文。 */
+  const TAG_LANG = {
+    mangadex: 'en', nhentai: 'en', ehentai: 'en', danbooru: 'en', porncomic: 'en', hitomi: 'en',
+    pixiv: 'ja',
+    jm: 'zh', copymanga: 'zh', wnacg: 'zh', kemono: 'zh'
+  };
+
+  /** 给某个源挑该概念最合适的写法；不是同义概念查询就原样返回 */
+  S.termFor = function (src, q, intent) {
+    const c = intent && intent.concept;
+    if (!c) return q;
+    const lang = TAG_LANG[src.id];
+    if (!lang) return q;                       // 自定义源等：不动用户原词
+    const pick = lang === 'ja' ? (c.ja || c.en || c.zh)
+      : lang === 'en' ? (c.en || c.zh)
+        : (c.zh || c.en);
+    return pick || q;
+  };
+
   S.run = function (opts) {
     const q = (opts.q || '').trim();
     const f = opts.filters || {};
-    const limit = u.clamp(parseInt(HS.settings.perSource, 10) || 12, 1, 40);
+    /* 查询意图只算一次，所有源共用同一套策略分流 */
+    const intent = opts.intent || u.classifyQuery(q);
+    S.lastIntent = intent;
     const list = S.enabled();
+    const page = Math.max(1, parseInt(opts.page || 1, 10) || 1);
+    const plan = S.plan(list.length);
+    const limit = plan.limit;
+    S.lastPlan = plan;
     const cap = opts.capMs === 0 ? 0 : u.clamp(parseInt(opts.capMs || S.RUN_CAP_MS, 10), 6000, 60000);
     const out = [];
     let stopped = false;
@@ -1060,10 +1130,13 @@
     const tasks = list.map(src => (async () => {
       const t0 = u.now();
       if (opts.onStart) opts.onStart(src);
+      /* 同义概念按源换写法：q 与 ctx.q 一起换，适配器两种读法都拿到对的词 */
+      const term = S.termFor(src, q, intent);
+      const sctx = term === q ? opts : Object.assign({}, opts, { q: term });
       let res;
       try {
         const raw = await src.search({
-          q, f, limit, ctx: opts,
+          q: term, f, limit, page, plan, intent, ctx: sctx,
           /* 已知不返回 CORS 头的站点：直接走代理链，省掉注定失败的直连 */
           proxyFirst: src.proxy === true
         });

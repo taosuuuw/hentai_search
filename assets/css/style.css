@@ -1,5 +1,5 @@
 /* ==========================================================================
-   EroMeta · 绅士聚合搜索 — 样式表
+   hentai搜索 · 绅士聚合搜索 — 样式表
    主题：CSS 变量双主题 / 现代毛玻璃 / 移动端自适应
    性能要点：遮蔽（panic）走「预置遮罩 + 零过渡」双保险，保证瞬时生效
    ========================================================================== */
@@ -29,6 +29,20 @@
   --shadow:        0 24px 60px -28px rgba(0,0,0,.95);
   --shadow-sm:     0 8px 24px -14px rgba(0,0,0,.8);
   --ring:          0 0 0 2px rgba(255,77,141,.35);
+  /* 液态玻璃（搜索条 + 拉手）：深色主题
+     第 2 轮「透明化」：填充整体压到几乎看不见，轮廓只靠 blur + 极淡亮边勾勒 */
+  --glass-fill:      rgba(255,255,255,.028);
+  --glass-fill-hi:   rgba(255,255,255,.05);
+  --glass-seam:      rgba(255,255,255,.02);
+  --glass-rim-top:   rgba(255,255,255,.14);
+  --glass-rim-bot:   rgba(255,255,255,.03);
+  --glass-inner:     rgba(255,255,255,.08);
+  --glass-sheen:     rgba(255,255,255,.055);
+  --glass-drop:      0 16px 34px -24px rgba(0,0,0,.45), 0 1px 6px -4px rgba(0,0,0,.3);
+  --glass-btn:       rgba(255,255,255,.055);
+  /* 搜索框上沿那条「极细线 + 微光」 */
+  --glass-line:      rgba(255,255,255,.10);
+  --glass-line-glow: rgba(255,255,255,.20);
   --panic-bg:      #05050a;
   --shimmer:       linear-gradient(100deg, transparent 20%, rgba(255,255,255,.075) 45%, transparent 70%);
   --font: "Inter var", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI Variable",
@@ -50,6 +64,19 @@ html[data-theme="light"] {
   --fg-3:          #8b8c9e;
   --shadow:        0 24px 60px -30px rgba(30,30,60,.35);
   --shadow-sm:     0 8px 24px -16px rgba(30,30,60,.3);
+  /* 液态玻璃（搜索条 + 拉手）：浅色主题 —— 靠更透明的白面 + 极淡描边产生「光学边缘」 */
+  --glass-fill:      rgba(255,255,255,.40);
+  --glass-fill-hi:   rgba(255,255,255,.58);
+  --glass-seam:      rgba(255,255,255,.26);
+  --glass-rim-top:   rgba(255,255,255,.55);
+  --glass-rim-bot:   rgba(16,16,32,.07);
+  --glass-inner:     rgba(255,255,255,.5);
+  --glass-sheen:     rgba(255,255,255,.4);
+  --glass-drop:      0 16px 34px -26px rgba(30,30,70,.20), 0 1px 6px -4px rgba(30,30,70,.12);
+  --glass-btn:       rgba(255,255,255,.46);
+  /* 搜索框上沿那条「极细线 + 微光」 */
+  --glass-line:      rgba(16,16,32,.10);
+  --glass-line-glow: rgba(16,16,32,.10);
   --panic-bg:      #eef0f5;
   --shimmer:       linear-gradient(100deg, transparent 20%, rgba(20,20,40,.05) 45%, transparent 70%);
 }
@@ -172,6 +199,20 @@ html[data-theme="light"] .hs-bg {
 .hs-icon-btn:hover { color: var(--fg); border-color: var(--border-strong); background: var(--panel-2); transform: translateY(-1px); }
 .hs-icon-btn svg { width: 18px; height: 18px; }
 
+/* 设置入口要一眼能找到：顶栏按钮补图标 + 「设置」文字（之前是个空方块），页脚那个也带图标 */
+.hs-icon-btn-label {
+  width: auto; height: 36px; display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 11px 0 10px;
+  color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+}
+.hs-icon-btn-label:hover {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.hs-icon-btn-label svg { width: 16px; height: 16px; }
+.hs-icon-btn-label span { font-size: 12px; font-weight: 650; letter-spacing: .01em; }
+
 /* ---------- 主区 ---------- */
 .hs-main {
   flex: 1; width: 100%;
@@ -189,36 +230,79 @@ html[data-theme="light"] .hs-bg {
 }
 .hs-sub { color: var(--fg-3); font-size: 13.5px; margin-bottom: 22px; }
 
-/* 搜索框 */
+/* 搜索框 —— 液态玻璃（Liquid Glass）主体
+   第 2 轮：填充压到近乎透明，只靠 blur(20px) + 极淡亮边/极淡外阴影勾出轮廓
+   注意：不设 height、不动 padding/border-radius 之外的几何，避免与 filters.js 冲突 */
 .hs-searchbar {
   position: relative; display: flex; align-items: center; gap: 8px;
   padding: 8px 8px 8px 14px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 999px; box-shadow: var(--shadow-sm);
-  backdrop-filter: saturate(150%) blur(12px);
-  transition: border-color .18s, box-shadow .18s;
+  background: var(--glass-fill);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-inner),
+    inset 0 -1px 0 var(--glass-rim-bot),
+    var(--glass-drop);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+          backdrop-filter: blur(20px) saturate(190%);
+  transition: background .18s, border-color .18s, box-shadow .18s;
 }
-.hs-searchbar:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: var(--shadow-sm), var(--ring); }
+/* 斜向折射高光：很淡，只做「液感」，不做彩色渐变海报 */
+.hs-searchbar::after {
+  content: ""; position: absolute; inset: 1px; z-index: 0;
+  border-radius: inherit; pointer-events: none;
+  background:
+    linear-gradient(104deg,
+      var(--glass-sheen) 0%,
+      rgba(255,255,255,0) 38%,
+      rgba(255,255,255,0) 62%,
+      var(--glass-sheen) 100%),
+    linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 52%);
+  opacity: .8; mix-blend-mode: screen;
+  transition: opacity .18s;
+}
+html[data-theme="light"] .hs-searchbar::after { mix-blend-mode: soft-light; opacity: .9; }
+.hs-searchbar > * { position: relative; z-index: 1; }
+/* 焦点必须一眼可见：透明化之后全靠「提亮 + accent 描边 + 焦点环」撑住可辨识度 */
+.hs-searchbar:focus-within {
+  background: var(--glass-fill-hi);
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow:
+    inset 0 1px 0 var(--glass-inner),
+    inset 0 -1px 0 var(--glass-rim-bot),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+    var(--glass-drop),
+    var(--ring);
+}
+.hs-searchbar:focus-within::after { opacity: 1; }
 .hs-sb-ico {
   width: 19px; height: 19px; flex: none; background: var(--fg-3);
+  transition: background .18s;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.6-3.6'/%3E%3C/svg%3E") center/contain no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.6-3.6'/%3E%3C/svg%3E") center/contain no-repeat;
 }
+.hs-searchbar:focus-within .hs-sb-ico { background: var(--accent); }
 #q {
   flex: 1; min-width: 0; border: 0; background: none; outline: none;
   font-size: 16px; padding: 9px 2px;
+  color: var(--fg); caret-color: var(--accent);
 }
-#q::placeholder { color: var(--fg-3); }
+#q::placeholder { color: var(--fg-3); opacity: 1; }
 #q::-webkit-search-cancel-button { display: none; }
 .hs-sb-clear {
   width: 26px; height: 26px; flex: none; border-radius: 50%;
-  color: var(--fg-3); font-size: 18px; line-height: 1; display: grid; place-items: center;
+  color: var(--fg-2); font-size: 18px; line-height: 1; display: grid; place-items: center;
+  border: 1px solid var(--border);
+  background: var(--glass-btn);
+  -webkit-backdrop-filter: blur(6px);
+          backdrop-filter: blur(6px);
+  transition: color .16s, background .16s, border-color .16s;
 }
-.hs-sb-clear:hover { background: var(--panel-2); color: var(--fg); }
+.hs-sb-clear:hover { background: var(--panel-2); color: var(--fg); border-color: var(--border-strong); }
 .hs-sb-filter {
   display: inline-flex; align-items: center; gap: 6px; flex: none;
   padding: 8px 14px; border-radius: 999px; font-size: 13px;
-  background: var(--panel-2); border: 1px solid var(--border); color: var(--fg-2);
+  background: var(--glass-btn); border: 1px solid var(--border); color: var(--fg-2);
   transition: color .16s, border-color .16s;
 }
 .hs-sb-filter:hover { color: var(--fg); border-color: var(--border-strong); }
@@ -228,17 +312,30 @@ html[data-theme="light"] .hs-bg {
   background: var(--grad); color: #fff; font-size: 10px; font-weight: 700;
   display: inline-grid; place-items: center;
 }
+/* 搜索按钮：同材质玻璃小胶囊（保留品牌渐变，叠一层顶部高光 + 折射） */
 .hs-sb-go {
   position: relative; flex: none; overflow: hidden;
   padding: 10px 24px; border-radius: 999px; font-weight: 650; font-size: 14px;
-  background: var(--grad); color: #fff; box-shadow: 0 8px 22px -12px rgba(255,77,141,.85);
-  transition: transform .16s, filter .16s;
+  background: var(--grad); color: #fff;
+  -webkit-backdrop-filter: blur(6px) saturate(150%);
+          backdrop-filter: blur(6px) saturate(150%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.38),
+    inset 0 -1px 0 rgba(0,0,0,.16),
+    0 10px 24px -12px rgba(255,77,141,.85);
+  transition: transform .16s, filter .16s, box-shadow .16s;
+}
+.hs-sb-go::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(102deg,
+    rgba(255,255,255,.22) 0%, rgba(255,255,255,0) 46%, rgba(255,255,255,.14) 100%);
 }
 .hs-sb-go:hover { transform: translateY(-1px); filter: brightness(1.07); }
 .hs-sb-go:active { transform: translateY(0); }
 .hs-sb-go[disabled] { opacity: .6; cursor: progress; }
+.hs-sb-go-txt { position: relative; z-index: 1; }
 .hs-sb-ring {
-  position: absolute; inset: -60% -30%; display: none;
+  position: absolute; inset: -60% -30%; display: none; z-index: 1;
   background: linear-gradient(100deg, transparent 35%, rgba(255,255,255,.55) 50%, transparent 65%);
   animation: hs-sweep 1.05s linear infinite;
 }
@@ -366,6 +463,15 @@ html[data-theme="dark"] .hs-srccard { background: rgba(0,0,0,.24); }
 .hs-btn-text:hover { color: var(--fg); border-color: transparent; }
 .hs-linkbtn { background: none; color: var(--fg-3); text-decoration: underline; text-underline-offset: 2px; font-size: inherit; padding: 0; }
 .hs-linkbtn:hover { color: var(--fg); }
+.hs-linkbtn-ico {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px; text-decoration: none;
+  color: var(--accent-2); font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--accent-2) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-2) 10%, transparent);
+}
+.hs-linkbtn-ico:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.hs-linkbtn-ico svg { width: 13px; height: 13px; }
 
 /* ---------- VPN / 网络提醒横幅 ---------- */
 .hs-banner {
@@ -494,8 +600,12 @@ html[data-theme="dark"] .hs-srccard { background: rgba(0,0,0,.24); }
   background: var(--panel); border: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
   transition: transform .2s cubic-bezier(.2,.8,.3,1), border-color .2s, box-shadow .2s;
-  animation: hs-card-in .34s cubic-bezier(.2,.8,.3,1) backwards;
 }
+/* 入场动画只挂在「新出现的卡片」上：继续加载 / 重新排序时复用的老卡片不会再播一遍
+   （否则每次重排全网格都闪一下，用户看到的就是"整个页面闪烁"） */
+.hs-card-new { animation: hs-card-in .34s cubic-bezier(.2,.8,.3,1) backwards; animation-delay: calc(var(--in-i, 0) * 22ms); }
+/* 被点开的那张卡片先隐身：看起来就是它自己长大成放大视图 */
+.hs-card-ghost { visibility: hidden; }
 @keyframes hs-card-in { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: none; } }
 .hs-card:hover { transform: translateY(-4px); border-color: var(--border-strong); box-shadow: var(--shadow); }
 .hs-card-img {
@@ -506,10 +616,23 @@ html[data-theme="dark"] .hs-srccard { background: rgba(0,0,0,.24); }
   transition: filter .22s ease, transform .35s ease;
 }
 .hs-card:hover .hs-card-img img { transform: scale(1.035); }
-/* 封面默认模糊（保护 + 防剧透），悬停或点击揭示 */
+/* 封面默认模糊（保护 + 防剧透），悬停或点击揭示。
+   注意：打开这个开关就是**所有作品一律糊**，R18G / AI 只作为筛选条件（排除用），不做区别对待 */
 html.hs-blurcovers .hs-card-img img { filter: blur(15px) saturate(.85); }
 html.hs-blurcovers .hs-card:hover .hs-card-img img,
 html.hs-blurcovers .hs-card[data-reveal="1"] .hs-card-img img { filter: none; }
+/* 标签与顶上角标也跟着糊：封面糊住了、标签和角标却把内容说穿，等于没糊 */
+html.hs-blurcovers .hs-card .hs-card-tags,
+html.hs-blurcovers .hs-card .hs-card-badges {
+  filter: blur(5px); opacity: .72; user-select: none;
+  transition: filter .22s ease, opacity .22s ease;
+}
+html.hs-blurcovers .hs-card:hover .hs-card-tags,
+html.hs-blurcovers .hs-card:hover .hs-card-badges,
+html.hs-blurcovers .hs-card[data-reveal="1"] .hs-card-tags,
+html.hs-blurcovers .hs-card[data-reveal="1"] .hs-card-badges {
+  filter: none; opacity: 1; user-select: auto;
+}
 .hs-card-reveal {
   position: absolute; inset: auto 8px 8px auto; z-index: 3;
   padding: 3px 9px; border-radius: 999px; font-size: 10.5px;
@@ -528,6 +651,28 @@ html.hs-blurcovers .hs-card .hs-card-reveal { opacity: 1; }
 }
 .hs-pill-src { background: linear-gradient(135deg, rgba(255,77,141,.9), rgba(139,92,246,.9)); border-color: transparent; color: #fff; }
 .hs-pill-nsfw { background: rgba(248,113,113,.9); border-color: transparent; color: #fff; }
+/* R18G / AI：必须一眼看出来 */
+.hs-pill-gore {
+  background: linear-gradient(135deg, #ef4444, #7f1d1d);
+  border-color: transparent; color: #fff; font-weight: 800;
+  box-shadow: 0 4px 12px -6px rgba(239,68,68,.95);
+}
+.hs-pill-ai {
+  background: linear-gradient(135deg, #22d3ee, #7c3aed);
+  border-color: transparent; color: #fff; font-weight: 800;
+  box-shadow: 0 4px 12px -6px rgba(34,211,238,.85);
+}
+/* 作品名意图下与关键词完全同名的结果 */
+.hs-pill-match { background: linear-gradient(135deg, #fbbf24, #d97706); border-color: transparent; color: #2a1602; font-weight: 800; }
+/* 汉化 / 中文角标：绿色高亮，比其它角标更抓眼 */
+.hs-pill-zh {
+  background: linear-gradient(135deg, #34d399, #059669);
+  border-color: transparent; color: #04231a; font-weight: 800;
+  box-shadow: 0 4px 12px -6px rgba(52,211,153,.9);
+}
+.hs-zh-count { color: var(--ok); font-weight: 650; }
+.hs-tag-zh[data-on="1"] { background: linear-gradient(135deg, #34d399, #059669); border-color: transparent; color: #04231a; }
+.hs-tag-zh[data-on="0"] { border-color: color-mix(in srgb, var(--ok) 42%, transparent); }
 .hs-card-body { padding: 11px 12px 12px; display: flex; flex-direction: column; gap: 7px; flex: 1; }
 .hs-card-title {
   font-size: 13px; font-weight: 620; line-height: 1.42;
@@ -543,6 +688,20 @@ html.hs-blurcovers .hs-card .hs-card-reveal { opacity: 1; }
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 html[data-theme="dark"] .hs-mtag { background: rgba(255,255,255,.05); }
+/* 标签里的 R18G / AI 词单独高亮，和角标互相印证 */
+.hs-mtag-gore {
+  background: color-mix(in srgb, #ef4444 26%, transparent);
+  border-color: color-mix(in srgb, #ef4444 58%, transparent);
+  color: #ffd7d7; font-weight: 700;
+}
+.hs-mtag-ai {
+  background: color-mix(in srgb, #22d3ee 24%, transparent);
+  border-color: color-mix(in srgb, #22d3ee 55%, transparent);
+  color: #d3f6ff; font-weight: 700;
+}
+html[data-theme="light"] .hs-mtag-gore { color: #7f1d1d; }
+html[data-theme="light"] .hs-mtag-ai { color: #0e4b58; }
+.hs-mtag-none { opacity: .5; font-style: italic; }
 .hs-card-actions { display: flex; gap: 6px; padding: 0 12px 12px; }
 .hs-card-actions .hs-btn { flex: 1; padding: 6px 8px; font-size: 11.5px; }
 .hs-card-actions .hs-btn-ico { flex: none; width: 32px; padding: 6px 0; }
@@ -625,12 +784,16 @@ html.hs-panic #panic-overlay { opacity: 1; visibility: visible; pointer-events: 
   border-bottom: 1px solid var(--border);
 }
 .hs-modal-head h2 { font-size: 15px; font-weight: 700; }
+.hs-modal-head .hs-head-ico { width: 20px; height: 20px; color: var(--accent); flex: none; }
 .hs-modal-head .hs-icon-btn { margin-left: auto; }
 .hs-modal-tabs { display: flex; gap: 4px; padding: 10px 14px 0; flex-wrap: wrap; }
 .hs-tab {
+  display: inline-flex; align-items: center; gap: 5px;
   padding: 7px 13px; border-radius: 999px; font-size: 12.5px; color: var(--fg-3);
   border: 1px solid transparent;
 }
+.hs-tab-ico { width: 13px; height: 13px; display: block; flex: none; }
+.hs-tab-ico svg { width: 100%; height: 100%; display: block; }
 .hs-tab:hover { color: var(--fg-2); }
 .hs-tab[aria-selected="true"] { color: var(--fg); background: var(--panel-2); border-color: var(--border); }
 .hs-modal-body { padding: 16px 18px 6px; overflow-y: auto; flex: 1; }
@@ -646,6 +809,16 @@ html.hs-panic #panic-overlay { opacity: 1; visibility: visible; pointer-events: 
 .hs-set-row i { font-style: normal; font-size: 11.5px; color: var(--fg-3); display: block; }
 .hs-set-row .hs-input { width: auto; min-width: 150px; }
 .hs-set-row select.hs-input { min-width: 168px; }
+/* 设置项图标：让每一项都有视觉锚点，不再是纯文字罗列 */
+.hs-set-label { display: flex; align-items: flex-start; gap: 10px; min-width: 190px; flex: 1; }
+.hs-set-ico {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: 9px; color: var(--accent-2);
+  background: var(--panel-2); border: 1px solid var(--border);
+}
+html[data-theme="dark"] .hs-set-ico { background: rgba(255,255,255,.05); }
+.hs-set-ico svg { width: 16px; height: 16px; display: block; }
+.hs-set-txt { min-width: 0; }
 
 /* 开关 */
 .hs-switch { position: relative; width: 44px; height: 25px; flex: none; }
@@ -736,16 +909,43 @@ html.hs-nomotion *, html.hs-nomotion *::before, html.hs-nomotion *::after {
 .hs-hero { margin: 0 auto 16px; max-width: 1040px; }
 .hs-h1 { font-size: clamp(19px, 2.5vw, 26px); margin-bottom: 5px; letter-spacing: -.01em; }
 .hs-sub { font-size: 12.5px; margin-bottom: 15px; }
+/* 筛选面板是从搜索框【向上】拉出来的浮层：拉出时上面的标题/说明先让位，
+   否则面板会正压在「hentai搜索」这个文字标识上 */
+.hs-h1, .hs-sub { transition: opacity .2s ease, transform .2s ease; }
+html.hs-sheet-open .hs-hero .hs-h1,
+html.hs-sheet-open .hs-hero .hs-sub { opacity: 0; transform: translateY(-6px); pointer-events: none; }
 
 /* ---------- 搜索区 + 「从搜索框顶部向上拉出」的筛选面板（浮层，不推挤结果） ---------- */
 .hs-searchwrap {
-  position: relative; max-width: 1000px; margin: 34px auto 0; z-index: 40;
+  position: relative; max-width: 1000px; margin: 52px auto 0; z-index: 40;
   /* 收起时给拉手条留出流内空间；拉出过程中由 JS 逐步增大，
      相当于把搜索框往下让，面板才有空间向上展开 */
   padding-top: 0;
   transition: padding-top .34s cubic-bezier(.2,.8,.3,1);
 }
 .hs-searchwrap[data-dragging="1"] { transition: none; }
+
+/* 横条与搜索条之间那段 8px（= filters.js 的 SHEET_GAP）由这层「补面」糊住：
+   它只画材质、不吃指针事件、不占流内空间，所以完全不影响 JS 算出来的几何。
+   位置用法：容器 padding box 的底边永远等于搜索条底边（搜索条是最后一行内容），
+   所以 bottom:-1px 正好落在搜索条上沿，高度 10px 恰好盖住 8px 缝 + 2px 压边。
+   第 2 轮：填充压到几乎为零，只留下背景模糊，避免在透明玻璃之间露出一条色带。
+   这条细线本来要落在「搜索框上沿」，但那儿正是 8px 缝与补面所在；
+   最后选择把线画在 .hs-sheet-grab 的下边缘（= 盖子底边，也贴着搜索框顶部），
+   这样收起时正好压出搜索框上沿的轮廓，展开时又正好压住面板内容的上边缘。 */
+.hs-searchwrap::before {
+  content: ""; position: absolute;
+  left: 0; right: 0; bottom: -1px; height: 10px;
+  z-index: 0; pointer-events: none;
+  background: var(--glass-seam);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+          backdrop-filter: blur(20px) saturate(190%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-inner) 45%, transparent);
+  transition: background .2s, opacity .2s;
+}
+/* 拖拽 / 拉出时补面提亮 —— 纯颜色变化，不碰任何尺寸 */
+.hs-searchwrap[data-dragging="1"]::before { background: var(--glass-fill); }
+.hs-searchwrap:has(.hs-sheet[data-open="1"])::before { background: var(--glass-fill); }
 
 .hs-sheet {
   position: absolute; left: 0; right: 0;
@@ -754,66 +954,104 @@ html.hs-nomotion *, html.hs-nomotion *::before, html.hs-nomotion *::after {
   display: flex; flex-direction: column;
 }
 .hs-sheet-shell { position: relative; flex: none; }
+
+/* ==========================================================================
+   第 2 轮：「向上拉出」横条 → 搜索框上沿的一条极细线（+ 沿线滑过的微光）
+   - 视觉全部由 ::after（细线）与 ::before（微光）承担，两者都 absolute，
+     不占流内空间、不参与尺寸计算。
+   - ⚠ padding / 命中区高度 / 无 border 这三点原样保留：
+     filters.js 的 layoutSheet() 用 sheetShell.offsetHeight（= grab 高度），
+     maxPanelH() 用 sheetShell.offsetHeight 兜底，padding-top 亦由 JS 覆写。
+     隐藏文字/抓手/滑块一律只用 display:none，绝不删元素（filters.js 会取引用）。
+   ========================================================================== */
 .hs-sheet-grab {
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  padding: 7px 14px 8px; border-radius: 14px 14px 0 0;
-  background: var(--panel); border: 1px solid var(--border); border-bottom: 0;
-  backdrop-filter: saturate(150%) blur(12px);
+  position: relative;
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 14px 8px;                   /* 尺寸保持不变：命中区仍有 ~30px 高 */
+  border-radius: 24px 24px 0 0;
+  background: transparent;                 /* 不再有独立胶囊底 */
+  border: 0;                               /* 不用 border 顶高度，避免动盒模型 */
+  box-shadow: none;                        /* 细线改由 ::after 画，盒模型零变化 */
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+          backdrop-filter: blur(20px) saturate(190%);
   color: var(--fg-3); font-size: 11.5px; letter-spacing: .02em;
   pointer-events: auto; touch-action: none; cursor: grab;
-  transition: color .16s, border-color .16s, background .16s;
+  /* 反馈只改颜色/亮度：不加位移、不加尺寸动画 */
+  transition: color .16s, opacity .2s, background .2s;
 }
+/* 极细线：贴着搜索框上沿（= grab 下边缘），低于 2px，用渐变当「颜料」而非 border，
+   所以不改变任何盒模型尺寸；低对比，用 token 跟随深浅主题 */
+.hs-sheet-grab::after {
+  content: ""; position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px; z-index: 2; pointer-events: none;
+  background: linear-gradient(180deg,
+    transparent 0,
+    var(--glass-line) 35%,
+    color-mix(in srgb, var(--glass-line) 50%, transparent) 100%);
+  opacity: .9;
+  transition: opacity .2s;
+}
+/* 微光：一段 60–120px 宽的亮色渐变沿线水平循环平移（3.6s / ease-in-out），峰值不透明度很低 */
+.hs-sheet-grab::before {
+  content: ""; position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px; z-index: 3; pointer-events: none;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--glass-line-glow) 42%, transparent) 38%,
+    var(--glass-line-glow) 50%,
+    color-mix(in srgb, var(--glass-line-glow) 42%, transparent) 62%,
+    transparent 100%);
+  background-size: 96px 100%;
+  background-repeat: no-repeat;
+  background-position: -96px 0;
+  opacity: 0;
+  animation: hs-line-glow 3.6s ease-in-out infinite;
+}
+@keyframes hs-line-glow {
+  0%   { background-position: -96px 0; opacity: 0; }
+  18%  { opacity: 1; }
+  82%  { opacity: 1; }
+  100% { background-position: calc(100% + 96px) 0; opacity: 0; }
+}
+/* 悬停 / 键盘聚焦 / 拖动中 / 面板已打开：只提高细线的亮度与不透明度 */
+.hs-sheet-grab:hover::after,
+.hs-sheet-grab:focus-visible::after { opacity: 1; }
+.hs-sheet[data-dragging="1"] .hs-sheet-grab::after,
+.hs-sheet[data-open="1"] .hs-sheet-grab::after { opacity: 1; }
 .hs-sheet-grab:hover, .hs-sheet-grab:focus-visible { color: var(--fg-2); }
 .hs-sheet[data-dragging="1"] .hs-sheet-grab { cursor: grabbing; }
-.hs-sheet[data-open="1"] .hs-sheet-grab { border-color: var(--border-strong); }
-.hs-grip {
-  width: 44px; height: 4px; border-radius: 999px; flex: none;
-  background: var(--border-strong);
-  transition: background .18s, width .22s cubic-bezier(.2,.8,.3,1);
+/* 拉到手（键盘）：给一个不改变盒模型的可见焦点环（外描边，不占流内空间） */
+.hs-sheet-grab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
 }
-.hs-sheet-grab:hover .hs-grip { background: var(--accent); width: 62px; }
-.hs-sheet[data-open="1"] .hs-grip { background: var(--accent); }
-.hs-sheet-label {
-  flex: 1; min-width: 0; padding-right: 40px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.hs-chev { width: 15px; height: 15px; display: block; color: var(--fg-3); flex: none; transition: transform .26s cubic-bezier(.2,.8,.3,1); }
-.hs-chev svg { width: 100%; height: 100%; display: block; }
-.hs-sheet-grab .hs-chev { margin-left: auto; transform: rotate(180deg); }
-.hs-sheet[data-open="1"] .hs-chev { transform: rotate(0deg); }
 
-/* 独立垂直滑块：压在拉手条上，按住上下拖动即可拉出/收起面板 */
-.hs-slider {
-  position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%);
-  width: 34px; height: 54px; z-index: 8;
-  display: flex; align-items: center; justify-content: center;
-  pointer-events: auto; touch-action: none; cursor: ns-resize;
+/* 抓手横杠 / 文字 / 折叠箭头：视觉隐藏，元素保留在 DOM（filters.js 会取 .hs-chev 注入图标） */
+.hs-grip,
+.hs-sheet-label,
+.hs-sheet-grab .hs-chev { display: none; }
+
+/* 筛选计数：贴在这条细线右端的极小 accent 圆点/微型数字，克制、不抢眼。
+   JS 在有筛选条件时取消 hidden，元素与 hidden 语义完全交给 JS，这里只管长相。 */
+.hs-sheet-grab > #filter-count {
+  position: absolute; right: 10px; bottom: 4px; z-index: 4;
+  display: inline-grid; place-items: center;
+  min-width: 14px; height: 14px; padding: 0 3px;
+  border-radius: 999px;
+  background: transparent;                 /* 覆盖 .hs-badge 的品牌渐变：#id 特异性更高，无需提升权重 */
+  color: var(--accent);
+  font-size: 9px; font-weight: 700; letter-spacing: 0; line-height: 1;
+  font-variant-numeric: tabular-nums;
+  box-shadow: none; text-shadow: none;
 }
-.hs-slider-track {
-  position: absolute; width: 4px; height: 34px; border-radius: 999px;
-  background: var(--border-strong);
-  transition: background .18s;
-}
-.hs-slider-thumb {
-  position: absolute; left: 50%; top: 50%; width: 20px; height: 20px;
-  border-radius: 7px; background: var(--panel-solid);
-  border: 1px solid var(--border-strong);
-  box-shadow: 0 3px 10px -3px rgba(0,0,0,.7);
-  display: grid; place-items: center;
-  transform: translate(-50%, -50%) translateY(var(--thumb-y, 9px));
-  transition: transform .26s cubic-bezier(.2,.8,.3,1), background .16s, border-color .16s;
-}
-.hs-slider-thumb::after {
-  content: ""; width: 9px; height: 2px; border-radius: 2px; background: var(--fg-3);
-  box-shadow: 0 -3.5px 0 var(--fg-3), 0 3.5px 0 var(--fg-3);
-}
-.hs-slider:hover .hs-slider-thumb,
-.hs-slider[data-active="1"] .hs-slider-thumb { background: var(--accent); border-color: transparent; }
-.hs-slider:hover .hs-slider-thumb::after,
-.hs-slider[data-active="1"] .hs-slider-thumb::after { background: #fff; box-shadow: 0 -3.5px 0 #fff, 0 3.5px 0 #fff; }
-.hs-slider:hover .hs-slider-track,
-.hs-slider[data-active="1"] .hs-slider-track { background: color-mix(in srgb, var(--accent) 55%, transparent); }
-.hs-slider[data-dragging="1"] .hs-slider-thumb { transition: none; }
+.hs-sheet-grab > #filter-count[hidden] { display: none; }
+
+/* 独立垂直滑块：逻辑保留（JS 仍取 #sheet-slider 引用并绑事件），视觉整体隐藏 */
+.hs-slider,
+.hs-slider-track,
+.hs-slider-thumb { display: none; }
 
 .hs-sheet-body {
   max-height: 0; overflow: hidden auto; visibility: hidden;
@@ -917,7 +1155,9 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
 }
 /* 鼠标停留的那一张过渡到最顶层：抬起 + 放大 + 加重阴影（z-index 变化不可动画，
    但位移/缩放/shadow 都是过渡的，视觉上就是「这张牌被抽到最上面」） */
-.hs-stack > .hs-card.is-raised {
+.hs-stack:hover > .hs-card.is-raised,
+.hs-stack[data-open="1"] > .hs-card.is-raised,
+.hs-stack:focus-within > .hs-card.is-raised {
   z-index: 95 !important;
   transform: translate(calc(var(--i) * var(--fan)), calc(var(--i) * -10px - 9px))
              rotate(calc(var(--i) * var(--rot))) scale(1.05);
@@ -958,6 +1198,77 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
 .hs-banner-slim .hs-banner-actions { gap: 6px; }
 .hs-banner-slim .hs-btn { padding: 7px 13px; font-size: 12px; }
 
+/* ---------- 单页结果的「加载更多」哨兵（不再有翻页器 / 划动手势） ---------- */
+.hs-results-foot {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 16px 4px 6px; text-align: center;
+  font-size: 12px; color: var(--fg-3);
+}
+.hs-results-foot[data-busy="1"] .hs-foot-hint { color: var(--accent); }
+.hs-results-foot[data-busy="1"] .hs-foot-hint::after {
+  content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px;
+  border-radius: 50%; border: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-top-color: var(--accent); vertical-align: -1px;
+  animation: hs-spin .7s linear infinite;
+}
+@keyframes hs-spin { to { transform: rotate(360deg); } }
+/* 命中的检索策略（作品名 / IP 角色 / 体裁题材） */
+.hs-intent { color: var(--accent); font-weight: 650; }
+
+/* ---------- 开始页的随机「贤者名言」（贤者时间 neta，仿贤人语录体） ---------- */
+.hs-sage {
+  max-width: 560px; margin: 2px auto 10px; padding: 4px 10px;
+  text-align: center;
+  animation: hs-drop .32s ease both;
+  background: none; border: 0;
+}
+.hs-sage p { margin: 0; font-size: 15px; line-height: 1.8; color: var(--fg-2); letter-spacing: .01em; }
+.hs-sage cite {
+  display: block; margin-top: 8px; text-align: center;
+  font-size: 11.5px; font-style: normal; color: var(--fg-3);
+}
+html.hs-nomotion .hs-sage { animation: none; }
+
+/* ---------- 放大器：点卡片看作品基本信息（就是「卡片等比放大」那一版） ---------- */
+/* 位置由 JS 贴着被点的卡片计算（FLIP 动画从卡片长出来），所以这里取消 .hs-modal 的居中网格；
+   同时**不做背景遮罩、不做背景虚化**：放大的是卡片本身，后面的页面保持原样可见 */
+.hs-cm { z-index: 260; display: block; padding: 0; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.hs-cm-card {
+  position: absolute; left: 8px; top: 8px;
+  width: min(360px, calc(100vw - 16px)); max-height: min(92vh, 880px);
+  overflow: auto; display: block;
+  background: var(--panel-solid); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  animation: hs-pop .2s cubic-bezier(.2,.8,.3,1);
+}
+.hs-cm-close {
+  position: absolute; top: 9px; right: 9px; z-index: 6;
+  background: rgba(8,8,14,.62); backdrop-filter: blur(6px);
+}
+.hs-cm-img {
+  position: relative; background: var(--panel-2);
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+/* 封面保持 5:7 等比，靠高度自适应（不裁切、不拉扁） */
+.hs-cm-img img {
+  height: 42vh; max-height: 400px; width: auto; max-width: 100%;
+  display: block; object-fit: contain; transition: filter .24s ease;
+}
+.hs-cm-img .hs-card-badges { top: 9px; left: 9px; max-width: calc(100% - 50px); }
+.hs-cm-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.hs-cm-title { font-size: 14.5px; font-weight: 700; line-height: 1.42; word-break: break-word; padding-right: 20px; }
+.hs-cm-sub { font-size: 11.5px; color: var(--fg-3); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hs-cm-sub .hs-dot { width: 3px; height: 3px; border-radius: 50%; background: var(--fg-3); }
+.hs-cm-tags { margin-top: 0; }
+.hs-cm-meta { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; font-size: 12px; }
+.hs-cm-meta dt { color: var(--fg-3); white-space: nowrap; }
+.hs-cm-meta dd { margin: 0; color: var(--fg-2); word-break: break-word; }
+.hs-cm-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 2px; padding-top: 8px; }
+.hs-cm-actions .hs-btn { padding: 7px 12px; font-size: 12px; }
+/* 放大视图里的封面 / 角标 / 标签沿用同一套模糊开关 */
+/* 放大视图里封面 / 角标 / 标签**不再模糊**：用户是主动点开的，这里给清晰原图 */
+
+
 /* ---------- 本地网关状态 ---------- */
 .hs-gwstate { font-family: var(--mono); font-size: 11px; letter-spacing: 0; }
 .hs-gwstate[data-state="ok"] { color: var(--ok); }
@@ -984,4 +1295,42 @@ html[data-theme="dark"] .hs-csrow { background: rgba(0,0,0,.24); }
 /* ---------- 结果区更紧凑 ---------- */
 .hs-results-head { margin-bottom: 12px; }
 .hs-results-meta { font-size: 14px; }
+
+/* ==========================================================================
+   搜索区收尾：液态玻璃的动效降级 + 少量微调
+   （只涉及 .hs-searchwrap / .hs-searchbar / .hs-sb-* / .hs-sheet-grab|shell|body|label / .hs-grip|chev|slider）
+   ========================================================================== */
+
+/* 拉手细线的键盘焦点环在窄屏上向内收 1px，避免被 .hs-sheet 的浮层边界裁掉 */
+@media (max-width: 560px) {
+  .hs-sheet-grab:focus-visible { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 60%, transparent); }
+}
+/* 不支持 backdrop-filter 的浏览器（多见于旧 WebKit）对「透明玻璃」几乎无感，
+   这里给拉手细线补一层 --glass-line 的实描边，避免整条线完全消失 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .hs-sheet-grab::after { background: var(--glass-line); }
+}
+
+/* 动效降级：类开关 + 系统偏好，两套都要把动效真正关掉（不只是 0.001ms）
+   hs-sweep / hs-line-glow 都是无限循环动画，降级成 0.001ms 仍会反复触发，这里直接停掉 */
+html.hs-nomotion .hs-sb-go[data-busy="1"] .hs-sb-ring { display: none; }
+html.hs-nomotion .hs-sb-go:hover { transform: none; }
+html.hs-nomotion .hs-searchbar::after { opacity: .85; }
+/* 细线上的微光：降级时彻底停住，并落回一段静态柔光 */
+html.hs-nomotion .hs-sheet-grab::before {
+  animation: none;
+  opacity: 1;
+  background-position: 50% 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hs-sb-go[data-busy="1"] .hs-sb-ring { display: none; }
+  .hs-sb-go:hover { transform: none; }
+  .hs-searchbar::after { opacity: .85; }
+  .hs-sheet-grab::before {
+    animation: none;
+    opacity: 1;
+    background-position: 50% 0;
+  }
+}
 

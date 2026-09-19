@@ -21,8 +21,65 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
+
+/* ------------------------------ 出口代理 ------------------------------
+   本机若挂着系统代理（Clash / v2ray 之类，Chrome 走它、Node 默认不走），
+   网关必须也走，否则 nhentai / E-Hentai / 紳士漫畫 / kemono 这些站全部
+   DNS 不可达。这里自动探测常见的本地代理端口，命中就带着环境变量重启自己
+   （Node 的 NODE_USE_ENV_PROXY 只在启动时读取，所以必须重启而不是运行时设）。
+   --------------------------------------------------------------------- */
+const PROXY_PORTS = [7897, 7890, 7891, 10809, 10808, 1080, 2080, 8889, 8118, 20171, 4780, 1087];
+const EGRESS_TARGET = 'e-hentai.org:443';   // 本机 DNS 打不开的站，只有代理通才算真通
+
+function testProxyPort(port, timeout) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = ok => { if (!done) { done = true; resolve(ok); } };
+    let req;
+    try {
+      req = http.request({ host: '127.0.0.1', port: port, method: 'CONNECT', path: EGRESS_TARGET, timeout: timeout || 3000 });
+    } catch (e) { return finish(false); }
+    req.on('connect', (res, socket) => { try { socket.destroy(); } catch (e) {} finish(res.statusCode === 200); });
+    req.on('timeout', () => { try { req.destroy(); } catch (e) {} finish(false); });
+    req.on('error', () => finish(false));
+    req.end();
+  });
+}
+
+async function pickLocalProxy() {
+  for (const port of PROXY_PORTS) {
+    /* eslint-disable no-await-in-loop */
+    if (await testProxyPort(port)) return 'http://127.0.0.1:' + port;
+  }
+  return '';
+}
+
+/* 启动时先决定出口；需要的话重启自己一次，让 Node 在启动阶段就拿到代理配置 */
+function ensureEgress() {
+  if (String(process.env.HS_GW_NO_PROXY || '') === '1' || argv.indexOf('--no-proxy') >= 0) {
+    return Promise.resolve('direct');
+  }
+  if (process.env.HS_GW_PROXIED === '1') return Promise.resolve('proxy');
+  const explicit = argOf('proxy') || process.env.HTTPS_PROXY || process.env.https_proxy ||
+    process.env.HTTP_PROXY || process.env.http_proxy || '';
+  return Promise.resolve(explicit || pickLocalProxy()).then(proxy => {
+    if (!proxy) return 'direct';
+    log('检测到可用出口代理：' + proxy + '，带着它重启网关（Node 只在启动时读代理配置）…');
+    const env = Object.assign({}, process.env, {
+      NODE_USE_ENV_PROXY: '1',
+      HTTPS_PROXY: proxy, HTTP_PROXY: proxy, ALL_PROXY: proxy,
+      NO_PROXY: 'localhost,127.0.0.1,::1',
+      HS_GW_PROXIED: '1'
+    });
+    const child = spawn(process.execPath, [__filename].concat(process.argv.slice(2)), { env: env, stdio: 'inherit' });
+    child.on('exit', code => process.exit(code == null ? 0 : code));
+    return 'reexec';
+  });
+}
 
 /* ------------------------------ 配置 ------------------------------ */
 const argv = process.argv.slice(2);
@@ -34,7 +91,7 @@ const PORT = parseInt(argOf('port') || process.env.PORT || '8788', 10);
 const ROOT = path.resolve(argOf('root') || path.join(__dirname, '..'));
 const UA_CHROME = 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ1A.230305.002; wv) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.0.0 Mobile Safari/537.36';
-const GW_VERSION = '1.0.0';
+const GW_VERSION = '1.1.0';
 
 const state = {
   picacgToken: String(process.env.PICACG_TOKEN || '').trim(),
@@ -95,6 +152,8 @@ function withTimeout(ms) {
   const t = setTimeout(() => ctrl.abort(new Error('timeout')), ms);
   return { signal: ctrl.signal, done: () => clearTimeout(t) };
 }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /** 统一的出站请求（Node 18+ 自带 fetch / undici） */
 async function outFetch(url, opts) {
@@ -492,8 +551,618 @@ async function proxyFetch(url, referer) {
   }
 }
 
-/* ------------------------------ HTTP 服务 ------------------------------ */
-const MIME = {
+/* ==========================================================================
+   Kemono（kemono.cr）—— 存档站的公开 JSON API
+     GET /api/v1/posts?q=<关键词>&o=<偏移>   →  { count, true_count, posts:[…] }
+     每页固定 50 条；返回体没有 ACAO，所以必须由网关代取
+   ========================================================================== */
+const KEMONO_HOSTS = ['kemono.cr', 'kemono.su', 'kemono.party'];
+
+function kemonoCover(p) {
+  const file = p && p.file;
+  let rel = (file && file.path) || '';
+  if (!rel && Array.isArray(p.attachments) && p.attachments.length) rel = p.attachments[0].path || '';
+  if (!rel) return '';
+  if (/^https?:/i.test(rel)) return rel;
+  return 'https://' + KEMONO_HOSTS[0] + '/data' + (rel.charAt(0) === '/' ? rel : '/' + rel);
+}
+
+async function kemonoSearch(query) {
+  const q = String(query.q || '').trim();
+  if (!q) throw new Error('缺少关键词 q');
+  const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
+  const offset = (page - 1) * 50;
+  let lastErr = null;
+  for (const host of KEMONO_HOSTS) {
+    const url = 'https://' + host + '/api/v1/posts?q=' + encodeURIComponent(q) + '&o=' + offset;
+    try {
+      const r = await outFetch(url, { timeout: 20000, headers: { accept: 'application/json' } });
+      if (r.status === 404) throw new Error('404');
+      const j = r.json();
+      const posts = (j && (j.posts || j.results)) || (Array.isArray(j) ? j : []);
+      if (query.raw) return j;
+      const items = posts.map(p => {
+        const id = String(p.id || '');
+        const svc = String(p.service || '');
+        const title = String(p.title || '').replace(/\s+/g, ' ').trim();
+        return {
+          id: id,
+          title: title || (svc + ' #' + id),
+          cover: kemonoCover(p),
+          url: 'https://' + host + '/' + svc + '/user/' + p.user + '/post/' + id,
+          artist: '',
+          tags: [svc].filter(Boolean),
+          pages: null,
+          note: 'Kemono · ' + svc
+        };
+      }).filter(x => x.id && x.title);
+      return {
+        source: 'kemono', host: host, total: (j && (j.true_count || j.count)) || items.length,
+        items: items, trueTotal: (j && j.true_count) || null
+      };
+    } catch (e) { lastErr = new Error(host + '：' + ((e && e.message) || e)); }
+  }
+  throw lastErr || new Error('Kemono 不可达');
+}
+
+/* ==========================================================================
+   Pixiv（www.pixiv.net）—— 官方搜索 AJAX 接口
+     GET /ajax/search/artworks/{关键词}?word=<关键词>&order=date_d
+         &mode=<all|r18>&p=<页码>&s_mode=s_tag&type=all&lang=zh
+     · 响应 JSON：优先 body.illustManga.data，兼容旧版 body.illust.data
+     · i.pximg.net 有防盗链（请求不带 Referer 直接 403），所以封面统一返回
+       本网关的相对代理地址，由 /api/proxy 带上 Referer 去取
+     · mode=r18 必须带用户自己的登录 cookie（PHPSESSID），否则固定 0 条
+   ========================================================================== */
+async function pixivSearch(query) {
+  const q = String(query.q || '').trim();
+  if (!q) throw new Error('缺少关键词 q');
+  const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
+  const mode = String(query.mode || 'all') === 'r18' ? 'r18' : 'all';
+  const cookie = String(query.cookie || '').trim();
+  const api = 'https://www.pixiv.net/ajax/search/artworks/' + encodeURIComponent(q) +
+    '?word=' + encodeURIComponent(q) + '&order=date_d&mode=' + mode + '&p=' + page +
+    '&s_mode=s_tag&type=all&lang=zh';
+  const headers = {
+    'user-agent': UA_CHROME,
+    referer: 'https://www.pixiv.net/',
+    accept: 'application/json'
+  };
+  if (cookie) headers.cookie = cookie;
+
+  let body;
+  try {
+    const r = await outFetch(api, { headers: headers, timeout: 15000 });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    body = r.json();
+  } catch (e) {
+    throw new Error('Pixiv 请求失败：' + ((e && e.message) || e));
+  }
+  if (!body || typeof body !== 'object' || body.error === true) {
+    throw new Error('Pixiv 返回错误：' + ((body && body.message) || '响应异常'));
+  }
+
+  const inner = (body.body && (body.body.illustManga || body.body.illust)) || {};
+  const rows = asArray(inner.data).filter(x => x && typeof x === 'object');
+  if (!rows.length) {
+    if (mode === 'r18' && !cookie) {
+      throw new Error('Pixiv 的 R-18 检索需要登录 cookie（设置 → 信息源 → Pixiv 填 PHPSESSID）');
+    }
+    throw new Error('Pixiv 返回 0 条');
+  }
+
+  const items = rows.map(item => {
+    const id = String(item.id || '');
+    const tags = asArray(item.tags).map(t => String(t)).filter(Boolean);
+    /* R-18 标记只按数据本身判定：pixiv 在未登录时对 mode=r18 会**静默回落成全年龄结果**
+       （实测返回的 id 与 mode=all 完全一致），所以不能拿"我请求了 r18"当依据，
+       否则会把全年龄条目误标成 R-18。xRestrict：0=全年龄 1=R-18 2=R-18G */
+    const isR18 = Number(item.xRestrict || 0) >= 1 ||
+      tags.some(t => /^r-?18g?$/i.test(String(t).trim()));
+    if (isR18 && tags.indexOf('R-18') < 0) tags.push('R-18');
+    const note = 'Pixiv 官方搜索 · ' + (isR18 ? 'R-18' : '全年龄') +
+      (mode === 'r18' && !cookie ? '（未登录，R-18 已回落为全年龄）' : '');
+    return {
+      id: id,
+      title: item.title || '',
+      /* i.pximg.net 防盗链：封面必须由网关带 Referer 代取，这里给相对代理地址 */
+      cover: item.url ? ('/api/proxy?url=' + encodeURIComponent(item.url) +
+        '&referer=' + encodeURIComponent('https://www.pixiv.net/')) : '',
+      url: 'https://www.pixiv.net/artworks/' + id,
+      artist: item.userName || '',
+      pages: null,
+      /* 分级如实上报：xRestrict / R-18 标签说了算（未登录时 pixiv 会静默回落成全年龄，
+         这时就是 false —— 前端默认会把非成人向筛掉，这是有意的，别用请求参数反推） */
+      adult: isR18,
+      tags: tags,
+      cats: [],
+      note: note
+    };
+  }).filter(x => x.id && x.title);
+
+  return { source: 'pixiv', host: 'www.pixiv.net', total: rows.length, items: items };
+}
+
+/* ==========================================================================
+   Cloudflare 人机验证求解器（用本机 Chrome 跑一遍验证）
+     Node 不会执行 JS，「Just a moment…」这类挑战永远过不去 —— 这正是
+     porn-comic 一直报错的根因。这里用 CDP 驱动本机已装的 Chrome/Edge：
+       --headless=new + 真身 UA + 反自动化补丁 → WebSocket(CDP) 取回渲染好的 HTML
+     Node 22+ 自带全局 WebSocket，所以依然零 npm 依赖。
+
+     实测要点（porn-comic 这个站）：
+       · 它不发 cf_clearance，每个新 URL 都要自己过一次验证；
+       · 同一浏览器里连续硬闯，CF 会越卡越死，所以这里做了结果缓存 + 失败冷却，
+         绝不连着重试（重试只会把 IP 名声烧掉）；
+       · profile 会攒下过期状态，所以每次启动都用全新 profile，用完即删。
+   ========================================================================== */
+const CF_RENDER_TTL = 5 * 60e3;      /* 同一 URL 5 分钟内直接用缓存 */
+const CF_RENDER_MAX = 40;            /* 缓存条数上限 */
+const CF_FAIL_COOLDOWN = 90e3;       /* 验证失败后 90 秒内不再硬闯 */
+const cfCache = new Map();           /* url -> { html, at } */
+let cfCooldownUntil = 0;
+let cfLastErr = '';
+const CF_CHALLENGE_RE = /just a moment|请稍候|attention required|checking your (browser|connection)|verifying you are human|正在验证|人机验证|cf-chl|_cf_chl_/i;
+
+let cfProfileDir = '';
+const CF_PROFILE_PREFIX = 'erometa-cf-';
+
+/** 清掉历史残留的 profile：Chrome 一个 profile 能写到 100MB，
+ *  一次性浏览器意味着每个搜索都会新建一个，不清理迟早把磁盘塞满。 */
+function cfSweepProfiles(keepDir) {
+  try {
+    const base = os.tmpdir();
+    for (const name of fs.readdirSync(base)) {
+      if (name.indexOf(CF_PROFILE_PREFIX) !== 0) continue;
+      const full = path.join(base, name);
+      if (full === keepDir) continue;
+      let st;
+      try { st = fs.statSync(full); } catch (e) { continue; }
+      if (Date.now() - st.mtimeMs < 15 * 60e3) continue;   /* 太新的可能是别的网关正在用 */
+      try { fs.rmSync(full, { recursive: true, force: true }); } catch (e) {}
+    }
+  } catch (e) {}
+}
+
+/* headless 会被 Cloudflare 直接识破；这几处是最常被查的指纹，逐个抹平 */
+const CF_STEALTH_JS = `(function(){
+  var d = Object.defineProperty;
+  try { d(navigator,'webdriver',{get:function(){return false;},configurable:true}); } catch(e){}
+  try { d(navigator,'languages',{get:function(){return ['en-US','en'];},configurable:true}); } catch(e){}
+  try { d(navigator,'hardwareConcurrency',{get:function(){return 8;},configurable:true}); } catch(e){}
+  try { d(navigator,'deviceMemory',{get:function(){return 8;},configurable:true}); } catch(e){}
+  try { d(navigator,'plugins',{get:function(){
+      var a=[{name:'PDF Viewer',filename:'internal-pdf-viewer',description:'Portable Document Format'},
+             {name:'Chrome PDF Viewer',filename:'internal-pdf-viewer',description:'Portable Document Format'},
+             {name:'Chromium PDF Viewer',filename:'internal-pdf-viewer',description:'Portable Document Format'}];
+      a.item=function(i){return a[i]||null;};
+      a.namedItem=function(n){for(var i=0;i<a.length;i++){if(a[i].name===n)return a[i];}return null;};
+      return a;},configurable:true}); } catch(e){}
+  try { d(navigator,'mimeTypes',{get:function(){var a=[];a.item=function(){return null;};a.namedItem=function(){return null;};return a;},configurable:true}); } catch(e){}
+  try { if(!window.chrome){window.chrome={runtime:{},app:{isInstalled:false},csi:function(){},loadTimes:function(){}};} } catch(e){}
+  try { var q=navigator.permissions&&navigator.permissions.query;
+        if(q){navigator.permissions.query=function(p){return p&&p.name==='notifications'
+          ?Promise.resolve({state:(window.Notification&&Notification.permission)||'default',onchange:null})
+          :q.call(navigator.permissions,p);};} } catch(e){}
+  try { [WebGLRenderingContext,WebGL2RenderingContext].forEach(function(C){
+          if(!C||!C.prototype.getParameter)return; var g=C.prototype.getParameter;
+          C.prototype.getParameter=function(p){
+            if(p===37445)return 'Intel Inc.';
+            if(p===37446)return 'Intel Iris OpenGL Engine';
+            return g.call(this,p);};}); } catch(e){}
+})();`;
+
+const CF_PROBE_JS = `(function(){
+  var t = document.title || '';
+  var el = document.querySelector('#challenge-running,#challenge-stage,#cf-challenge-running,.cf-error-title,[id^="cf-chl"]');
+  return { title: t, href: location.href, dom: !!el, body: document.body ? document.body.innerHTML.length : 0 };
+})()`;
+
+function cfChromePath() {
+  const cands = [
+    process.env.HS_CHROME, process.env.CHROME_PATH,
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Google\\Chrome\\Application\\chrome.exe') : '',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  ];
+  for (const c of cands) { if (c && fs.existsSync(c)) return c; }
+  return '';
+}
+
+/** 能不能用；不能用时返回原因（给前端看的提示） */
+function cfUnavailableReason() {
+  if (typeof WebSocket === 'undefined') return '当前 Node 版本没有全局 WebSocket（需要 22+）';
+  if (!cfChromePath()) return '没找到本机 Chrome / Edge（可用 HS_CHROME 环境变量指定）';
+  if (String(process.env.HS_CF_SOLVER || '') === '0') return '已用 HS_CF_SOLVER=0 关闭';
+  return '';
+}
+
+const cfState = {
+  proc: null, ws: null, ua: '', uaParams: null,
+  ready: null, chain: Promise.resolve(), nextId: 0, pending: new Map(),
+  timer: null, solvedAt: 0, renders: 0
+};
+
+function cdpSend(method, params, sid) {
+  const id = ++cfState.nextId;
+  const msg = { id: id, method: method, params: params || {} };
+  if (sid) msg.sessionId = sid;
+  return new Promise((res, rej) => {
+    cfState.pending.set(id, { res: res, rej: rej });
+    try { cfState.ws.send(JSON.stringify(msg)); }
+    catch (e) { cfState.pending.delete(id); return rej(new Error('Chrome 连接已断开')); }
+    setTimeout(() => {
+      if (cfState.pending.has(id)) { cfState.pending.delete(id); rej(new Error(method + ' 超时')); }
+    }, 40000);
+  });
+}
+
+function cdpConnect(url) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const ws = new WebSocket(url);
+    cfState.ws = ws;
+    ws.onopen = () => { if (!settled) { settled = true; resolve(); } };
+    ws.onerror = () => { if (!settled) { settled = true; reject(new Error('连不上 Chrome 调试端口')); } };
+    ws.onmessage = ev => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      const p = cfState.pending.get(m.id);
+      if (!p) return;
+      cfState.pending.delete(m.id);
+      if (m.error) p.rej(new Error(m.error.message)); else p.res(m.result);
+    };
+    ws.onclose = () => {
+      cfState.ws = null; cfState.ready = null;
+      if (!settled) { settled = true; reject(new Error('Chrome 调试连接被关闭')); }
+      for (const p of cfState.pending.values()) p.rej(new Error('Chrome 调试连接已断开'));
+      cfState.pending.clear();
+    };
+  });
+}
+
+function cfStop() {
+  const proc = cfState.proc;
+  cfState.proc = null;
+  try { if (cfState.ws) cfState.ws.close(); } catch (e) {}
+  cfState.ws = null; cfState.ready = null;
+  if (proc) { try { proc.kill(); } catch (e) {} }
+  /* 用完即删：留着只会让下一次验证过不去。Chrome 退出要一点时间，稍后再删一次 */
+  const dir = cfProfileDir;
+  cfProfileDir = '';
+  if (dir && !process.env.HS_CF_PROFILE) {
+    const wipe = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {} };
+    setTimeout(wipe, 2500).unref?.();
+    wipe();
+  }
+}
+process.on('exit', cfStop);
+
+/** Chrome 安装目录里的版本号子目录（用来拼一个「真身」UA） */
+function cfChromeVersion(exe) {
+  try {
+    const vers = fs.readdirSync(path.dirname(exe))
+      .filter(n => /^\d+\.\d+\.\d+\.\d+$/.test(n))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    if (vers.length) return vers[0];
+  } catch (e) {}
+  return '';
+}
+
+async function cfLaunch() {
+  const bad = cfUnavailableReason();
+  if (bad) throw new Error('无法过 Cloudflare 验证：' + bad);
+  const exe = cfChromePath();
+  /* 每次都用全新 profile：残留的 CF 状态会让验证一直卡住（实测）。
+     目录名固定成每个进程一个，同时扫掉历史残留，保证磁盘上最多只留一份。 */
+  const pinned = String(process.env.HS_CF_PROFILE || '');
+  cfProfileDir = pinned || path.join(os.tmpdir(), CF_PROFILE_PREFIX + process.pid);
+  if (!pinned) { try { fs.rmSync(cfProfileDir, { recursive: true, force: true }); } catch (e) {} }
+  try { fs.mkdirSync(cfProfileDir, { recursive: true }); } catch (e) {}
+  if (!pinned) cfSweepProfiles(cfProfileDir);
+
+  /* --user-agent 必须启动时就给：只靠 CDP 覆盖的话进程级 UA 仍是 HeadlessChrome，
+     第一次导航能过、第二次就被 Cloudflare 拦下（实测如此）。 */
+  const ver0 = cfChromeVersion(exe);
+  const major0 = ver0 ? ver0.split('.')[0] : '131';
+  const launchUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/' +
+    major0 + '.0.0.0 Safari/537.36';
+
+  /* HS_CF_HEADFUL=1：真·有头 Chrome 名声更好，headless 被卡时可以作为兜底 */
+  const headful = String(process.env.HS_CF_HEADFUL || '') === '1';
+  const args = [
+    '--remote-debugging-port=0',
+    '--user-data-dir=' + cfProfileDir,
+    '--user-agent=' + launchUA,
+    '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+    '--mute-audio', '--disable-blink-features=AutomationControlled',
+    '--window-size=1280,900', '--lang=en-US',
+    'about:blank'
+  ];
+  if (headful) args.push('--window-position=-2400,-2400');
+  else args.unshift('--headless=new');
+  /* 站点的出口必须和网关一致：走了代理就用同一个代理 */
+  const proxy = (process.env.HS_GW_PROXIED === '1' && process.env.HTTPS_PROXY) || argOf('proxy') || '';
+  if (proxy) args.push('--proxy-server=' + proxy);
+
+  log('启动本机 Chrome 过 Cloudflare 验证（首次约 6 秒）…');
+  const proc = spawn(exe, args, { stdio: 'ignore' });
+  proc.on('exit', () => {
+    if (cfState.proc === proc) {
+      cfState.proc = null; cfState.ws = null; cfState.ready = null;
+    }
+  });
+  proc.on('error', e => log('Chrome 启动失败：' + ((e && e.message) || e)));
+  cfState.proc = proc;
+
+  const portFile = path.join(cfProfileDir, 'DevToolsActivePort');
+  try { fs.rmSync(portFile, { force: true }); } catch (e) {}   /* 别读到上一次留下的旧端口 */
+  let port = '', wsPath = '/devtools/browser';
+  for (let i = 0; i < 100; i++) {
+    await sleep(200);
+    if (fs.existsSync(portFile)) {
+      const txt = fs.readFileSync(portFile, 'utf8').split('\n');
+      if ((txt[0] || '').trim()) {
+        port = txt[0].trim();
+        wsPath = (txt[1] || '').trim() || '/devtools/browser';   /* 第二行是带 UUID 的调试路径，必须用 */
+        break;
+      }
+    }
+    if (proc.exitCode !== null) break;
+  }
+  if (!port) {
+    cfStop();
+    throw new Error('Chrome 没能启动（调试端口未就绪）。若网关在沙箱/受限环境里运行，请放行它启动浏览器进程');
+  }
+
+  let ver;
+  try {
+    await cdpConnect('ws://127.0.0.1:' + port + wsPath);
+    ver = await cdpSend('Browser.getVersion');
+  } catch (e) {
+    cfStop();                                   /* 起不来就别把僵尸 Chrome 留在那儿占着 profile */
+    throw new Error('Chrome 调试连接失败（' + ((e && e.message) || e) + '）');
+  }
+  /* headless 的 UA 里带 HeadlessChrome，是最好认的破绽，直接换成真身 */
+  const ua = String(ver.userAgent || '').replace(/HeadlessChrome/g, 'Chrome');
+  const full = (String(ver.product || '').match(/\/([\d.]+)$/) || [])[1] || (ver0 || '0.0.0.0');
+  const major = (ua.match(/Chrome\/(\d+)/) || [])[1] || full.split('.')[0];
+
+  cfState.ua = ua;
+  /* 每次取页面都新开一个 target：同一个 target 连着导航三次以后 CF 会开始拒绝
+     （实测第二次还行、第三次就卡在「Just a moment…」），新 target 则一直好使。 */
+  cfState.uaParams = {
+    userAgent: ua,
+    acceptLanguage: 'en-US,en;q=0.9',
+    platform: 'Win32',
+    userAgentMetadata: {
+      brands: [
+        { brand: 'Chromium', version: major },
+        { brand: 'Google Chrome', version: major },
+        { brand: 'Not?A_Brand', version: '24' }
+      ],
+      fullVersionList: [
+        { brand: 'Chromium', version: full },
+        { brand: 'Google Chrome', version: full },
+        { brand: 'Not?A_Brand', version: '24.0.0.0' }
+      ],
+      fullVersion: full, platform: 'Windows', platformVersion: '15.0.0',
+      architecture: 'x86', model: '', mobile: false, bitness: '64', wow64: false
+    }
+  };
+  log('Chrome 就绪：' + ua.replace(/^.*?Chrome\//, 'Chrome/'));
+}
+
+/** 开一个「调教好」的新标签页（新 target 才有干净的反检测环境） */
+async function cfOpenPage() {
+  const t = await cdpSend('Target.createTarget', { url: 'about:blank' });
+  const at = await cdpSend('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+  const sid = at.sessionId;
+  await cdpSend('Page.enable', {}, sid);
+  await cdpSend('Network.enable', {}, sid);
+  await cdpSend('Emulation.setUserAgentOverride', cfState.uaParams, sid);
+  await cdpSend('Page.addScriptToEvaluateOnNewDocument', { source: CF_STEALTH_JS }, sid);
+  return { targetId: t.targetId, sid: sid };
+}
+
+async function cfClosePage(page) {
+  try { await cdpSend('Target.closeTarget', { targetId: page.targetId }); } catch (e) {}
+}
+
+const cfEval = async (expr, sid) => {
+  const r = await cdpSend('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, sid);
+  if (r && r.exceptionDetails) return undefined;
+  return r && r.result ? r.result.value : undefined;
+};
+
+function cfCacheGet(url) {
+  const hit = cfCache.get(url);
+  if (hit && Date.now() - hit.at < CF_RENDER_TTL) return hit.html;
+  if (hit) cfCache.delete(url);
+  return '';
+}
+function cfCacheSet(url, html) {
+  cfCache.set(url, { html: html, at: Date.now() });
+  while (cfCache.size > CF_RENDER_MAX) cfCache.delete(cfCache.keys().next().value);
+}
+function cfCooldownLeft() { return Math.max(0, cfCooldownUntil - Date.now()); }
+
+/** 一次性闯关：起一个全新的 Chrome（全新 profile）→ 过验证 → 取 HTML → 关掉。
+ *  为什么要「一次性」：实测这个站只在浏览器刚起来的那一次验证上放行，
+ *  同一个 Chrome 里连着闯第二次就会被 CF 卡死在「Just a moment…」；
+ *  换新浏览器（含新 profile）则次次都过。所以这里不省这点启动开销。
+ *  失败不重试，直接进冷却 —— 连着重试只会把出口 IP 的名声烧得更差。 */
+async function cfRender(url, opt) {
+  opt = opt || {};
+  const timeout = opt.timeout || 40000;
+  if (!opt.force) {
+    const cached = cfCacheGet(url);
+    if (cached) { log('CF 缓存命中：' + url.replace(/^https:\/\/[^/]+/, '')); return cached; }
+    const left = cfCooldownLeft();
+    if (left > 0) {
+      throw new Error('Cloudflare 刚拒绝了验证，冷却中（还有 ' + Math.ceil(left / 1000) + ' 秒）' +
+        (cfLastErr ? '：' + cfLastErr : ''));
+    }
+  }
+  const task = async () => {
+    await cfLaunch();                       /* 每次都用「刚起来的」浏览器 */
+    const page = await cfOpenPage();
+    let last = null;
+    try {
+      await cdpSend('Page.navigate', { url: url }, page.sid);
+      const deadline = Date.now() + timeout;
+      let seenTitle = '';
+      while (Date.now() < deadline) {
+        await sleep(600);
+        const st = await cfEval(CF_PROBE_JS, page.sid);
+        if (!st || typeof st !== 'object') continue;
+        last = st;
+        if (st.title !== seenTitle) {
+          seenTitle = st.title;
+          log('  CF[' + url.replace(/^https:\/\/[^/]+/, '') + '] ' + Math.round((Date.now() - (deadline - timeout)) / 1000) + 's 标题="' + String(st.title).slice(0, 60) + '" len=' + st.body + ' dom=' + st.dom);
+        }
+        if (/^chrome-error:/i.test(String(st.href))) throw new Error('Chrome 打不开这个地址（' + st.href + '）');
+        if (!st.dom && !CF_CHALLENGE_RE.test(String(st.title)) && st.body > 500) {
+          await sleep(900);                       /* 等首屏列表补完 */
+          const html = await cfEval('document.documentElement.outerHTML', page.sid);
+          if (html) {
+            cfState.renders++; cfState.solvedAt = Date.now();
+            cfCacheSet(url, String(html));
+            return String(html);
+          }
+        }
+      }
+      throw new Error('Cloudflare 验证没通过（' + ((last && last.title) || '无标题') + '）');
+    } finally {
+      await cfClosePage(page);
+      cfStop();                                  /* 关掉浏览器并删掉 profile，下次重新来 */
+    }
+  };
+  const p = cfState.chain.then(task, task);
+  cfState.chain = p.then(() => undefined, () => undefined);
+  return p.then(html => html, e => {
+    cfCooldownUntil = Date.now() + CF_FAIL_COOLDOWN;
+    cfLastErr = (e && e.message) || String(e);
+    log('CF 验证失败，' + Math.round(CF_FAIL_COOLDOWN / 1000) + ' 秒内不再硬闯：' + cfLastErr);
+    throw e;
+  });
+}
+
+/* ==========================================================================
+   porn-comic.com —— 纯 HTML 站，全站前置 Cloudflare 人机验证
+     搜索入口 /q/{关键词}-{页}.html（302 到 /tags/{词}.html 或 search 子域）
+     兜底 /tags/{关键词}.html、/language/{语言}.html、/h/ 列表
+     列表结构：<a class="thumb" href="/h/872078.html" title="…"><img src="…"></a>
+     先用普通请求打；一旦被 CF 挡住，就自动切到上面的 Chrome 通道（并记住）
+   ========================================================================== */
+const PC_BASE = 'https://porn-comic.com';
+const PC_HEADERS = {
+  accept: 'text/html,application/xhtml+xml',
+  referer: PC_BASE + '/',
+  cookie: 'age_verified=1; adult=1'
+};
+
+function pcSlug(q) {
+  return String(q || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-_]/g, '');
+}
+
+function pcParse(html, host, limit) {
+  const base = 'https://' + (host || 'porn-comic.com');
+  const out = [], seen = {};
+  const re = /<a\b[^>]*class="[^"]*\bthumb\b[^"]*"[^>]*>[\s\S]{0,400}?<\/a>/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const seg = m[0];
+    const href = (seg.match(/href="([^"]+)"/) || [])[1] || '';
+    if (!/^\/(h|hentai|gif)\/\d+\.html$/.test(href)) continue;
+    const id = (href.match(/\/(\d+)\.html/) || [])[1] || href;
+    if (seen[id]) continue;
+    seen[id] = 1;
+    const imgTag = (seg.match(/<img\b[^>]*>/) || [])[0] || '';
+    const cover = (imgTag.match(/src="([^"]+)"/) || [])[1] || '';
+    let title = (seg.match(/title="([^"]*)"/) || [])[1] || (imgTag.match(/alt="([^"]*)"/) || [])[1] || '';
+    title = title.replace(/&amp;/g, '&').replace(/&#0?39;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+    out.push({
+      id: id, title: title || ('porn-comic #' + id), cover: cover,
+      url: base + href, artist: '', tags: [], pages: null, note: 'porn-comic · HTML'
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/* 一旦被 CF 挡过，后续请求直接走 Chrome，不再白等一次普通请求 */
+let pcNeedsRender = false;
+
+/* 判断是不是 CF 的验证中间页。
+   注意：正常页面里也会引用 cdn-cgi/challenge-platform 的脚本，所以绝不能只看这个字符串 ——
+   先认列表特征（a.thumb / 作品链接），有列表就一定是真页面。 */
+function pcIsChallenge(html) {
+  const s = String(html || '');
+  if (/class="[^"]*\bthumb\b/.test(s)) return false;
+  if (/href="\/(h|hentai|gif)\/\d+\.html"/.test(s)) return false;
+  if (/<title>\s*(just a moment|请稍候|attention required)/i.test(s)) return true;
+  if (/id="(challenge-running|challenge-stage|cf-chl)/i.test(s)) return true;
+  if (/cf-mitigated/i.test(s)) return true;
+  return false;
+}
+
+/** 取一页：先普通请求，被 CF 挡住就交给本机 Chrome 过验证 */
+async function pcFetchPage(pathname) {
+  if (!pcNeedsRender) {
+    try {
+      const r = await outFetch(PC_BASE + pathname, { headers: PC_HEADERS, timeout: 15000 });
+      const html = r.text();
+      if (!pcIsChallenge(html)) return { html: html, status: r.status, via: 'http' };
+      pcNeedsRender = true;
+      log('porn-comic 被 Cloudflare 挡住，切换到本机 Chrome 过验证');
+    } catch (e) {
+      if (cfUnavailableReason()) throw e;      /* 没浏览器可用就别切了，直接报原错 */
+      pcNeedsRender = true;
+    }
+  }
+  /* Chrome 通道已经确认过标题和正文，这里直接信它 */
+  const html = await cfRender(PC_BASE + pathname);
+  return { html: html, status: 200, via: 'chrome' };
+}
+
+async function porncomicSearch(query) {
+  const q = String(query.q || '').trim();
+  const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
+  const extra = String(query.extra || '').trim();
+  const tries = [];
+  if (q) tries.push('/q/' + encodeURIComponent(q) + '-' + page + '.html');
+  if (q && pcSlug(q)) tries.push('/tags/' + pcSlug(q) + '.html');
+  if (extra) tries.push('/tags/' + pcSlug(extra) + '.html');
+  if (!tries.length) tries.push(page > 1 ? '/index-' + page + '.html' : '/h/');
+
+  const errs = [];
+  for (const p of tries) {
+    try {
+      const r = await pcFetchPage(p);
+      if (r.status >= 400) { errs.push(p + '：HTTP ' + r.status); continue; }
+      const items = pcParse(r.html, 'porn-comic.com', 60);
+      if (!items.length) {
+        const why = cfUnavailableReason();
+        errs.push(p + '：' + (pcIsChallenge(r.html)
+          ? ('被 Cloudflare 人机验证挡住' + (why ? '（' + why + '）' : '，Chrome 通道也没过'))
+          : '页面结构没有匹配到作品'));
+        continue;
+      }
+      return {
+        source: 'porncomic', host: 'porn-comic.com', total: items.length,
+        items: items.slice(0, 60), via: r.via
+      };
+    } catch (e) { errs.push(p + '：' + ((e && e.message) || e)); }
+  }
+  throw new Error('porn-comic 没有取到结果：' + errs.slice(0, 3).join('；'));
+}
+
+/* ------------------------------ HTTP 服务 ------------------------------ */const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
@@ -550,10 +1219,81 @@ const server = http.createServer(async (req, res) => {
       case '/api/ping':
         return sendJson(res, 200, {
           name: 'hs-gateway', version: GW_VERSION, time: Date.now(),
-          sources: ['jm', 'picacg', 'copymanga', 'proxy'],
+          sources: ['jm', 'picacg', 'copymanga', 'kemono', 'porncomic', 'pixiv', 'proxy'],
+          egress: process.env.HS_GW_PROXIED === '1'
+            ? ('经本地代理 ' + (process.env.HTTPS_PROXY || ''))
+            : '直连（未检测到可用本地代理）',
           picacgLoggedIn: !!state.picacgToken,
-          jmHost: state.jmHost || '', copyApi: state.copyApi || ''
+          jmHost: state.jmHost || '', copyApi: state.copyApi || '',
+          cfSolver: {
+            available: !cfUnavailableReason(),
+            reason: cfUnavailableReason(),
+            browser: cfChromePath(),
+            headful: String(process.env.HS_CF_HEADFUL || '') === '1',
+            running: !!(cfState.ws && cfState.proc),
+            renders: cfState.renders,
+            cacheSize: cfCache.size,
+            cooldownSec: Math.ceil(cfCooldownLeft() / 1000),
+            lastError: cfLastErr
+          }
         });
+
+      case '/api/diag': {
+        /* 出口自检：网关现在到底能打到哪些站（决定哪些源能用）
+           键名与前端的信息源 id 对齐，页面可以直接拿它修正「站点不可达」的误判 */
+        const jmHost = state.jmHost || JM_FALLBACK_HOSTS[0];
+        const urls = {
+          nhentai: 'https://nhentai.net/api/v2/search?query=test',
+          ehentai: 'https://e-hentai.org/',
+          wnacg: 'https://www.wnacg.com/',
+          hitomi: 'https://hitomi.la/',
+          kemono: 'https://kemono.cr/',
+          mangadex: 'https://api.mangadex.org/ping',
+          jmcomic: 'https://' + jmHost + '/'
+        };
+        const out = {};
+        await Promise.all(Object.keys(urls).map(async k => {
+          const t0 = Date.now();
+          try {
+            const r = await outFetch(urls[k], { timeout: 9000 });
+            out[k] = { ok: r.status < 500, status: r.status, ms: Date.now() - t0 };
+          } catch (e) { out[k] = { ok: false, error: (e && e.message) || String(e), ms: Date.now() - t0 }; }
+        }));
+        return sendJson(res, 200, { egress: process.env.HS_GW_PROXIED === '1' ? (process.env.HTTPS_PROXY || '') : '', targets: out });
+      }
+
+      case '/api/kemono/search':
+        return sendJson(res, 200, await kemonoSearch(q));
+
+      case '/api/porncomic/search':
+        return sendJson(res, 200, await porncomicSearch(q));
+
+      case '/api/pixiv/search':
+        return sendJson(res, 200, await pixivSearch(q));
+
+      /* 自检：本机 Chrome 到底能不能过 Cloudflare（排查 porn-comic 用）
+         ?force=1 可以无视冷却/缓存，强制真闯一次（诊断时才用） */
+      case '/api/porncomic/solve': {
+        const why = cfUnavailableReason();
+        if (why) return sendJson(res, 200, { ok: false, reason: why });
+        const url = String(q.url || (PC_BASE + '/tags/' + (pcSlug(q.tag) || 'anal') + '.html'));
+        const t0 = Date.now();
+        try {
+          const html = await cfRender(url, { timeout: 45000, force: String(q.force || '') === '1' });
+          const items = pcParse(html, 'porn-comic.com', 60);
+          return sendJson(res, 200, {
+            ok: true, url: url, ms: Date.now() - t0, bytes: html.length,
+            browser: cfChromePath(), ua: cfState.ua, items: items.length,
+            sample: items.slice(0, 3).map(i => i.title)
+          });
+        } catch (e) {
+          return sendJson(res, 200, {
+            ok: false, url: url, ms: Date.now() - t0,
+            reason: (e && e.message) || String(e),
+            cooldownSec: Math.ceil(cfCooldownLeft() / 1000)
+          });
+        }
+      }
 
       case '/api/jm/search':
         return sendJson(res, 200, await jmSearch(q));
@@ -596,11 +1336,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  log('EroMeta 本地网关 v' + GW_VERSION + ' 已启动');
-  log('  页面：  http://127.0.0.1:' + PORT + '/');
-  log('  接口：  /api/jm/search  /api/picacg/search  /api/copymanga/search  /api/proxy');
-  log('  静态根：' + ROOT);
-  if (ROOT.indexOf('tools') === 0) log('  ⚠ 没找到项目根目录，用 --root <路径> 指定');
+ensureEgress().then(mode => {
+  if (mode === 'reexec') return;                 // 子进程接管
+  server.listen(PORT, '127.0.0.1', () => {
+    log('hentai搜索 本地网关 v' + GW_VERSION + ' 已启动');
+    log('  页面：  http://127.0.0.1:' + PORT + '/');
+    log('  接口：  /api/jm/search  /api/copymanga/search  /api/kemono/search  /api/pixiv/search  /api/porncomic/search  /api/porncomic/solve  /api/proxy  /api/diag');
+    log('  出口：  ' + (process.env.HS_GW_PROXIED === '1'
+      ? ('经本地代理 ' + (process.env.HTTPS_PROXY || '') + '（被墙的站点因此可用）')
+      : '直连（可用 --proxy http://127.0.0.1:7897 指定，或先设 HTTPS_PROXY）'));
+    {
+      const why = cfUnavailableReason();
+      log('  CF 求解：' + (why ? ('不可用 —— ' + why) : ('可用，用 ' + cfChromePath() +
+        (String(process.env.HS_CF_HEADFUL || '') === '1' ? '（有头模式）' : '（headless）') + ' 过 Cloudflare（porn-comic）')));
+    }
+    log('  静态根：' + ROOT);
+  });
+  server.on('error', e => { log('启动失败：' + e.message); process.exit(1); });
 });
-server.on('error', e => { log('启动失败：' + e.message); process.exit(1); });
