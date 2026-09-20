@@ -20,3 +20,6 @@ picacg*.json
 
 # venera 上游参考源码（如需入库请先确认其许可证）
 venera_src/
+
+# 发布产物（git archive 打出的 zip 等，不入库）
+dist/

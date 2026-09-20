@@ -14,7 +14,7 @@ entry:      index.html          # 唯一入口；scripts 传统顺序加载，�
 runtime:    浏览器静态页面 + 本地 Node 网关（tools/gateway.js，零依赖）
 build:      无。零依赖、零构建
 tooling:    DeepSeek Harness（本项目的编码由它完成）
-license:    未声明
+license:    专有 · 保留所有权利（见 LICENSE）
 ```
 
 > ⚠️ 本项目不托管、不缓存、不代理任何图片或作品文件，只是把公开第三方站点的检索结果聚合到一个界面里。
@@ -256,7 +256,7 @@ venera 走 `dio` + `rhttp` 原生 socket，原生环境压根没有同源策略�
 | MangaDex | 官方公开 API | 开 | 可直连，元数据最全 |
 | 禁漫天堂 | 官方 APP API（网关）/ HTML 镜像 | 开 | 有网关时走 APP API（实时域名 + 签名 + AES 解密），否则退回镜像 HTML |
 | 拷贝漫画 | 官方 API（网关） | 网关在线时自动开 | 节点动态发现 + HMAC 签名 |
-| **Kemono** | 官方 JSON API（网关） | 开 | `kemono.cr/api/v1/posts`，Patreon/Fanbox/Pixiv 存档，每页 50 条 |
+| **Kemono** | 官方 JSON API（网关） | 关（需在信息源里手动勾选） | `kemono.cr/api/v1/posts`，Patreon/Fanbox/Pixiv 存档，每页 50 条 |
 | **Pixiv** | 官方搜索 AJAX（网关） | 关（需在信息源里手动勾选） | 插画 / 漫画搜索；封面由网关带 `Referer` 代理，绕开 `i.pximg.net` 防盗链；R-18 需在设置里填自己的 `PHPSESSID`，不填时 pixiv 会把 `mode=r18` 静默回落成全年龄 |
 | 紳士漫畫 | HTML | 开 | 10 个镜像并行竞速（取自 `ComicSparks/wax` 与 `venera-configs/wnacg.js`） |
 | nhentai | 非官方 JSON API | 开 | 走网关或代理 |
@@ -275,11 +275,12 @@ venera 走 `dio` + `rhttp` 原生 socket，原生环境压根没有同源策略�
 需要代理的站点（`proxyFirst`）把直连放最后，省掉注定失败的等待。全部失败时用 `no-cors` 再探一次可达性并给出结论。
 
 > <details>
-> <summary>📌 批注：信息源表 · 三处口径不一致（3 条）</summary>
+> <summary>📌 批注：信息源表 · 口径不一致与默认值修正（4 条）</summary>
 >
 > 【风险·文档一致性】本节表格列了 **13 行**，其中 12 行是可用源、1 行是「已移除」的哔咔；而「目录结构」里写 sources.js 是 **11 个**适配器，代码里 `S.REG` 实际注册 **12 个**源（assets/js/sources.js:987-1047：mangadex / jmcomic / copymanga / kemono / porncomic / pixiv / wnacg / nhentai / ehentai / danbooru / hitomi）另加一个「自定义源」（同文件 962 行）。三处数字对不上，建议统一口径。
 > 【已核对】「哔咔已移除」属实：前端无该源与登录入口，网关只保留 `/api/picacg/*`。
 > 【风险】Pixiv 与 porn-comic 是本版新增的重依赖源：Pixiv 的 R-18 需要你自己的 `PHPSESSID`（存本机 localStorage），不填时 pixiv 会把 `mode=r18` **静默回落成全年龄**；porn-comic 全站前置 Cloudflare，网关用 CDP 驱动本机 Chrome 过验证。两者都不是「装上就能用」的源。
+> 【已核对·默认值修正】原表把 Kemono 的「默认」写成「开」，与代码不符：`assets/js/core.js` 的默认源列表是 mangadex / nhentai / ehentai / jmcomic / wnacg / danbooru，**不含 kemono**；而「网关在线自动开」的逻辑只针对 **copymanga**（`assets/js/app.js` 里那段 `if (on.indexOf('copymanga') < 0)`）。故本版把该格改为「关（需在信息源里手动勾选）」，**代码行为未改动**。
 >
 > </details>
 
@@ -493,7 +494,9 @@ docs/research/              接口调研笔记（venera / jasmine 等现役实�
 > 【风险】紳士漫畫 / E-Hentai / Hitomi 仍是 HTML 解析，站点改版即失效；它们的容错选择器只能降低失效概率，不能消除。
 > 【已核对】「追加加载走纯追加快路」与实现一致：只有排序 / 筛选 / 去重导致顺序变化时才整面重画，并用结果区顶部锚点还原滚动位置（assets/js/results.js）。
 > 【风险】分页能力不均：Hitomi 与自定义源没有真正的分页，追加时会重复第一批并被去重，于是**较早触发「已经到底」**——这不是 bug，但会让这类源看起来「结果很少」。
-> 【风险·许可证：未核实】仓库内没有 LICENSE 文件，README 也未声明代码许可证。「版权归原作者所有，请支持正版」约束的是被聚合的作品内容，并未授权本仓库自身代码的复制、fork 与再分发。此外本项目聚合成人向内容元数据，是否合规因司法辖区而异，发布或再分发前建议补上明确的 LICENSE 与免责声明。
+> 【已核对·已处置】2.0 发布时补上了仓库根目录的 `LICENSE`（**专有 · 保留所有权利**），README 元信息也同步为「专有 · 保留所有权利（见 LICENSE）」。原批注指出的两处缺口——「仓库内没有 LICENSE 文件」与「README 也未声明代码许可证」——均已不再成立。许可允许个人学习 / 研究与本地自用（含运行本地网关）与修改，**不授权**公开再分发、部署为面向公众的服务或商业使用。
+> 【风险·仍未核实】接口实现参考了 `venera-app/venera-configs`，而该仓库**未声明许可证**（`docs/research/venera.md:27` 只记录了星数，没有 license 字段）；同文件第 26 行的 `venera-app/venera` 引擎本体则是 GPL-3.0。因此 `LICENSE` 不对这些上游源码主张任何权利，并单列了第三方声明；若日后确认曾直接复制上游源码，本许可需要重新评估（`.gitignore` 排除 `venera_src/` 也是同一顾虑）。
+> 【风险·合规】本项目聚合成人向内容元数据，是否合规因司法辖区而异。`LICENSE` 已加入成年年龄与辖区合法性条款，但**最终责任在使用者一侧**，发布或再分发前请自行确认当地法律。
 >
 > </details>
 
