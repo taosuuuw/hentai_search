@@ -5,11 +5,11 @@
 **2.0 起支持在站内直接在线阅读**（`assets/js/reader.js` + 网关 `/api/reader`），不用再跳到原站看图。
 
 ```yaml
-# 仓库元信息（由维护者在 2.0 分支补充）
+# 仓库元信息（由维护者在 3.0 分支补充）
 project:    hentai搜索 · 绅士聚合搜索
 owner:      taosuuuw
 repository: https://github.com/taosuuuw/hentai_search
-branch:     2.0
+branch:     3.0
 entry:      index.html          # 唯一入口；scripts 传统顺序加载，非 ES Module
 runtime:    浏览器静态页面 + 本地 Node 网关（tools/gateway.js，零依赖）
 build:      无。零依赖、零构建
@@ -31,7 +31,7 @@ DeepSeek Harness 是本次开发所使用的 AI 编程代理（agent）运行环
 | 项 | 说明 |
 | --- | --- |
 | 用途 | 参与全仓库的编码与文档工作 |
-| 本仓库中可核对的产出 | 版本 1.0 / 1.9 / 2.0 的 README 与其全部批注；`.gitignore`；以及各次提交与分支（`1.0`、`1.9`、`2.0`）的整理 |
+| 本仓库中可核对的产出 | 版本 1.0 / 1.9 / 2.0 / 3.0 的 README 与其全部批注；`.gitignore`；以及各次提交与分支（`1.0`、`1.9`、`2.0`、`3.0`）的整理 |
 | 说明 | 凡本文档中标为【已核对】的批注，都是在源码中逐行定位后给出的结论；标为【待实测】的则是明确标注**未经验证**的部分 |
 
 > 各版本、各文件未必出自同一工具或同一人之手；如需精确到文件的署名，请以 `git log` 为准。
@@ -106,6 +106,42 @@ start-engine.cmd -KeepOpen          :: 引擎就绪后不自动关掉启动器�
 > 启动脚本以 **ASCII-only** 编写是刻意的：cmd.exe 解码非 ASCII 字节时可能在解析阶段就崩掉，
 > 于是窗口一闪而过（`pause` 都来不及执行）——旧版启动器正是栽在这里。
 > 另外 `tools/start-gateway.ps1` 的头部注释里提到的 `start-gateway.cmd` 是过时名字，实际入口是 `start-engine.cmd`。
+
+### 启动方式（Windows / macOS / Linux）
+
+三个入口做的事完全一样：停掉占用端口的旧 node 引擎 → 用当前代码起新引擎 → 轮询 `/api/ping` 等就绪 →
+自检 `sources` 里有没有 `pixiv`、`/api/reader` 能不能取到 nhentai / MangaDex 的页 → 打开浏览器。
+
+| 系统 | 入口 | 说明 |
+| --- | --- | --- |
+| Windows | 双击 `start-engine.cmd` | 转调 `tools/start-gateway.ps1`，参数写成 `-Port 8899` / `-Stop` / `-Status` |
+| macOS | 双击 `start-engine.command`，或终端里 `./start-engine.sh` | `.command` 只是转调 `start-engine.sh` 的极短包装（给双击用） |
+| Linux | `./start-engine.sh` | 没有 cmd / PowerShell，直接跑 bash 版 |
+
+macOS / Linux 首次使用先给一次可执行位：
+
+```bash
+chmod +x start-engine.sh start-engine.command
+```
+
+```bash
+./start-engine.sh                    # 停旧引擎 → 起新引擎 → 等就绪 → 自检 /api/reader → 开浏览器
+./start-engine.sh --status           # 只看状态（只读，不动任何进程）
+./start-engine.sh --stop             # 只停引擎，不启动
+./start-engine.sh --port 8899        # 换端口（默认 8788）
+./start-engine.sh --no-browser       # 启动后不自动开浏览器
+./start-engine.sh --foreground       # 不后台运行，引擎日志留在当前终端（Ctrl+C 停止）
+./start-engine.sh --keep-open        # 引擎就绪后保留输出（对齐 Windows 的 -KeepOpen）
+./start-engine.sh -- --proxy http://127.0.0.1:7897   # `--` 之后的参数原样转给 tools/gateway.js
+```
+
+macOS / Linux 版**默认后台运行**（`nohup` + `disown`），引擎日志写在 `tools/gateway.log`；
+起不来时启动器会把该日志的尾部直接打出来。退出码与 Windows 版完全一致：
+`0` = 引擎已就绪、启动器可退出；`2` = 正常收尾但要保留输出（`--status` / `--stop` / `--keep-open`）；`1` = 失败。
+
+> 它只终结**进程名是 `node`** 的占端口进程；换成别的进程占用时只打印警告并退出，绝不动别人的进程
+> （macOS 用 `lsof` 找占用者，Linux 优先 `ss -lptn`、没有再退 `lsof`）。
+> 自检的 JSON 解析走 `node -e`，不依赖 `jq`；只有在 `curl` 也缺失时才改用 `node` 直接发请求。
 
 > 旧的 `--picacg-email / --picacg-password` 参数在网关里还在（`/api/picacg/*` 没删），
 > 但**前端已经移除了哔咔信息源**，所以现在传了也没有入口会用到。

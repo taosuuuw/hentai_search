@@ -280,7 +280,14 @@ html[data-theme="light"] .hs-bg::after {
   50%      { opacity: .58; transform: translate3d(.9%, -.7%, 0); }
 }
 
-/* ---------- 顶栏 ---------- */
+/* ---------- 顶栏 ----------
+   第 4 轮：Win11 任务栏式自动隐藏 —— 指针贴近视口顶边才滑回来，离开延时再收起。
+   · 隐藏只改 transform：sticky + 原高度不动，所以显隐前后搜索框 / 结果区的几何完全不变
+     （实测 .hs-searchbar 的 top/bottom 前后一致），也不会把内容推来推去或留下「多出来的」空白。
+   · 默认【不】隐藏。JS 只在「有 hover 能力的精确指针」上挂 html.hs-top-auto；
+     触摸设备没有 mousemove，不挂就等于顶栏常驻，设置按钮不会摸不到。
+   · 键盘可达：:focus-within 时强制滑回（Tab 进顶栏任何控件都会显示），
+     并带 transition 滑出动画；hs-nomotion / prefers-reduced-motion 下由全局降级规则变成瞬时。 */
 .hs-top {
   position: sticky; top: 0; z-index: 40;
   display: flex; align-items: center; gap: 14px;
@@ -288,9 +295,13 @@ html[data-theme="light"] .hs-bg::after {
   background: color-mix(in srgb, var(--bg) 78%, transparent);
   backdrop-filter: saturate(160%) blur(14px);
   border-bottom: 1px solid var(--border);
+  transition: transform .3s cubic-bezier(.2,.8,.3,1);
 }
+html.hs-top-auto .hs-top { transform: translateY(-100%); }
+html.hs-top-auto.hs-top-peek .hs-top,
+html.hs-top-auto .hs-top:focus-within { transform: none; }
 .hs-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.hs-logo { display: flex; filter: drop-shadow(0 6px 14px rgba(255,77,141,.35)); }
+.hs-logo { display: flex; filter: drop-shadow(0 6px 14px rgba(96,116,224,.42)); }
 .hs-brand-txt { display: flex; flex-direction: column; line-height: 1.15; }
 .hs-brand-txt b { font-size: 15px; letter-spacing: .2px; }
 .hs-brand-txt i { font-style: normal; font-size: 11px; color: var(--fg-3); }
@@ -391,6 +402,25 @@ html[data-theme="light"] .hs-bg::after {
           backdrop-filter: blur(20px) saturate(190%);
   transition: background .18s, border-color .18s, box-shadow .18s;
 }
+/* 搜索框上沿的「补面」：盖住拉手细线与搜索框之间那道 8px 缝（+2px 压边）。
+   ⚠ 必须挂在 .hs-searchbar（而不是 .hs-searchwrap）上：搜索条是容器里最后一行内容，
+   容器的 padding box 底边 == 搜索条【底边】，所以挂在容器上的 bottom:-1px + height:10px
+   实际落在搜索框底部，把底部压成一块方角实底（第 4 轮修掉的正是这个）。
+   挂在搜索条上并改用 bottom:100% 之后，它永远贴着搜索框【上沿】，
+   拉出筛选面板（容器 padding-top 被 JS 撑大）时也跟着搜索条一起走。
+   填充只用既有的 --glass-seam（近乎透明），材质靠 backdrop-filter 磨砂，没有新的不透明色。 */
+.hs-searchbar::before {
+  content: ""; position: absolute;
+  left: 0; right: 0; bottom: 100%; height: 10px;
+  z-index: 0; pointer-events: none;
+  background: var(--glass-seam);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+          backdrop-filter: blur(20px) saturate(190%);
+  transition: background .2s, opacity .2s;
+}
+/* 拖拽 / 拉出时补面提亮 —— 纯颜色变化，不碰任何尺寸 */
+.hs-searchwrap[data-dragging="1"] .hs-searchbar::before { background: var(--glass-fill); }
+.hs-searchwrap:has(.hs-sheet[data-open="1"]) .hs-searchbar::before { background: var(--glass-fill); }
 /* 斜向折射高光：很淡，只做「液感」，不做彩色渐变海报 */
 .hs-searchbar::after {
   content: ""; position: absolute; inset: 1px; z-index: 0;
@@ -407,11 +437,21 @@ html[data-theme="light"] .hs-bg::after {
 }
 html[data-theme="light"] .hs-searchbar::after { mix-blend-mode: soft-light; opacity: .9; }
 .hs-searchbar > * { position: relative; z-index: 1; }
-/* 焦点必须一眼可见：透明化之后全靠「提亮 + accent 描边 + 焦点环」撑住可辨识度。
-   只保留**外圈**反馈（外描边 + accent 外发光 + 提亮），不再画搜索框内部的那道内描边 —— 
-   去掉的就是原来那条 inset 0 0 0 1px color-mix(accent 28%)。 */
+/* 焦点反馈分两档（第 4 轮：鼠标点击不再出现高光边）
+   · 鼠标 / 触摸点进输入框：只提亮填充 + 图标转 accent —— 不画描边、不画外发光；
+   · 键盘 Tab 进来（app.js 在按下 Tab 时给 <html> 挂 .hs-kb）：才画 accent 描边 + 外发光。
+   为什么不用 :focus-visible 区分键鼠：Chromium 里文本输入框在【鼠标点击】时也会匹配
+   :focus-visible（本机实测 qFocusVisible=true、qShadow 出现 2px 粉环），所以纯 CSS 做不到
+   「点击不高光、键盘有描边」；改用 Tab 触发的一次性开关，行为对齐 :focus-visible 的本意。 */
 .hs-searchbar:focus-within {
   background: var(--glass-fill-hi);
+  border-color: var(--border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-inner),
+    inset 0 -1px 0 var(--glass-rim-bot),
+    var(--glass-drop);
+}
+html.hs-kb .hs-searchbar:focus-within {
   border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
   box-shadow:
     inset 0 1px 0 var(--glass-inner),
@@ -421,6 +461,9 @@ html[data-theme="light"] .hs-searchbar::after { mix-blend-mode: soft-light; opac
     0 6px 20px -8px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 .hs-searchbar:focus-within::after { opacity: 1; }
+/* 输入框自身不再吃全局 :focus-visible 的焦点环：那圈 2px 粉环在鼠标点击时同样会亮
+   （用户说的「点击输入时一圈高光」）。键盘焦点统一改画在整条搜索框上（见上）。 */
+#q:focus-visible { box-shadow: none; }
 .hs-sb-ico {
   width: 19px; height: 19px; flex: none; background: var(--fg-3);
   transition: background .18s;
@@ -790,6 +833,19 @@ html.hs-blurcovers .hs-card .hs-card-reveal { opacity: 1; }
   position: absolute; top: 8px; left: 8px; z-index: 3;
   display: flex; gap: 5px; flex-wrap: wrap; max-width: calc(100% - 16px);
 }
+/* 编号直达（禁漫按编号取回的那一本）：整排角标让到**右上角**。
+   左上角那排是汉化 / R18G / AI / 源名 / 页数，两排各自靠一边、互不重叠
+   （max-width 压到一半宽，万一角标多到要换行也不会叠上去）。 */
+.hs-card-badges.is-hi {
+  left: auto; right: 8px; justify-content: flex-end;
+  max-width: calc(50% - 12px);
+}
+/* 编号直达标签：`jm1474541`，一眼看出这是用户点名的那一本 */
+.hs-pill-jm {
+  background: linear-gradient(135deg, #38bdf8, #4f46e5);
+  border-color: transparent; color: #fff; font-weight: 800;
+  box-shadow: 0 4px 12px -6px rgba(56,189,248,.9);
+}
 .hs-pill {
   padding: 3px 8px; border-radius: 7px; font-size: 10px; font-weight: 650;
   letter-spacing: .03em; backdrop-filter: blur(8px);
@@ -827,7 +883,10 @@ html.hs-blurcovers .hs-card .hs-card-reveal { opacity: 1; }
 }
 .hs-card-sub { font-size: 11.5px; color: var(--fg-3); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .hs-card-sub .hs-dot { width: 3px; height: 3px; border-radius: 50%; background: var(--fg-3); }
-.hs-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+/* 标签区最多两行：卡片高度不再被「标签最多的那张」无限拉高。
+   47px ≈ 两行 10px 小标签（每行 ~21.3px）+ 行间距 4px 的交界处，
+   正好切在第 2、3 行的间隙里，不会把某一行标签切一半（不是被 JS 读取的几何量）。 */
+.hs-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; max-height: 47px; overflow: hidden; }
 .hs-mtag {
   font-size: 10px; padding: 2px 7px; border-radius: 6px;
   background: var(--panel-2); border: 1px solid var(--border); color: var(--fg-3);
@@ -848,7 +907,9 @@ html[data-theme="dark"] .hs-mtag { background: rgba(255,255,255,.05); }
 html[data-theme="light"] .hs-mtag-gore { color: #7f1d1d; }
 html[data-theme="light"] .hs-mtag-ai { color: #0e4b58; }
 .hs-mtag-none { opacity: .5; font-style: italic; }
-.hs-card-actions { display: flex; gap: 6px; padding: 0 12px 12px; }
+/* 动作行贴底：body 吃掉剩余高度（flex:1），动作行再兜一道 margin-top:auto，
+   所以同一行的卡片无论标题 1/2 行、标签 0/6 个，按钮那一条永远压在卡片底边。 */
+.hs-card-actions { display: flex; gap: 6px; padding: 0 12px 12px; margin-top: auto; }
 .hs-card-actions .hs-btn { flex: 1; padding: 6px 8px; font-size: 11.5px; }
 .hs-card-actions .hs-btn-ico { flex: none; width: 32px; padding: 6px 0; }
 
@@ -1003,7 +1064,6 @@ html[data-theme="dark"] .hs-set-ico { background: rgba(255,255,255,.05); }
   display: flex; align-items: center; gap: 9px; padding: 13px 18px;
   border-top: 1px solid var(--border); flex-wrap: wrap;
 }
-.hs-modal-foot .hs-spacer { flex: 1; }
 .hs-about { font-size: 12.5px; color: var(--fg-2); display: grid; gap: 9px; }
 .hs-about ul { display: grid; gap: 5px; }
 .hs-about li { display: flex; gap: 7px; }
@@ -1061,7 +1121,9 @@ html.hs-nomotion *, html.hs-nomotion *::before, html.hs-nomotion *::after {
 /* ---------- 紧凑 Hero：结果紧跟搜索框 ---------- */
 .hs-hero { margin: 0 auto 16px; max-width: 1040px; }
 .hs-h1 { font-size: clamp(19px, 2.5vw, 26px); margin-bottom: 5px; letter-spacing: -.01em; }
-.hs-sub { font-size: 12.5px; margin-bottom: 15px; }
+/* 副标题：12.5px → 14px（只动字号）。层级仍是「主标题之下、muted 色、非粗体」，
+   窄屏允许折行并用 text-wrap: balance 让两行长度均匀，避免挤出容器或留下孤字。 */
+.hs-sub { font-size: 14px; margin-bottom: 15px; text-wrap: balance; }
 /* 筛选面板是从搜索框【向上】拉出来的浮层：拉出时上面的标题/说明先让位，
    否则面板会正压在「hentai搜索」这个文字标识上 */
 .hs-h1, .hs-sub { transition: opacity .2s ease, transform .2s ease; }
@@ -1078,27 +1140,15 @@ html.hs-sheet-open .hs-hero .hs-sub { opacity: 0; transform: translateY(-6px); p
 }
 .hs-searchwrap[data-dragging="1"] { transition: none; }
 
-/* 横条与搜索条之间那段 8px（= filters.js 的 SHEET_GAP）由这层「补面」糊住：
+/* 横条与搜索条之间那段 8px（= filters.js 的 SHEET_GAP）由一层「补面」糊住：
    它只画材质、不吃指针事件、不占流内空间，所以完全不影响 JS 算出来的几何。
-   位置用法：容器 padding box 的底边永远等于搜索条底边（搜索条是最后一行内容），
-   所以 bottom:-1px 正好落在搜索条上沿，高度 10px 恰好盖住 8px 缝 + 2px 压边。
-   第 2 轮：填充压到几乎为零，只留下背景模糊，避免在透明玻璃之间露出一条色带。
+   ⚠ 第 4 轮修正：这层补面原来写成 .hs-searchwrap::before + bottom:-1px，
+   但「容器 padding box 底边 == 搜索条底边」（实测 wrap=209.95/271.15 == bar=209.95/271.15），
+   于是它实际落在搜索框【底部】10px，把底部压成一块方角实底 —— 已移到
+   .hs-searchbar::before { bottom: 100% }（见上面搜索框那一段），这里不再画。
    这条细线本来要落在「搜索框上沿」，但那儿正是 8px 缝与补面所在；
    最后选择把线画在 .hs-sheet-grab 的下边缘（= 盖子底边，也贴着搜索框顶部），
    这样收起时正好压出搜索框上沿的轮廓，展开时又正好压住面板内容的上边缘。 */
-.hs-searchwrap::before {
-  content: ""; position: absolute;
-  left: 0; right: 0; bottom: -1px; height: 10px;
-  z-index: 0; pointer-events: none;
-  background: var(--glass-seam);
-  -webkit-backdrop-filter: blur(20px) saturate(190%);
-          backdrop-filter: blur(20px) saturate(190%);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-inner) 45%, transparent);
-  transition: background .2s, opacity .2s;
-}
-/* 拖拽 / 拉出时补面提亮 —— 纯颜色变化，不碰任何尺寸 */
-.hs-searchwrap[data-dragging="1"]::before { background: var(--glass-fill); }
-.hs-searchwrap:has(.hs-sheet[data-open="1"])::before { background: var(--glass-fill); }
 
 .hs-sheet {
   position: absolute; left: 0; right: 0;
@@ -1285,7 +1335,11 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
 .hs-chain[data-state="collapsed"] .hs-chain-log .hs-step[data-fresh="1"] .hs-step-meta { color: var(--accent); }
 
 /* ---------- 同系列卡片堆叠（手牌展开） ---------- */
-.hs-grid { overflow: visible; align-items: start; }
+/* 网格：同一行的卡片必须等高（stretch），否则「动作行贴底」无从谈起 ——
+   2026 第 4 轮之前这里是 align-items: start，卡片各自按内容高度收缩，
+   同一行的底边实测能差 90px（合成极端卡片）。堆叠卡（.hs-stack）也跟着拉满，
+   其第一张（唯一在流内的那张）用 height:100% 撑满，扇出的绝对定位卡 inset:0 自然对齐。 */
+.hs-grid { overflow: visible; align-items: stretch; }
 .hs-stack { position: relative; z-index: 1; --fan: 56px; --rot: 3.4deg; }
 .hs-stack[data-fan="left"] { --fan: -56px; --rot: -3.4deg; }
 .hs-stack > .hs-card {
@@ -1296,7 +1350,7 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
   transition: transform .36s cubic-bezier(.2,.8,.3,1), box-shadow .3s, border-color .3s;
 }
 .hs-stack > .hs-card:not(:first-child) { animation: none; }
-.hs-stack > .hs-card:first-child { position: relative; pointer-events: auto; }
+.hs-stack > .hs-card:first-child { position: relative; pointer-events: auto; height: 100%; }
 /* 悬停整叠时抬到所有作品之上：扇出的卡片才能盖住左右两边的作品 */
 .hs-stack:hover, .hs-stack[data-open="1"], .hs-stack:focus-within { z-index: 80; }
 .hs-stack:hover > .hs-card,
@@ -1619,22 +1673,61 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
 .hs-rd-close { flex: none; }
 .hs-rd-tools { display: flex; align-items: center; gap: 8px; flex: none; }
 
-/* 章节目录：原生 select + 右侧箭头（避免弹出层被阅读器裁掉） */
-.hs-rd-chap { position: relative; display: inline-flex; align-items: center; max-width: min(46vw, 300px); }
-.hs-rd-sel {
-  appearance: none; -webkit-appearance: none;
-  height: 32px; padding: 0 28px 0 11px;
-  border-radius: 999px; font-size: 12px; cursor: pointer;
-  background: rgba(255,255,255,.05);
-  border: 1px solid var(--border-strong); color: var(--fg);
-  text-overflow: ellipsis;
+/* 章节入口：明确的按钮（写清当前是第几话 / 共几话）+ 点开的章名列表。
+   列表是 fixed 面板 —— 不写进文档流、不撑开顶栏，也不会被顶栏的 backdrop-filter 裁掉。 */
+.hs-rd-chap { position: relative; display: inline-flex; align-items: center; }
+.hs-rd-chapbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: min(52vw, 340px); height: 32px; padding: 0 8px 0 12px;
+  border-radius: 999px; font-size: 12px; font-weight: 650; cursor: pointer;
+  color: var(--fg-2); background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+  transition: color .14s, border-color .14s, background .14s;
 }
-.hs-rd-caret {
-  position: absolute; right: 7px; pointer-events: none;
-  width: 14px; height: 14px; color: var(--fg-2);
+.hs-rd-chapbtn:hover { color: var(--fg); border-color: var(--border-strong); }
+.hs-rd-chapbtn[aria-expanded="true"] {
+  color: var(--fg); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
+.hs-rd-chapcur { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-rd-caret { flex: none; width: 14px; height: 14px; color: var(--fg-2); }
 .hs-rd-caret svg { width: 14px; height: 14px; display: block; }
-.hs-rd-sel option { background: var(--panel-solid); color: var(--fg); }
+.hs-rd-chappick {
+  position: fixed; z-index: 6;
+  top: calc(var(--hs-rd-bar-h, 52px) + 8px); right: 12px;
+  width: min(92vw, 330px);
+  display: flex; flex-direction: column; max-height: min(66vh, 440px);
+  padding: 8px; border-radius: 14px;
+  background: var(--panel-solid); border: 1px solid var(--border-strong);
+  box-shadow: 0 18px 44px rgba(0,0,0,.55);
+}
+.hs-rd-chappickhead {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 2px 6px 8px; font-size: 11.5px; color: var(--fg-3);
+  border-bottom: 1px solid var(--border);
+}
+.hs-rd-chapnum { font-family: var(--mono); }
+.hs-rd-chaplist {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  margin: 6px 0 0; scrollbar-width: thin;
+}
+.hs-rd-chapitem {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 9px; border-radius: 9px; text-align: left;
+  font-size: 12.5px; color: var(--fg-2); background: none; border: 0; cursor: pointer;
+}
+.hs-rd-chapitem:hover { color: var(--fg); background: rgba(255,255,255,.05); }
+.hs-rd-chapno {
+  flex: none; min-width: 26px; text-align: right;
+  font-family: var(--mono); font-size: 11px; color: var(--fg-3);
+}
+.hs-rd-chapname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-rd-chapitem.is-cur {
+  color: #fff;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.hs-rd-chapitem.is-cur .hs-rd-chapno { color: var(--accent); }
 
 /* 自动连读开关 / 阅读方向切换（同一种小胶囊按钮） */
 .hs-rd-auto, .hs-rd-dir {
@@ -1683,8 +1776,16 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   display: block;
   padding: 0 14px;
 }
-/* 页与页之间只靠这一条下边距，8px 是连续纵向阅读的舒适值（窄屏 6px） */
-.hs-rd-pg { display: block; margin: 0 auto 8px; max-width: 1000px; }
+/* 页与页之间只靠这一条下边距，8px 是连续纵向阅读的舒适值（窄屏 6px）。
+   纵向的页宽只跟「列宽 × 缩放倍数」有关，跟这一页自己的宽高比无关 ——
+   同一本书所有页因此左右两边完全对齐（根因与改法见下面 .hs-rd-img img）。
+   1000px 那条上限也同比放大，否则放大后页宽会被它卡住、倍数等于白给。
+   横向单页在下面 .hs-rd[data-dir="h"] 里另有 width / max-width 覆盖，不受这里影响。 */
+.hs-rd-pg {
+  display: block; margin: 0 auto 8px;
+  width: calc(100% * var(--hs-rd-zoom, 1));
+  max-width: calc(1000px * var(--hs-rd-zoom, 1));
+}
 .hs-rd-img {
   position: relative; display: flex; align-items: center; justify-content: center;
   /* 占位盒：宽高比由 JS 写成 --hs-rd-ar（没有 w/h 时留 auto），
@@ -1696,13 +1797,19 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   border: 1px solid var(--border);
   overflow: hidden;
 }
-/* 图片是 --hs-rd-zoom 唯一的作用对象：盒子让出多大，图片就按倍数铺多大。
-   纵向：上限 96vh 乘倍数（图片完整可见、增高靠页面滚动）；横向：见下面的覆盖规则。
-   注意这里算的是**尺寸**不是 transform: scale()，所以布局盒跟着变、页码 / 章末几何不受影响。 */
+/* 纵向：图片永远铺满页宽（width: 100% + height: auto，高度按自己的宽高比算）。
+   ★本次修的排版问题就是这条规则的旧写法★
+   旧写法 `width:auto` + `max-width:100%×倍数` + `max-height:96vh×倍数` 是两条上限
+   同时压在替换元素上：浏览器按图片自身宽高比等比缩到**两条上限之内**，于是高瘦页被
+   高度卡住（渲染宽度 < 页宽）、宽扁页被宽度卡住（渲染宽度 = 页宽）——同一本书里每页
+   渲染宽度都不一样，上下连续阅读时相邻两页左右两边就参差不齐。
+   现在宽度只由页宽（页宽 = 列宽 × 缩放倍数）决定，高度跟着宽高比走，不再有第二条上限
+   反过来压窄宽度；缩放倍数乘在页宽上，所以放大后各页仍然左右对齐。
+   注意这里算的是**尺寸**不是 transform: scale()，所以布局盒跟着变、页码 / 章末几何不受影响。
+   横向单页的尺寸规则见下面 .hs-rd[data-dir="h"] 的覆盖，不受这里影响。 */
 .hs-rd-img img {
-  display: block; width: auto; height: auto;
-  max-width: calc(100% * var(--hs-rd-zoom, 1));
-  max-height: calc(var(--hs-rd-img-max) * var(--hs-rd-zoom, 1));
+  display: block; width: 100%; height: auto;
+  max-width: none; max-height: none;
   margin: 0 auto;
 }
 /* 图片载入后彻底收掉占位盒的高度：盒子只剩图片本身，页间距就是那条 margin */
@@ -1876,7 +1983,422 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   .hs-rd-status { padding: 7px 9px; font-size: 11px; }
   .hs-rd-tip { display: none; }
 }
+/* 矮屏只收紧**占位盒**（图片还没载入时）的高度上限。图片本身不再给高度上限 ——
+   一给高度上限，替换元素就会按宽高比把宽度降下来，各页宽度又不齐了（本次修的根因）。 */
 @media (max-height: 520px) {
-  .hs-rd-img img { max-height: calc(88vh * var(--hs-rd-zoom, 1)); }
+  .hs-rd[data-dir="v"] .hs-rd-img { max-height: 88vh; }
+}
+
+
+/* ==========================================================================
+   suggest.js — 搜索联想泡泡（前缀 .hs-sg-*，仅本功能使用）
+   · 整块只作用于自己新建的 .hs-sg-layer，绝对定位在搜索栏【下方】，
+     不占流内空间，因此不会把搜索框或结果区顶开。
+   · 泡泡层自身 pointer-events: none（关闭时不遮挡任何东西），
+     只有真正显示的泡泡 .hs-sg-item 才有 pointer-events: auto。
+   · html.hs-nomotion / prefers-reduced-motion 下取消全部动画与位移，直接显示。
+   · 本块不含 !important，不改动任何既有选择器。
+   ========================================================================== */
+
+.hs-sg-layer {
+  position: absolute; left: 0; right: 0;
+  top: calc(100% + 10px);            /* 贴着搜索栏下沿 */
+  z-index: 8;                        /* 高于筛选面板(.hs-sheet z-index:6)，低于放大卡片 */
+  pointer-events: none;              /* 关闭/空白区域一律不吃指针事件 */
+}
+.hs-sg-bubbles {
+  display: flex; flex-wrap: wrap; align-items: flex-start;
+  gap: 7px 8px;
+  padding: 2px 2px 6px;
+  pointer-events: none;
+}
+
+/* —— 单个泡泡 —— */
+.hs-sg-item {
+  pointer-events: auto;
+  display: inline-flex; align-items: baseline; gap: 6px;
+  max-width: 100%;
+  padding: 6px 12px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-solid);
+  background-image: var(--shimmer);          /* 复用主题里的微光渐变，双主题自动跟随 */
+  background-size: 220% 100%;
+  background-position: 120% 0;
+  color: var(--fg-2);
+  font-size: 13px; line-height: 1.25;
+  letter-spacing: .01em;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+  transition: color .15s, border-color .15s, background-color .15s, transform .15s, opacity .15s;
+}
+.hs-sg-text {
+  display: inline-block; max-width: 22em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+.hs-sg-sub {
+  font-size: 11px; color: var(--fg-3);
+  max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hs-sg-count {
+  font-family: var(--mono); font-size: 10.5px;
+  color: var(--accent); opacity: .85;
+}
+.hs-sg-item--hist { border-color: var(--border-strong); color: var(--fg); }
+
+.hs-sg-item:hover { color: var(--fg); border-color: var(--border-strong); }
+.hs-sg-item[data-on="1"] {
+  color: var(--fg); border-color: var(--accent);
+  background-color: var(--panel-2);
+  transform: translateY(-2px) scale(1.035);
+  box-shadow: var(--shadow);
+}
+.hs-sg-item:focus-visible { box-shadow: var(--ring); }
+
+/* —— 冒泡入场：模糊 + 上浮，逐个错开（延迟由 JS 的 animationDelay 提供）—— */
+@keyframes hs-sg-rise {
+  from { opacity: 0; transform: translateY(10px) scale(.9); filter: blur(3px); }
+  to   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+.hs-sg-layer[data-open="1"] .hs-sg-item {
+  animation: hs-sg-rise .26s cubic-bezier(.2,.8,.3,1) both;
+}
+
+/* —— 降级：不动画，直接显示 —— */
+html.hs-nomotion .hs-sg-item,
+html.hs-nomotion .hs-sg-layer[data-open="1"] .hs-sg-item {
+  animation: none;
+  filter: none;
+}
+html.hs-nomotion .hs-sg-item[data-on="1"] { transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .hs-sg-item,
+  .hs-sg-layer[data-open="1"] .hs-sg-item {
+    animation: none;
+    filter: none;
+    transition: none;
+  }
+  .hs-sg-item[data-on="1"] { transform: none; }
+}
+
+/* —— 窄屏：泡泡排得更紧凑，避免横向溢出 —— */
+@media (max-width: 560px) {
+  .hs-sg-layer { top: calc(100% + 8px); }
+  .hs-sg-bubbles { gap: 6px; }
+  .hs-sg-item { padding: 5px 10px 6px; font-size: 12.5px; }
+  .hs-sg-text { max-width: 14em; }
+  .hs-sg-sub { display: none; }
+}
+
+
+/* ==========================================================================
+   黑话提示（.hs-slang-*）：搜索框内、紧跟已输入文字之后的泡泡
+   ---------------------------------------------------------------------------
+   纯呈现：泡泡里的 chip 带 data-q，点击后走 app.js 里既有的 [data-q] 委托，
+   由用户点击这一下才改写 #q —— 不点就绝不改动查询词（C1）。
+   定位（left / 是否翻到搜索框下方）由 app.js 的 slangPlace() 写在行内样式上。
+   ========================================================================== */
+.hs-searchbar > .hs-slang-bubble {
+  position: absolute; z-index: 3;
+  top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; gap: 6px;
+  max-width: calc(100% - 12px);
+  padding: 3px 6px 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 88%, var(--accent));
+  color: var(--fg-2);
+  font-size: 12.5px; line-height: 1.5;
+  box-shadow: 0 8px 22px -12px rgba(0, 0, 0, .75);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+          backdrop-filter: blur(12px) saturate(160%);
+  animation: hs-slang-in .16s ease-out;
+}
+/* 翻到搜索框下方时：贴住搜索框左沿文字结束处，避免被右侧按钮挤掉 */
+.hs-searchbar > .hs-slang-bubble[data-flip="1"] {
+  top: calc(100% + 8px); transform: none;
+  flex-wrap: wrap; border-radius: var(--radius-sm, 12px);
+}
+.hs-slang-bubble[data-tier="low"] { border-style: dashed; }
+/* 小尾巴：朝左指回关键词，做出「从关键词长出来」的贴合感 */
+.hs-slang-bubble[data-flip="0"]::before {
+  content: ""; position: absolute; left: -4px; top: 50%;
+  width: 7px; height: 7px; transform: translateY(-50%) rotate(45deg);
+  background: inherit;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.hs-slang-lead { flex: none; color: var(--fg-3); font-size: 11.5px; white-space: nowrap; }
+.hs-slang-chips { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.hs-slang-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 22em; padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent); font: inherit; font-size: 12.5px; font-weight: 650;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background .16s, border-color .16s;
+}
+.hs-slang-chip:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); }
+.hs-slang-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hs-slang-chip[data-tier="low"] { color: var(--fg-2); border-color: var(--border-strong); background: color-mix(in srgb, var(--fg-3) 12%, transparent); }
+.hs-slang-chip[data-tier="low"]:hover { color: var(--fg); border-color: var(--fg-2); }
+/* 没有 hintQuery 的词条只出说明文字，不给点击（3.7） */
+.hs-slang-note { cursor: default; }
+.hs-slang-tag {
+  flex: none; padding: 0 5px; border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-3) 22%, transparent);
+  color: var(--fg-3); font-size: 10.5px; font-weight: 600;
+}
+.hs-slang-x {
+  flex: none; width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center;
+  color: var(--fg-3); font-size: 14px; line-height: 1;
+  border: 1px solid transparent; background: none; cursor: pointer;
+  transition: color .16s, background .16s;
+}
+.hs-slang-x:hover { color: var(--fg); background: color-mix(in srgb, var(--fg-3) 18%, transparent); }
+.hs-slang-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@keyframes hs-slang-in { from { opacity: 0; transform: translateY(-50%) scale(.96); } to { opacity: 1; } }
+@keyframes hs-slang-in-flip { from { opacity: 0; transform: scale(.98); } to { opacity: 1; } }
+.hs-slang-bubble[data-flip="1"] { animation-name: hs-slang-in-flip; }
+html.hs-nomotion .hs-slang-bubble { animation: none; }
+html.hs-nomotion .hs-slang-chip { transition: none; }
+@media (max-width: 560px) {
+  .hs-slang-bubble { font-size: 12px; }
+  .hs-slang-lead { display: none; }
+  .hs-slang-chip { max-width: 16em; }
+}
+
+/* ==========================================================================
+   收藏星图（fav.js）—— 顶栏爱心入口 + 爱心按钮 + 全屏思维导图浮层
+   ---------------------------------------------------------------------------
+   前缀统一 .hs-fav-*（叠字命名：hs-fav + fav-…）。只新增样式，不改既有规则、
+   不加 !important。层级约定与本表其它浮层一致：
+     · 浮层 z-index: 320 —— 高于放大器 .hs-cm 的 260，低于阅读器 .hs-rd 的 340，
+       远低于遮蔽遮罩 .hs-panic-overlay 的 9999。
+     · 浮层必须留在 #hs-app 内部：遮蔽给 #hs-app 加的那层 blur 才会连它一起糊。
+   主题跟随：只用既有 CSS 变量（--panel-solid / --border / --accent …），
+   深浅色自动切换；动效在 html.hs-nomotion 与 prefers-reduced-motion 下降级。
+   ========================================================================== */
+
+/* ---------- 顶栏入口上的爱心 ---------- */
+.hs-fav-heart { display: inline-flex; flex: none; color: var(--accent); }
+.hs-fav-heart svg { width: 16px; height: 16px; display: block; }
+.hs-fav-head-ico svg { width: 18px; height: 18px; }
+.hs-fav-head-ico { display: inline-flex; }
+#fav-chip.is-empty .hs-fav-heart { opacity: .45; }
+#fav-chip[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg);
+}
+
+/* ---------- 卡片 / 放大器上的爱心按钮 ---------- */
+.hs-btn-fav svg { width: 16px; height: 16px; display: block; }
+.hs-card-actions .hs-btn-fav { color: var(--fg-3); }
+.hs-card-actions .hs-btn-fav:hover { color: var(--accent); }
+.hs-btn-fav.is-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 46%, var(--border)); }
+.hs-btn-fav.is-on svg { fill: var(--accent); stroke: var(--accent); }
+.hs-btn-fav:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------- 浮层骨架 ---------- */
+.hs-fav {
+  position: fixed; inset: 0; z-index: 320;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+          backdrop-filter: blur(10px) saturate(1.15);
+}
+.hs-fav[hidden] { display: none; }
+.hs-fav-in { animation: hs-fav-in .2s ease-out; }
+@keyframes hs-fav-in {
+  from { opacity: 0; transform: translateY(8px) scale(.995); }
+  to   { opacity: 1; transform: none; }
+}
+
+.hs-fav-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
+          backdrop-filter: saturate(160%) blur(14px);
+}
+.hs-fav-head b { font-size: 14px; font-weight: 700; white-space: nowrap; }
+.hs-fav-stat { font-size: 11.5px; color: var(--fg-3); white-space: nowrap; }
+.hs-fav-spacer { flex: 1; min-width: 0; }
+#fav-dims { flex-wrap: wrap; }
+#fav-dims button { padding: 5px 10px; font-size: 12px; }
+.hs-fav-file { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+
+/* ---------- 画布视口 ---------- */
+.hs-fav-view {
+  flex: 1; position: relative; overflow: hidden;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+  cursor: grab; outline: none;
+}
+.hs-fav-view.is-drag { cursor: grabbing; }
+.hs-fav-canvas {
+  position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform;
+  transition: transform .16s ease-out;
+}
+/* 拖动 / 捏合期间必须瞬时跟手：过渡只留给「适应窗口 / 折叠重排」这类跳变 */
+.hs-fav-view.is-drag .hs-fav-canvas { transition: none; }
+html.hs-nomotion .hs-fav-canvas { transition: none; }
+.hs-fav-edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.hs-fav-nodes { position: absolute; top: 0; left: 0; }
+.hs-fav-hint {
+  position: absolute; left: 12px; bottom: 10px; margin: 0; padding: 5px 10px;
+  font-size: 11.5px; color: var(--fg-3);
+  background: color-mix(in srgb, var(--panel-solid) 82%, transparent);
+  border: 1px solid var(--border); border-radius: 999px;
+  pointer-events: none; white-space: nowrap; max-width: calc(100% - 24px);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.hs-fav-view.is-emptyview .hs-fav-canvas,
+.hs-fav-view.is-emptyview .hs-fav-hint { display: none; }
+.hs-fav-view .hs-empty { max-width: 520px; margin: 12vh auto 0; }
+
+/* ---------- 节点 ---------- */
+.hs-fav-node {
+  position: absolute; top: 0; left: 0;
+  display: flex; align-items: center; gap: 8px;
+  box-sizing: border-box; max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel-solid); color: var(--fg);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow .16s, border-color .16s, transform .16s;
+}
+.hs-fav-node.is-group { font-weight: 600; max-width: 200px; background: var(--panel); }
+.hs-fav-node[role="button"] { cursor: pointer; }
+.hs-fav-node[role="button"]:hover { border-color: var(--border-strong); }
+.hs-fav-node[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hs-fav-node > img {
+  width: 64px; height: 88px; flex: none;
+  object-fit: cover; border-radius: 6px;
+  background: var(--panel-2);
+}
+.hs-fav-thumb {
+  width: 40px; height: 56px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 6px; background: var(--panel-2); color: var(--fg-3);
+  font-size: 15px; font-weight: 700;
+}
+.hs-fav-node-topic {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hs-fav-nodes .hs-fav-node:not(.is-group) { cursor: pointer; }
+.hs-fav-nodes .hs-fav-node:not(.is-group):hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+/* 菜单开着的那一个节点：给一点持续反馈，免得看不出菜单挂在哪一枝上 */
+.hs-fav-node.is-menu {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), var(--shadow-sm);
+}
+
+/* ---------- 作品节点操作菜单（点节点弹出：在线阅读 / 删除收藏 / 查看详细信息） ----------
+   定位用 fixed：节点在做过 transform:scale 的 #fav-canvas 里，fixed 元素的包含块是
+   viewport（canvas 的 transform 不参与），所以 JS 直接喂 getBoundingClientRect 即可，
+   缩放多少都不用换算。z-index: 6 —— 高于节点（2）与折叠按钮，低于浮层本身之外的一切。 */
+.hs-fav-menu {
+  position: fixed; z-index: 6;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 178px; max-width: min(280px, 72vw);
+  padding: 6px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--panel-solid); color: var(--fg);
+  box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .55), var(--shadow-sm);
+  text-align: left;
+}
+.hs-fav-menu[hidden] { display: none; }
+.hs-fav-menu-head {
+  padding: 3px 8px 6px; margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.hs-fav-menu-title {
+  display: block; font-size: 11.5px; font-weight: 700; color: var(--fg-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hs-fav-menu-btn {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; box-sizing: border-box;
+  justify-content: flex-start; text-align: left;
+  padding: 7px 9px; border-color: transparent; background: transparent;
+}
+.hs-fav-menu-btn[hidden] { display: none; }
+.hs-fav-menu-btn:hover { background: var(--panel-2); border-color: var(--border); }
+.hs-fav-menu-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.hs-fav-menu-ico { display: inline-flex; flex: none; color: var(--fg-3); }
+.hs-fav-menu-ico svg { width: 15px; height: 15px; display: block; }
+.hs-fav-menu-btn:hover .hs-fav-menu-ico { color: var(--accent); }
+.hs-fav-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-fav-menu-hint {
+  margin: 4px 4px 2px; font-size: 11.5px; line-height: 1.45; color: var(--fg-3);
+}
+.hs-fav-menu-hint[hidden] { display: none; }
+
+/* ---------- 折叠按钮（绝对定位在节点左沿上，不占文字宽度） ---------- */
+.hs-fav-tog {
+  position: absolute; left: -10px; top: 50%;
+  width: 18px; height: 18px; transform: translateY(-50%);
+  display: grid; place-items: center; padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-solid); color: var(--fg-3);
+  cursor: pointer; z-index: 2;
+  transition: color .15s, border-color .15s;
+}
+.hs-fav-tog i {
+  display: block; position: relative; width: 8px; height: 8px;
+  font-size: 0; line-height: 0;
+}
+.hs-fav-tog i::before,
+.hs-fav-tog i::after {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 8px; height: 1.5px; margin-top: -.75px;
+  border-radius: 1px; background: currentColor;
+}
+.hs-fav-tog i::after { transform: rotate(90deg); transition: transform .16s, opacity .16s; }
+.hs-fav-tog.is-open i::after { transform: rotate(0); opacity: 0; }
+.hs-fav-tog:hover { color: var(--accent); border-color: var(--accent); }
+.hs-fav-tog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- 遮蔽联动：封面模糊开关（html.hs-blurcovers）必须同样约束星图里的封面 ---------- */
+html.hs-blurcovers .hs-fav-node img { filter: blur(15px) saturate(.85); transition: filter .18s; }
+html.hs-blurcovers .hs-fav-node:hover img { filter: none; }
+
+/* ---------- 不支持 backdrop-filter 时的降级（与 .hs-modal 同一套） ---------- */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .hs-fav { background: var(--bg); }
+  .hs-fav-head { background: var(--panel-solid); }
+  .hs-fav-hint { background: var(--panel-solid); }
+}
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 520px) {
+  .hs-fav-head { gap: 6px; padding: 8px 10px; }
+  #fav-dims { order: 3; width: 100%; }
+  #fav-dims button { flex: 1; }
+  .hs-fav-head .hs-btn { padding: 6px 9px; font-size: 11.5px; }
+  .hs-fav-node { max-width: 200px; }
+  .hs-fav-node.is-group { max-width: 160px; }
+  .hs-fav-node > img { width: 52px; height: 72px; }
+  .hs-fav-hint { font-size: 11px; }
+  .hs-fav-menu { max-width: 82vw; }
+  .hs-fav-menu-btn { padding: 9px 10px; }
+}
+
+/* ---------- 动效降级 ---------- */
+html.hs-nomotion .hs-fav-in { animation: none; }
+html.hs-nomotion .hs-fav-view.is-drag .hs-fav-node { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .hs-fav-in { animation: none; }
+  .hs-fav-canvas { transition: none; }
+  .hs-fav-view.is-drag .hs-fav-node { transition: none; }
 }
 

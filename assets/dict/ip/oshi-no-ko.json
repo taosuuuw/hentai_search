@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "oshi-no-ko",
+  "name": "【我推的孩子】",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「星野爱」不会加载本包。",
+  "_coreOverlapNote": "本包**刻意不写** from='推子'：core.js 已有该 series 条目（→ oshi no ko）。但 '推子' 不是 '我推的孩子' 的子串，所以本包可以安全地写 from='我推的孩子'（core 没有）。",
+  "_coverageNote": "角色层 15 条。B小町成员用英文全名，官方中文名统一 0.78~0.82（兜底档）。",
+  "anchors": [
+    "我推的孩子", "【我推的孩子】", "oshi no ko", "my star", "b小町",
+    "星野爱", "星野阿库亚", "星野露比", "阿库亚", "露比", "有马加奈", "黑川茜", "mem啾",
+    "雨宫吾郎", "天童寺纱利奈", "阿比子", "姬川大辉", "赤音", "加奈", "帽子", "mem"
+  ],
+  "entries": [
+    { "from": "我推的孩子", "to": { "series": "oshi no ko" }, "kind": "series", "label": "【我推的孩子】", "conf": 0.9, "ambiguous": false, "why": "官方中文名的无符号写法 → 英文检索名 oshi no ko" },
+    { "from": "星野爱", "to": { "character": "hoshi ai" }, "kind": "character", "label": "星野爱", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → hoshi ai；本作象征性角色，人气极高" },
+    { "from": "星野阿库亚", "to": { "character": "hoshi aqua" }, "kind": "character", "label": "星野阿库亚", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → hoshi aqua" },
+    { "from": "星野露比", "to": { "character": "hoshi ruby" }, "kind": "character", "label": "星野露比", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → hoshi ruby" },
+    { "from": "阿库亚", "to": { "character": "hoshi aqua" }, "kind": "character", "label": "星野阿库亚", "conf": 0.8, "ambiguous": false, "why": "「星野阿库亚」的简称" },
+    { "from": "露比", "to": { "character": "hoshi ruby" }, "kind": "character", "label": "星野露比", "conf": 0.75, "ambiguous": true, "why": "「星野露比」的简称；也是常见英文名 Ruby" },
+    { "from": "有马加奈", "to": { "character": "arima kana" }, "kind": "character", "label": "有马加奈", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → arima kana" },
+    { "from": "黑川茜", "to": { "character": "kurokawa akane" }, "kind": "character", "label": "黑川茜", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → kurokawa akane" },
+    { "from": "mem啾", "to": { "character": "memcho" }, "kind": "character", "label": "MEM啾", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → memcho" },
+    { "from": "雨宫吾郎", "to": { "character": "gorou amamiya" }, "kind": "character", "label": "雨宫吾郎", "conf": 0.75, "ambiguous": false, "why": "官方中文全名 → amamiya gorou。**刻意不收单名 `五郎`**：那会与原神的五郎撞车，且英文标签站的 `gorou` 指的是原神角色，收进来会造成错误映射" },
+    { "from": "天童寺纱利奈", "to": { "character": "tendouji sarina" }, "kind": "character", "label": "天童寺纱利奈", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → tendouji sarina" },
+    { "from": "阿比子", "to": { "character": "abiko samejima" }, "kind": "character", "label": "鲛岛阿比子", "conf": 0.7, "ambiguous": true, "why": "官方中文名简称 → abiko；「阿比子」也是常见日文名" },
+    { "from": "姬川大辉", "to": { "character": "himekawa taiki" }, "kind": "character", "label": "姬川大辉", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → himekawa taiki" },
+    { "from": "爱酱", "to": { "character": "hoshi ai" }, "kind": "character", "label": "星野爱", "conf": 0.82, "ambiguous": false, "why": "星野爱的爱称「爱酱」" },
+    { "from": "赤音", "to": { "character": "kurokawa akane" }, "kind": "character", "label": "黑川茜", "conf": 0.88, "ambiguous": false, "why": "黑川茜的名 Akane 的中文圈常用译称「赤音」" },
+    { "from": "加奈", "to": { "character": "arima kana" }, "kind": "character", "label": "有马加奈", "conf": 0.82, "ambiguous": false, "why": "「有马加奈」的名简称" },
+    { "from": "帽子", "to": { "character": "arima kana" }, "kind": "character", "label": "有马加奈", "conf": 0.78, "ambiguous": true, "why": "有马加奈常戴帽子，被戏称「帽子」；但该词是通用物品名" },
+    { "from": "mem", "to": { "character": "memcho" }, "kind": "character", "label": "MEM啾", "conf": 0.8, "ambiguous": false, "why": "MEM啾的简称「mem」" }
+  ]
+}

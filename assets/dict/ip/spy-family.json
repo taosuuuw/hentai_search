@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "spy-family",
+  "name": "间谍过家家",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「阿尼亚」不会加载本包。",
+  "_coreOverlapNote": "本包**刻意不写** from='间谍过家家'：core.js 已有该 series 条目（→ spy x family，conf 0.88）。只作锚点登记。",
+  "_coverageNote": "角色层 14 条。福杰一家用英文全名（英文标签站的规范写法），官方中文名统一 0.8（兜底档）。",
+  "anchors": [
+    "间谍过家家", "spy x family", "spy family", "福杰家", "阿尼亚", "阿尼亚·福杰", "约尔",
+    "约尔·福杰", "劳埃德·福杰", "黄昏", "邦德", "尤利", "达米安", "贝姬", "菲奥娜",
+    "阿尼亚酱", "女儿", "太太", "夜帷", "约尔太太"
+  ],
+  "entries": [
+    { "from": "阿尼亚·福杰", "to": { "character": "anya forger" }, "kind": "character", "label": "阿尼亚·福杰", "conf": 0.85, "ambiguous": false, "why": "官方中文全名 → anya forger；本作人气最高的角色" },
+    { "from": "阿尼亚", "to": { "character": "anya forger" }, "kind": "character", "label": "阿尼亚·福杰", "conf": 0.85, "ambiguous": false, "why": "「阿尼亚·福杰」的简称，圈内最常用" },
+    { "from": "约尔·福杰", "to": { "character": "yor forger" }, "kind": "character", "label": "约尔·福杰", "conf": 0.82, "ambiguous": false, "why": "官方中文全名 → yor forger" },
+    { "from": "约尔", "to": { "character": "yor forger" }, "kind": "character", "label": "约尔·福杰", "conf": 0.8, "ambiguous": false, "why": "「约尔·福杰」的简称" },
+    { "from": "劳埃德·福杰", "to": { "character": "lloyd forger" }, "kind": "character", "label": "劳埃德·福杰", "conf": 0.8, "ambiguous": false, "why": "官方中文全名 → lloyd forger" },
+    { "from": "黄昏", "to": { "character": "lloyd forger" }, "kind": "character", "label": "劳埃德·福杰", "conf": 0.72, "ambiguous": true, "why": "劳埃德的代号 Twilight 中文译名「黄昏」；但「黄昏」也是通用词" },
+    { "from": "尤利", "to": { "character": "yuri briar" }, "kind": "character", "label": "尤利·布莱尔", "conf": 0.75, "ambiguous": true, "why": "官方中文名 → yuri briar；也是常见人名" },
+    { "from": "达米安", "to": { "character": "damian desmond" }, "kind": "character", "label": "达米安·戴斯蒙德", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → damian desmond" },
+    { "from": "贝姬", "to": { "character": "becky blackbell" }, "kind": "character", "label": "贝姬·布莱克贝尔", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → becky blackbell" },
+    { "from": "邦德", "to": { "character": "bond forger" }, "kind": "character", "label": "邦德·福杰（狗）", "conf": 0.72, "ambiguous": true, "why": "官方中文名 → bond forger；也是《007》主角名" },
+    { "from": "菲奥娜", "to": { "character": "fiona frost" }, "kind": "character", "label": "菲奥娜·弗罗斯特", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → fiona frost" },
+    { "from": "夜帷", "to": { "character": "fiona frost" }, "kind": "character", "label": "菲奥娜·弗罗斯特", "conf": 0.8, "ambiguous": false, "why": "菲奥娜的代号「夜帷」的中文译名" },
+    { "from": "亨利·韩德森", "to": { "character": "henry henderson" }, "kind": "character", "label": "亨利·韩德森", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → henry henderson" },
+    { "from": "西尔维娅", "to": { "character": "sylvia sherwood" }, "kind": "character", "label": "西尔维娅·舍伍德", "conf": 0.72, "ambiguous": true, "why": "官方中文名 → sylvia sherwood；也是常见人名" },
+    { "from": "阿尼亚酱", "to": { "character": "anya forger" }, "kind": "character", "label": "阿尼亚·福杰", "conf": 0.88, "ambiguous": false, "why": "阿尼亚的爱称「阿尼亚酱」，圈内最常用叫法" },
+    { "from": "约尔太太", "to": { "character": "yor forger" }, "kind": "character", "label": "约尔·福杰", "conf": 0.85, "ambiguous": false, "why": "约尔的敬称「约尔太太」，中文圈常用" },
+    { "from": "女儿", "to": { "character": "anya forger" }, "kind": "character", "label": "阿尼亚·福杰", "conf": 0.62, "ambiguous": true, "why": "阿尼亚是福杰家的女儿，圈内常以「女儿」代指；但该词是通用称谓" },
+    { "from": "太太", "to": { "character": "yor forger" }, "kind": "character", "label": "约尔·福杰", "conf": 0.6, "ambiguous": true, "why": "约尔是福杰家的妻子，圈内常以「太太」代指；但该词是通用称谓" }
+  ]
+}

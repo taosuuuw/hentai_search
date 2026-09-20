@@ -1,0 +1,1386 @@
+{
+ "version": "2.4.0",
+ "rows": [
+  {
+   "q": "人妻",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "人妻",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "人妻",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "人妻",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "熟女",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "熟女",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "熟女",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "熟女",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "已婚女性",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "已婚女性",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "已婚女性",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "已婚女性",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "married woman",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "married woman",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "married woman",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "married woman",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "mature female",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "mature female",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "mature female",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "mature female",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "mature woman",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "mature woman",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "mature woman",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "mature woman",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "milf",
+   "kind": "genre",
+   "label": "同义概念 · 熟女",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "milf",
+   "genreAliases": [
+    "milf",
+    "mature female",
+    "mature woman",
+    "married woman",
+    "人妻",
+    "熟女",
+    "已婚女性"
+   ],
+   "concept": {
+    "key": "milf",
+    "zh": "熟女",
+    "en": "milf",
+    "ja": "人妻",
+    "aliases": [
+     "milf",
+     "mature female",
+     "mature woman",
+     "married woman",
+     "人妻",
+     "熟女",
+     "已婚女性"
+    ]
+   },
+   "segments": [
+    {
+     "text": "milf",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    }
+   ],
+   "termFor": {
+    "mangadex": "milf",
+    "jmcomic": "milf",
+    "copymanga": "熟女",
+    "porncomic": "milf",
+    "pixiv": "人妻",
+    "wnacg": "熟女",
+    "nhentai": "milf",
+    "ehentai": "milf",
+    "danbooru": "milf",
+    "hitomi": "milf"
+   },
+   "nh": {
+    "q": "milf",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "milf",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "熟女",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "熟女",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "milf",
+    "variants": []
+   },
+   "ehentaiTerm": "\"milf\"$",
+   "danbooruTerm": "milf",
+   "pixivTerm": "人妻"
+  },
+  {
+   "q": "御姐",
+   "kind": "character",
+   "label": "角色 / 标签",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": null,
+   "genreAliases": null,
+   "concept": null,
+   "segments": [
+    {
+     "text": "御姐",
+     "kind": "character",
+     "via": "literal",
+     "label": "角色 / 标签 · 御姐"
+    }
+   ],
+   "termFor": {
+    "mangadex": "御姐",
+    "jmcomic": "御姐",
+    "copymanga": "御姐",
+    "porncomic": "御姐",
+    "pixiv": "御姐",
+    "wnacg": "御姐",
+    "nhentai": "御姐",
+    "ehentai": "御姐",
+    "danbooru": "御姐",
+    "hitomi": "御姐"
+   },
+   "nh": {
+    "q": "御姐",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "御姐",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "御姐",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "御姐",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "御姐",
+    "variants": []
+   },
+   "ehentaiTerm": "御姐",
+   "danbooruTerm": "御姐",
+   "pixivTerm": "御姐"
+  },
+  {
+   "q": "中出",
+   "kind": "genre",
+   "label": "同义概念 · 中出",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "creampie",
+   "genreAliases": [
+    "nakadashi",
+    "creampie",
+    "中出",
+    "中出し",
+    "内射",
+    "cum inside"
+   ],
+   "concept": {
+    "key": "nakadashi",
+    "zh": "中出",
+    "en": "creampie",
+    "ja": "中出し",
+    "aliases": [
+     "nakadashi",
+     "creampie",
+     "中出",
+     "中出し",
+     "内射",
+     "cum inside"
+    ]
+   },
+   "segments": [
+    {
+     "text": "中出",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 中出"
+    }
+   ],
+   "termFor": {
+    "mangadex": "creampie",
+    "jmcomic": "中出",
+    "copymanga": "中出",
+    "porncomic": "creampie",
+    "pixiv": "中出し",
+    "wnacg": "中出",
+    "nhentai": "creampie",
+    "ehentai": "creampie",
+    "danbooru": "creampie",
+    "hitomi": "creampie"
+   },
+   "nh": {
+    "q": "creampie",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "中出",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "中出",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "中出",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "creampie",
+    "variants": []
+   },
+   "ehentaiTerm": "\"creampie\"$",
+   "danbooruTerm": "creampie",
+   "pixivTerm": "中出し"
+  },
+  {
+   "q": "无修",
+   "kind": "genre",
+   "label": "体裁 / 题材",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "uncensored",
+   "genreAliases": [
+    "uncensored",
+    "no mosaic",
+    "无修",
+    "無修正"
+   ],
+   "concept": null,
+   "segments": [
+    {
+     "text": "无修",
+     "kind": "genre",
+     "via": "genre",
+     "label": "题材 · 无修"
+    }
+   ],
+   "termFor": {
+    "mangadex": "无修",
+    "jmcomic": "无修",
+    "copymanga": "无修",
+    "porncomic": "无修",
+    "pixiv": "无修",
+    "wnacg": "无修",
+    "nhentai": "无修",
+    "ehentai": "无修",
+    "danbooru": "无修",
+    "hitomi": "无修"
+   },
+   "nh": {
+    "q": "uncensored",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "无修",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "无修",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "无修",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "无修",
+    "variants": []
+   },
+   "ehentaiTerm": "\"uncensored\"$",
+   "danbooruTerm": "uncensored",
+   "pixivTerm": "uncensored"
+  },
+  {
+   "q": "巨乳",
+   "kind": "genre",
+   "label": "体裁 / 题材",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "big breasts",
+   "genreAliases": [
+    "big breasts",
+    "large breasts",
+    "巨乳",
+    "爆乳"
+   ],
+   "concept": null,
+   "segments": [
+    {
+     "text": "巨乳",
+     "kind": "genre",
+     "via": "genre",
+     "label": "题材 · 巨乳"
+    }
+   ],
+   "termFor": {
+    "mangadex": "巨乳",
+    "jmcomic": "巨乳",
+    "copymanga": "巨乳",
+    "porncomic": "巨乳",
+    "pixiv": "巨乳",
+    "wnacg": "巨乳",
+    "nhentai": "巨乳",
+    "ehentai": "巨乳",
+    "danbooru": "巨乳",
+    "hitomi": "巨乳"
+   },
+   "nh": {
+    "q": "big breasts",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "巨乳",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "巨乳",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "巨乳",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "巨乳",
+    "variants": []
+   },
+   "ehentaiTerm": "\"big breasts\"$",
+   "danbooruTerm": "big breasts",
+   "pixivTerm": "big breasts"
+  },
+  {
+   "q": "寝取",
+   "kind": "genre",
+   "label": "体裁 / 题材",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "netorare",
+   "genreAliases": [
+    "netorare",
+    "ntr",
+    "netori",
+    "寝取",
+    "寝取られ",
+    "牛头人"
+   ],
+   "concept": null,
+   "segments": [
+    {
+     "text": "寝取",
+     "kind": "genre",
+     "via": "genre",
+     "label": "题材 · NTR"
+    }
+   ],
+   "termFor": {
+    "mangadex": "寝取",
+    "jmcomic": "寝取",
+    "copymanga": "寝取",
+    "porncomic": "寝取",
+    "pixiv": "寝取",
+    "wnacg": "寝取",
+    "nhentai": "寝取",
+    "ehentai": "寝取",
+    "danbooru": "寝取",
+    "hitomi": "寝取"
+   },
+   "nh": {
+    "q": "netorare",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "寝取",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "寝取",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "寝取",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "寝取",
+    "variants": []
+   },
+   "ehentaiTerm": "\"netorare\"$",
+   "danbooruTerm": "netorare",
+   "pixivTerm": "netorare"
+  },
+  {
+   "q": "触手",
+   "kind": "genre",
+   "label": "体裁 / 题材",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "monster",
+   "genreAliases": [
+    "monster girl",
+    "tentacles",
+    "異種",
+    "触手",
+    "人外"
+   ],
+   "concept": null,
+   "segments": [
+    {
+     "text": "触手",
+     "kind": "genre",
+     "via": "genre",
+     "label": "题材 · 异种"
+    }
+   ],
+   "termFor": {
+    "mangadex": "触手",
+    "jmcomic": "触手",
+    "copymanga": "触手",
+    "porncomic": "触手",
+    "pixiv": "触手",
+    "wnacg": "触手",
+    "nhentai": "触手",
+    "ehentai": "触手",
+    "danbooru": "触手",
+    "hitomi": "触手"
+   },
+   "nh": {
+    "q": "monster",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "触手",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "触手",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "触手",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "触手",
+    "variants": []
+   },
+   "ehentaiTerm": "\"monster\"$",
+   "danbooruTerm": "monster",
+   "pixivTerm": "monster"
+  },
+  {
+   "q": "full color",
+   "kind": "genre",
+   "label": "体裁 / 题材",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "full color",
+   "genreAliases": [
+    "full color",
+    "fullcolour",
+    "full-colour",
+    "全彩",
+    "彩色",
+    "フルカラー"
+   ],
+   "concept": null,
+   "segments": [
+    {
+     "text": "full color",
+     "kind": "genre",
+     "via": "genre",
+     "label": "题材 · 全彩"
+    }
+   ],
+   "termFor": {
+    "mangadex": "full color",
+    "jmcomic": "full color",
+    "copymanga": "full color",
+    "porncomic": "full color",
+    "pixiv": "full color",
+    "wnacg": "full color",
+    "nhentai": "full color",
+    "ehentai": "full color",
+    "danbooru": "full color",
+    "hitomi": "full color"
+   },
+   "nh": {
+    "q": "full color",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "full color",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "full color",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "full color",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "full color",
+    "variants": []
+   },
+   "ehentaiTerm": "\"full color\"$",
+   "danbooruTerm": "full color",
+   "pixivTerm": "full color"
+  },
+  {
+   "q": "脚",
+   "kind": "genre",
+   "label": "同义概念 · 脚",
+   "series": "",
+   "exact": false,
+   "multi": false,
+   "genreKey": "foot",
+   "genreAliases": [
+    "foot",
+    "feet",
+    "footjob",
+    "足",
+    "脚",
+    "あし",
+    "足コキ",
+    "足交"
+   ],
+   "concept": {
+    "key": "foot",
+    "zh": "脚",
+    "en": "foot",
+    "ja": "足",
+    "aliases": [
+     "foot",
+     "feet",
+     "footjob",
+     "足",
+     "脚",
+     "あし",
+     "足コキ",
+     "足交"
+    ]
+   },
+   "segments": [
+    {
+     "text": "脚",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 脚"
+    }
+   ],
+   "termFor": {
+    "mangadex": "foot",
+    "jmcomic": "脚",
+    "copymanga": "脚",
+    "porncomic": "foot",
+    "pixiv": "足",
+    "wnacg": "脚",
+    "nhentai": "foot",
+    "ehentai": "foot",
+    "danbooru": "foot",
+    "hitomi": "foot"
+   },
+   "nh": {
+    "q": "foot",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "脚",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "脚",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "脚",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "foot",
+    "variants": []
+   },
+   "ehentaiTerm": "\"foot\"$",
+   "danbooruTerm": "foot",
+   "pixivTerm": "足"
+  },
+  {
+   "q": "fate",
+   "kind": "character",
+   "label": "IP / 角色",
+   "series": "fate",
+   "exact": false,
+   "multi": false,
+   "genreKey": null,
+   "genreAliases": null,
+   "concept": null,
+   "segments": [
+    {
+     "text": "fate",
+     "kind": "series",
+     "via": "series",
+     "label": "系列 · fate"
+    }
+   ],
+   "termFor": {
+    "mangadex": "fate",
+    "jmcomic": "fate",
+    "copymanga": "fate",
+    "porncomic": "fate",
+    "pixiv": "fate",
+    "wnacg": "fate",
+    "nhentai": "fate",
+    "ehentai": "fate",
+    "danbooru": "fate",
+    "hitomi": "fate"
+   },
+   "nh": {
+    "q": "fate",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "fate",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "fate",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "fate",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "fate",
+    "variants": []
+   },
+   "ehentaiTerm": "fate",
+   "danbooruTerm": "fate",
+   "pixivTerm": "fate"
+  },
+  {
+   "q": "明日方舟",
+   "kind": "character",
+   "label": "IP / 角色",
+   "series": "明日方舟",
+   "exact": false,
+   "multi": false,
+   "genreKey": null,
+   "genreAliases": null,
+   "concept": null,
+   "segments": [
+    {
+     "text": "明日方舟",
+     "kind": "series",
+     "via": "series",
+     "label": "系列 · 明日方舟"
+    }
+   ],
+   "termFor": {
+    "mangadex": "明日方舟",
+    "jmcomic": "明日方舟",
+    "copymanga": "明日方舟",
+    "porncomic": "明日方舟",
+    "pixiv": "明日方舟",
+    "wnacg": "明日方舟",
+    "nhentai": "明日方舟",
+    "ehentai": "明日方舟",
+    "danbooru": "明日方舟",
+    "hitomi": "明日方舟"
+   },
+   "nh": {
+    "q": "明日方舟",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "明日方舟",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "明日方舟",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "明日方舟",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "明日方舟",
+    "variants": []
+   },
+   "ehentaiTerm": "明日方舟",
+   "danbooruTerm": "明日方舟",
+   "pixivTerm": "明日方舟"
+  },
+  {
+   "q": "123456",
+   "kind": "title",
+   "label": "作品名",
+   "series": "",
+   "exact": true,
+   "multi": false,
+   "genreKey": null,
+   "genreAliases": null,
+   "concept": null,
+   "segments": [
+    {
+     "text": "123456",
+     "kind": "plain",
+     "via": "literal",
+     "label": "自由词 · 123456"
+    }
+   ],
+   "termFor": {
+    "mangadex": "123456",
+    "jmcomic": "123456",
+    "copymanga": "123456",
+    "porncomic": "123456",
+    "pixiv": "123456",
+    "wnacg": "123456",
+    "nhentai": "123456",
+    "ehentai": "123456",
+    "danbooru": "123456",
+    "hitomi": "123456"
+   },
+   "nh": {
+    "q": "123456",
+    "variants": [],
+    "sort": ""
+   },
+   "jm": {
+    "q": "123456",
+    "variants": []
+   },
+   "copymanga": {
+    "q": "123456",
+    "variants": []
+   },
+   "wnacg": {
+    "q": "123456",
+    "variants": []
+   },
+   "porncomic": {
+    "q": "123456",
+    "variants": []
+   },
+   "ehentaiTerm": "123456",
+   "danbooruTerm": "123456",
+   "pixivTerm": "123456"
+  },
+  {
+   "q": "人妻 中出",
+   "kind": "character",
+   "label": "角色 / 标签",
+   "series": "",
+   "exact": false,
+   "multi": true,
+   "genreKey": null,
+   "genreAliases": null,
+   "concept": null,
+   "segments": [
+    {
+     "text": "人妻",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 熟女"
+    },
+    {
+     "text": "中出",
+     "kind": "concept",
+     "via": "concept",
+     "label": "同义 · 中出"
+    }
+   ],
+   "termFor": {
+    "mangadex": "人妻 中出",
+    "jmcomic": "人妻 中出",
+    "copymanga": "人妻 中出",
+    "porncomic": "人妻 中出",
+    "pixiv": "人妻 中出",
+    "wnacg": "人妻 中出",
+    "nhentai": "人妻 中出",
+    "ehentai": "人妻 中出",
+    "danbooru": "人妻 中出",
+    "hitomi": "人妻 中出"
+   },
+   "nh": {
+    "q": "milf creampie",
+    "variants": [
+     "milf creampie",
+     "人妻 中出"
+    ],
+    "sort": ""
+   },
+   "jm": {
+    "q": "熟女 中出",
+    "variants": [
+     "熟女 中出",
+     "人妻 中出"
+    ]
+   },
+   "copymanga": {
+    "q": "熟女 中出",
+    "variants": [
+     "熟女 中出",
+     "人妻 中出"
+    ]
+   },
+   "wnacg": {
+    "q": "熟女 中出",
+    "variants": [
+     "熟女 中出",
+     "人妻 中出"
+    ]
+   },
+   "porncomic": {
+    "q": "milf creampie",
+    "variants": [
+     "milf creampie",
+     "人妻 中出"
+    ]
+   },
+   "ehentaiTerm": "人妻 中出",
+   "danbooruTerm": "人妻 中出",
+   "pixivTerm": "人妻 中出"
+  },
+  {
+   "q": "明日方舟 能天使 后入",
+   "kind": "character",
+   "label": "IP / 角色",
+   "series": "明日方舟",
+   "exact": false,
+   "multi": true,
+   "genreKey": null,
+   "genreAliases": null,
+   "concept": null,
+   "segments": [
+    {
+     "text": "明日方舟",
+     "kind": "series",
+     "via": "series",
+     "label": "系列 · 明日方舟"
+    },
+    {
+     "text": "能天使",
+     "kind": "character",
+     "via": "literal",
+     "label": "角色 / 标签 · 能天使"
+    },
+    {
+     "text": "后入",
+     "kind": "character",
+     "via": "literal",
+     "label": "角色 / 标签 · 后入"
+    }
+   ],
+   "termFor": {
+    "mangadex": "明日方舟 能天使 后入",
+    "jmcomic": "明日方舟 能天使 后入",
+    "copymanga": "明日方舟 能天使 后入",
+    "porncomic": "明日方舟 能天使 后入",
+    "pixiv": "明日方舟 能天使 后入",
+    "wnacg": "明日方舟 能天使 后入",
+    "nhentai": "明日方舟 能天使 后入",
+    "ehentai": "明日方舟 能天使 后入",
+    "danbooru": "明日方舟 能天使 后入",
+    "hitomi": "明日方舟 能天使 后入"
+   },
+   "nh": {
+    "q": "明日方舟 能天使 后入",
+    "variants": [
+     "明日方舟 能天使 后入",
+     "明日方舟 能天使",
+     "明日方舟"
+    ],
+    "sort": ""
+   },
+   "jm": {
+    "q": "明日方舟 能天使 后入",
+    "variants": [
+     "明日方舟 能天使 后入",
+     "明日方舟 能天使",
+     "明日方舟"
+    ]
+   },
+   "copymanga": {
+    "q": "明日方舟 能天使 后入",
+    "variants": [
+     "明日方舟 能天使 后入",
+     "明日方舟 能天使",
+     "明日方舟"
+    ]
+   },
+   "wnacg": {
+    "q": "明日方舟 能天使 后入",
+    "variants": [
+     "明日方舟 能天使 后入",
+     "明日方舟 能天使",
+     "明日方舟"
+    ]
+   },
+   "porncomic": {
+    "q": "明日方舟 能天使 后入",
+    "variants": [
+     "明日方舟 能天使 后入",
+     "明日方舟 能天使",
+     "明日方舟"
+    ]
+   },
+   "ehentaiTerm": "明日方舟",
+   "danbooruTerm": "明日方舟 能天使 后入",
+   "pixivTerm": "明日方舟"
+  }
+ ]
+}

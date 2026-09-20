@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "id": "bocchi",
+  "name": "孤独摇滚！",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「后藤一里」不会加载本包。",
+  "_coreOverlapNote": "本包**刻意不写** from='孤独摇滚'：core.js 已有该 series 条目（→ bocchi the rock，conf 0.85）。只作锚点登记。",
+  "_coverageNote": "角色层 9 条。**注意 `波奇` 的处理**：它是「波奇塔」（电锯人）的子串，若给 0.85 会造成真·误报，因此把主动档给了更独特的三字形式 `波奇酱`，`波奇` 压到 0.78（兜底档）。",
+  "anchors": [
+    "孤独摇滚", "bocchi the rock", "结束乐队", "纽带乐队",
+    "后藤一里", "波奇酱", "波奇", "伊地知虹夏", "虹夏", "山田凉", "喜多郁代", "广井菊里",
+    "伊地知星歌", "后藤二里"
+  ],
+  "entries": [
+    { "from": "后藤一里", "to": { "character": "gotou hitori" }, "kind": "character", "label": "后藤一里", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → 英文检索名 gotou hitori" },
+    { "from": "波奇酱", "to": { "character": "gotou hitori" }, "kind": "character", "label": "后藤一里", "conf": 0.88, "ambiguous": false, "why": "后藤一里的爱称「波奇酱」，圈内最常用叫法" },
+    { "from": "波奇", "to": { "character": "gotou hitori" }, "kind": "character", "label": "后藤一里", "conf": 0.78, "ambiguous": true, "why": "「波奇酱」的简称；但它也是「波奇塔」的子串，且单独用时歧义较大，故压到兜底档" },
+    { "from": "伊地知虹夏", "to": { "character": "ijichi nijika" }, "kind": "character", "label": "伊地知虹夏", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → ijichi nijika" },
+    { "from": "虹夏", "to": { "character": "ijichi nijika" }, "kind": "character", "label": "伊地知虹夏", "conf": 0.8, "ambiguous": false, "why": "「伊地知虹夏」的简称" },
+    { "from": "山田凉", "to": { "character": "yamada ryo" }, "kind": "character", "label": "山田凉", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → yamada ryo" },
+    { "from": "喜多郁代", "to": { "character": "kita ikuyo" }, "kind": "character", "label": "喜多郁代", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → kita ikuyo" },
+    { "from": "喜多", "to": { "character": "kita ikuyo" }, "kind": "character", "label": "喜多郁代", "conf": 0.75, "ambiguous": true, "why": "「喜多郁代」的简称；单独用时也是常见日文姓氏" },
+    { "from": "广井菊里", "to": { "character": "hiroi kikuri" }, "kind": "character", "label": "广井菊里", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → hiroi kikuri" },
+    { "from": "伊地知星歌", "to": { "character": "ijichi seika" }, "kind": "character", "label": "伊地知星歌", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → ijichi seika" },
+    { "from": "后藤二里", "to": { "character": "gotou futari" }, "kind": "character", "label": "后藤二里", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → gotou futari" }
+  ]
+}

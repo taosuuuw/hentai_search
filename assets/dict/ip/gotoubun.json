@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "gotoubun",
+  "name": "五等分的新娘",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「中野三玖」不会加载本包。",
+  "_coreOverlapNote": "本包**刻意不写** from='五等分'：core.js 已有该 series 条目（→ gotoubun，conf 0.85）。而 '五等分' 是 '五等分的新娘' 的子串，重复会让两条一起降档。'五等分的新娘' 只作锚点。",
+  "_anchorsExcludedNote": "五姐妹的单名简称处理**已统一**（2026-09-21）：`三玖` / `四叶` / `五月` 本来就不在锚点里，`一花` / `二乃` **也已从 anchors 删除** —— 现在五个单名**都不作触发词**（词条全部保留：`一花 → 中野一花`、`二乃 → 中野二乃` 等，包被加载后照常参与判定）。理由：锚点是懒加载触发词、中文锚点是包含匹配，`一花` 还是常用词（一花一世界），单名简称会让无关查询白拉本包。五姐妹的官方全名 `中野一花` … `中野五月` 仍是锚点，所以五个角色照常可达。删完已重新生成 assets/dict/ip/index.json。详见 assets/dict/README.md §4(b-2)。",
+  "_coverageNote": "角色层 11 条。五姐妹用「中野 + 单名」的官方全名，全部进主动档（本作是五等分题材，姐妹名辨识度极高）。",
+  "anchors": [
+    "五等分的新娘", "gotoubun", "quintessential quintuplets", "中野家", "中野一花",
+    "中野二乃", "中野三玖", "中野四叶", "中野五月", "上杉风太郎", "39", "三玖天下第一", "肉包"
+  ],
+  "entries": [
+    { "from": "五等分的新娘", "to": { "series": "gotoubun" }, "kind": "series", "label": "五等分的新娘", "conf": 0.92, "ambiguous": false, "why": "官方中文全名 → 英文检索名 gotoubun / quintessential quintuplets" },
+    { "from": "中野一花", "to": { "character": "nakano ichika" }, "kind": "character", "label": "中野一花", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → nakano ichika" },
+    { "from": "中野二乃", "to": { "character": "nakano nino" }, "kind": "character", "label": "中野二乃", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → nakano nino" },
+    { "from": "中野三玖", "to": { "character": "nakano miku" }, "kind": "character", "label": "中野三玖", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → nakano miku；本作人气最高的角色" },
+    { "from": "中野四叶", "to": { "character": "nakano yotsuba" }, "kind": "character", "label": "中野四叶", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → nakano yotsuba" },
+    { "from": "中野五月", "to": { "character": "nakano itsuki" }, "kind": "character", "label": "中野五月", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → nakano itsuki" },
+    { "from": "上杉风太郎", "to": { "character": "uesugi fuutarou" }, "kind": "character", "label": "上杉风太郎", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → uesugi fuutarou" },
+    { "from": "风太郎", "to": { "character": "uesugi fuutarou" }, "kind": "character", "label": "上杉风太郎", "conf": 0.8, "ambiguous": false, "why": "「上杉风太郎」的简称" },
+    { "from": "三玖", "to": { "character": "nakano miku" }, "kind": "character", "label": "中野三玖", "conf": 0.78, "ambiguous": true, "why": "「中野三玖」的单名简称；虽辨识度较高，但仍是常用字组合，故降档" },
+    { "from": "四叶", "to": { "character": "nakano yotsuba" }, "kind": "character", "label": "中野四叶", "conf": 0.7, "ambiguous": true, "why": "「中野四叶」的单名简称；但「四叶」也是四叶草等常用词" },
+    { "from": "五月", "to": { "character": "nakano itsuki" }, "kind": "character", "label": "中野五月", "conf": 0.65, "ambiguous": true, "why": "「中野五月」的单名简称；但「五月」是月份，歧义极大，故压到最低档" },
+    { "from": "39", "to": { "character": "nakano miku" }, "kind": "character", "label": "中野三玖", "conf": 0.88, "ambiguous": false, "why": "三玖的日文名 みく 谐音「3・9」，中文圈极常用的数字代称" },
+    { "from": "三玖天下第一", "to": { "character": "nakano miku" }, "kind": "character", "label": "中野三玖", "conf": 0.92, "ambiguous": false, "why": "五等分粉丝圈最著名的应援口号，专指三玖" },
+    { "from": "肉包", "to": { "character": "nakano itsuki" }, "kind": "character", "label": "中野五月", "conf": 0.72, "ambiguous": true, "why": "五月在剧中极爱吃肉包，被戏称「肉包」；但该词是通用食物名" },
+    { "from": "一花", "to": { "character": "nakano ichika" }, "kind": "character", "label": "中野一花", "conf": 0.68, "ambiguous": true, "why": "「中野一花」的单名简称；但「一花」也是常用词（一花一世界）" },
+    { "from": "二乃", "to": { "character": "nakano nino" }, "kind": "character", "label": "中野二乃", "conf": 0.76, "ambiguous": true, "why": "「中野二乃」的单名简称；辨识度较高但仍属单名" }
+  ]
+}

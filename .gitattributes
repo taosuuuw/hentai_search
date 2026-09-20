@@ -1,0 +1,5 @@
+# 跨平台启动脚本必须是 LF：shebang 被 \r 破坏会导致 macOS/Linux 上 "bad interpreter"。
+# 只约束这两个 shell 脚本（本机 Git for Windows 的 core.autocrlf=true 会想改成 CRLF）。
+# 其余源码不在本文件约束内，避免对既有文件造成大规模重规范化。
+*.sh text eol=lf
+*.command text eol=lf

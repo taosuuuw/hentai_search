@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "id": "chainsaw-man",
+  "name": "电锯人",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「玛奇玛」不会加载本包。",
+  "_coreOverlapNote": "本包**刻意不写** from='电锯人'：core.js 已有该 series 条目（→ chainsaw man，conf 0.88）。只作锚点登记。",
+  "_coverageNote": "角色层 19 条。官方中文名统一 0.78~0.82（兜底档）；高辨识度外号进主动档。通用词（天使 / 帕瓦 / 秋）已降档或改用全名。",
+  "anchors": [
+    "电锯人", "chainsaw man", "电锯侠", "公安对魔特异课",
+    "电次", "帕瓦", "玛奇玛", "早川秋", "东山小红", "姬野", "岸辺", "蕾塞", "比姆",
+    "天使恶魔", "泽渡", "荒井", "暴力魔人", "鲨鱼魔人", "枪之恶魔", "支配恶魔", "mkm",
+    "小红", "岸边", "天使"
+  ],
+  "entries": [
+    { "from": "电次", "to": { "character": "denji" }, "kind": "character", "label": "电次", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → 英文检索名 denji" },
+    { "from": "玛奇玛", "to": { "character": "makima" }, "kind": "character", "label": "玛奇玛", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → makima；本作人气最高的角色" },
+    { "from": "mkm", "to": { "character": "makima" }, "kind": "character", "label": "玛奇玛", "conf": 0.85, "ambiguous": false, "why": "「玛奇玛」的英文缩写写法" },
+    { "from": "帕瓦", "to": { "character": "power" }, "kind": "character", "label": "帕瓦", "conf": 0.75, "ambiguous": true, "why": "官方中文名 → power；「帕瓦」也是 power 的常见音译，且英文名本身是通用词" },
+    { "from": "早川秋", "to": { "character": "hayakawa aki" }, "kind": "character", "label": "早川秋", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → hayakawa aki" },
+    { "from": "东山小红", "to": { "character": "higashiyama kobeni" }, "kind": "character", "label": "东山小红", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → higashiyama kobeni" },
+    { "from": "姬野", "to": { "character": "himeno" }, "kind": "character", "label": "姬野", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → himeno" },
+    { "from": "岸辺", "to": { "character": "kishibe" }, "kind": "character", "label": "岸辺", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → kishibe" },
+    { "from": "蕾塞", "to": { "character": "reze" }, "kind": "character", "label": "蕾塞", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → reze" },
+    { "from": "比姆", "to": { "character": "beam" }, "kind": "character", "label": "比姆", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → beam" },
+    { "from": "天使恶魔", "to": { "character": "angel devil" }, "kind": "character", "label": "天使恶魔", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → angel devil" },
+    { "from": "泽渡", "to": { "character": "sewatanabe" }, "kind": "character", "label": "泽渡", "conf": 0.7, "ambiguous": false, "why": "官方中文名 → sewatanabe" },
+    { "from": "荒井", "to": { "character": "arai" }, "kind": "character", "label": "荒井", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → arai" },
+    { "from": "暴力魔人", "to": { "character": "violence fiend" }, "kind": "character", "label": "暴力魔人", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → violence fiend" },
+    { "from": "鲨鱼魔人", "to": { "character": "shark fiend" }, "kind": "character", "label": "鲨鱼魔人", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → shark fiend" },
+    { "from": "枪之恶魔", "to": { "term": "gun devil" }, "kind": "term", "label": "枪之恶魔", "conf": 0.82, "ambiguous": false, "why": "核心剧情存在 → Gun Devil" },
+    { "from": "支配恶魔", "to": { "term": "control devil" }, "kind": "term", "label": "支配恶魔", "conf": 0.78, "ambiguous": false, "why": "玛奇玛的恶魔身份 → Control Devil" },
+    { "from": "电锯恶魔", "to": { "term": "chainsaw devil" }, "kind": "term", "label": "电锯恶魔", "conf": 0.8, "ambiguous": false, "why": "电次体内的恶魔 → Chainsaw Devil" },
+    { "from": "波奇塔", "to": { "term": "pochita" }, "kind": "term", "label": "波奇塔", "conf": 0.85, "ambiguous": false, "why": "电锯恶魔的萌化形态 → Pochita，圈内人气极高" },
+    { "from": "小红", "to": { "character": "higashiyama kobeni" }, "kind": "character", "label": "东山小红", "conf": 0.85, "ambiguous": false, "why": "「东山小红」的简称，圈内最常用叫法" },
+    { "from": "岸边", "to": { "character": "kishibe" }, "kind": "character", "label": "岸辺", "conf": 0.8, "ambiguous": false, "why": "「岸辺」的常见简体写法" },
+    { "from": "天使", "to": { "character": "angel devil" }, "kind": "character", "label": "天使恶魔", "conf": 0.68, "ambiguous": true, "why": "「天使恶魔」的简称；但「天使」是通用词，不可主动劫持" },
+    { "from": "秋", "to": { "character": "hayakawa aki" }, "kind": "character", "label": "早川秋", "conf": 0.6, "ambiguous": true, "why": "「早川秋」的单字简称；单字歧义极大，只作兜底" }
+  ]
+}

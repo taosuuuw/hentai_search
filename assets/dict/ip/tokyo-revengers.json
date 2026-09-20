@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "id": "tokyo-revengers",
+  "name": "东京复仇者",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「松野千冬」不会加载本包。",
+  "_seriesNote": "`tokyo revengers` **不在** NS.SERIES 里，故系列别名用 `to.term` 写成不可点击的说明。",
+  "_coverageNote": "角色层 14 条。东京卍会核心成员进主动档。绰号「麦基 / 龙坚」是中文圈最常用的叫法，已单独收录。",
+  "anchors": [
+    "东京复仇者", "tokyo revengers", "东京卍会", "东卍",
+    "花垣武道", "佐野万次郎", "麦基", "龙宫寺坚", "龙坚", "场地圭介", "三ツ谷隆", "松野千冬",
+    "羽宫一虎", "稀咲铁太", "黑川伊佐那", "佐野艾玛", "橘日向", "橘直人",
+    "武小道", "一虎", "千冬", "场地", "三谷", "稀咲", "伊佐那", "艾玛"
+  ],
+  "entries": [
+    { "from": "东京复仇者", "to": { "term": "tokyo revengers" }, "kind": "term", "label": "东京复仇者（Tokyo Revengers）", "conf": 0.95, "ambiguous": false, "why": "官方中文名 → 英文 Tokyo Revengers" },
+    { "from": "花垣武道", "to": { "character": "hanagaki takemichi" }, "kind": "character", "label": "花垣武道", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → hanagaki takemichi" },
+    { "from": "佐野万次郎", "to": { "character": "sano manjiro" }, "kind": "character", "label": "佐野万次郎", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → sano manjiro" },
+    { "from": "麦基", "to": { "character": "sano manjiro" }, "kind": "character", "label": "佐野万次郎（Mikey）", "conf": 0.88, "ambiguous": false, "why": "万次郎的绰号 Mikey 的中文音译，圈内最常用叫法" },
+    { "from": "龙宫寺坚", "to": { "character": "ryuguji ken" }, "kind": "character", "label": "龙宫寺坚", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → ryuguji ken" },
+    { "from": "龙坚", "to": { "character": "ryuguji ken" }, "kind": "character", "label": "龙宫寺坚（Draken）", "conf": 0.88, "ambiguous": false, "why": "龙宫寺坚的绰号 Draken 的中文简称，圈内最常用叫法" },
+    { "from": "场地圭介", "to": { "character": "baji keisuke" }, "kind": "character", "label": "场地圭介", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → baji keisuke" },
+    { "from": "三ツ谷隆", "to": { "character": "mitsuya takashi" }, "kind": "character", "label": "三ツ谷隆", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → mitsuya takashi" },
+    { "from": "松野千冬", "to": { "character": "matsuno chifuyu" }, "kind": "character", "label": "松野千冬", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → matsuno chifuyu" },
+    { "from": "羽宫一虎", "to": { "character": "hanemiya kazutora" }, "kind": "character", "label": "羽宫一虎", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → hanemiya kazutora" },
+    { "from": "稀咲铁太", "to": { "character": "kisaki tetta" }, "kind": "character", "label": "稀咲铁太", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → kisaki tetta" },
+    { "from": "黑川伊佐那", "to": { "character": "kurokawa izana" }, "kind": "character", "label": "黑川伊佐那", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → kurokawa izana" },
+    { "from": "佐野艾玛", "to": { "character": "sano emma" }, "kind": "character", "label": "佐野艾玛", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → sano emma" },
+    { "from": "橘日向", "to": { "character": "tachibana hinata" }, "kind": "character", "label": "橘日向", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → tachibana hinata" },
+    { "from": "橘直人", "to": { "character": "tachibana naoto" }, "kind": "character", "label": "橘直人", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → tachibana naoto" },
+    { "from": "武小道", "to": { "character": "hanagaki takemichi" }, "kind": "character", "label": "花垣武道", "conf": 0.88, "ambiguous": false, "why": "花垣武道的绰号「武小道」，官方角色表即以此标注，圈内最常用" },
+    { "from": "千冬", "to": { "character": "matsuno chifuyu" }, "kind": "character", "label": "松野千冬", "conf": 0.85, "ambiguous": false, "why": "「松野千冬」的名简称，圈内最常用" },
+    { "from": "一虎", "to": { "character": "hanemiya kazutora" }, "kind": "character", "label": "羽宫一虎", "conf": 0.82, "ambiguous": false, "why": "「羽宫一虎」的名简称" },
+    { "from": "场地", "to": { "character": "baji keisuke" }, "kind": "character", "label": "场地圭介", "conf": 0.8, "ambiguous": false, "why": "「场地圭介」的姓氏简称" },
+    { "from": "三谷", "to": { "character": "mitsuya takashi" }, "kind": "character", "label": "三ツ谷隆", "conf": 0.75, "ambiguous": false, "why": "「三ツ谷隆」的姓氏简称" },
+    { "from": "稀咲", "to": { "character": "kisaki tetta" }, "kind": "character", "label": "稀咲铁太", "conf": 0.8, "ambiguous": false, "why": "「稀咲铁太」的姓氏简称" },
+    { "from": "伊佐那", "to": { "character": "kurokawa izana" }, "kind": "character", "label": "黑川伊佐那", "conf": 0.8, "ambiguous": false, "why": "「黑川伊佐那」的名简称" },
+    { "from": "艾玛", "to": { "character": "sano emma" }, "kind": "character", "label": "佐野艾玛", "conf": 0.75, "ambiguous": true, "why": "「佐野艾玛」的名简称；但「艾玛」也是常见西方人名" }
+  ]
+}

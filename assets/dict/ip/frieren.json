@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "id": "frieren",
+  "name": "葬送的芙莉莲",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「菲伦」不会加载本包。",
+  "_seriesNote": "`frieren` **不在**引擎的 NS.SERIES 里，所以 `to.series` 推不出 hintQuery。系列的别名一律用 `to.term` 写成**不可点击的说明**——安全默认：宁可点不了，也不要把用户送去搜别的作品。若日后把 frieren 加进 NS.SERIES，这几条可以改成 series，届时会变成可点 chip。",
+  "_coverageNote": "角色层 12 条。芙莉莲与菲伦辨识度极高，进主动档；其余官方名 0.75~0.8（兜底档）。",
+  "anchors": [
+    "葬送的芙莉莲", "frieren", "sousou no frieren", "芙莉莲", "菲伦", "修塔尔克", "辛美尔",
+    "海塔", "艾泽", "阿乌拉", "赞因", "尤贝尔", "克拉夫特", "苍月草", "勇者一行",
+    "福利莲", "魔法阿嬷", "魔法老登", "芙蓉王", "大耳朵芙芙"
+  ],
+  "entries": [
+    { "from": "葬送的芙莉莲", "to": { "term": "frieren" }, "kind": "term", "label": "葬送的芙莉莲（Frieren）", "conf": 0.95, "ambiguous": false, "why": "官方中文全名 → 英文 Frieren（Beyond Journey's End）" },
+    { "from": "芙莉莲", "to": { "character": "frieren" }, "kind": "character", "label": "芙莉莲", "conf": 0.88, "ambiguous": false, "why": "主角名，同时也是作品通称 → 英文检索名 frieren" },
+    { "from": "菲伦", "to": { "character": "fern" }, "kind": "character", "label": "菲伦", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → fern；本作人气最高的角色之一" },
+    { "from": "修塔尔克", "to": { "character": "stark" }, "kind": "character", "label": "修塔尔克", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → stark" },
+    { "from": "辛美尔", "to": { "character": "himmel" }, "kind": "character", "label": "辛美尔", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → himmel" },
+    { "from": "海塔", "to": { "character": "heiter" }, "kind": "character", "label": "海塔", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → heiter" },
+    { "from": "艾泽", "to": { "character": "eisen" }, "kind": "character", "label": "艾泽", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → eisen" },
+    { "from": "阿乌拉", "to": { "character": "aura" }, "kind": "character", "label": "阿乌拉", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → aura" },
+    { "from": "赞因", "to": { "character": "sein" }, "kind": "character", "label": "赞因", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → sein" },
+    { "from": "尤贝尔", "to": { "character": "ubel" }, "kind": "character", "label": "尤贝尔", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → ubel" },
+    { "from": "克拉夫特", "to": { "character": "kraft" }, "kind": "character", "label": "克拉夫特", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → kraft" },
+    { "from": "苍月草", "to": { "term": "blue moon weed" }, "kind": "term", "label": "苍月草", "conf": 0.75, "ambiguous": false, "why": "剧情关键植物，圈内梗密度高 → Blue Moon Weed" },
+    { "from": "魔法阿嬷", "to": { "character": "frieren" }, "kind": "character", "label": "芙莉莲", "conf": 0.88, "ambiguous": false, "why": "芙莉莲实际年龄极大却外貌年幼，被戏称「魔法阿嬷」（萌娘百科别号）" },
+    { "from": "魔法老登", "to": { "character": "frieren" }, "kind": "character", "label": "芙莉莲", "conf": 0.88, "ambiguous": false, "why": "「魔法阿嬷」的变体叫法「魔法老登」（萌娘百科别号）" },
+    { "from": "福利莲", "to": { "character": "frieren" }, "kind": "character", "label": "芙莉莲", "conf": 0.88, "ambiguous": false, "why": "「芙莉莲」的谐音写法「福利莲」（萌娘百科别号）" },
+    { "from": "芙蓉王", "to": { "character": "frieren" }, "kind": "character", "label": "芙莉莲", "conf": 0.85, "ambiguous": false, "why": "「芙莉莲」的谐音玩梗「芙蓉王」（萌娘百科别号）" },
+    { "from": "大耳朵芙芙", "to": { "character": "frieren" }, "kind": "character", "label": "芙莉莲", "conf": 0.85, "ambiguous": false, "why": "芙莉莲耳朵大，爱称「大耳朵芙芙」（萌娘百科别号）" }
+  ]
+}

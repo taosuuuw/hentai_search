@@ -321,6 +321,9 @@
 
   S.init = function () {
     modal = u.el('div', { class: 'hs-modal', id: 'settings-modal', hidden: true, role: 'dialog', 'aria-modal': 'true' });
+    /* 页脚（右下角）那枚「关闭」按钮已按需求移除：面板现在只有页头那一枚
+       hs-icon-btn[data-close]，它的点击绑定仍是下面那条按选择器批量绑定的语句。
+       页脚本身保留：它承担底部分隔线与下内边距，一起删会让面板内容贴底。 */
     modal.innerHTML =
       '<div class="hs-modal-card" role="document">' +
       '<div class="hs-modal-head"><span class="hs-head-ico" aria-hidden="true">' + HS.icon.gear + '</span><h2>设置</h2>' +
@@ -329,8 +332,6 @@
       '<div class="hs-modal-body"></div>' +
       '<div class="hs-modal-foot">' +
       '<span style="font-size:11.5px;color:var(--fg-3)">设置即时生效并保存在本机</span>' +
-      '<span class="hs-spacer"></span>' +
-      '<button class="hs-btn hs-btn-text" type="button" data-close>关闭</button>' +
       '</div></div>';
     document.body.appendChild(modal);
     body = u.$('.hs-modal-body', modal);
@@ -345,13 +346,8 @@
       if (!sbBtn.querySelector('svg')) sbBtn.innerHTML = HS.icon.gear + '<span>设置</span>';
       sbBtn.classList.add('hs-icon-btn-label');
     }
-    const fsBtn = u.$('#foot-settings');
-    if (fsBtn) {
-      if (!fsBtn.querySelector('svg')) fsBtn.innerHTML = HS.icon.gear + '<span>设置</span>';
-      fsBtn.classList.add('hs-linkbtn-ico');
-    }
+    /* 页脚那枚「设置」按钮已按用户要求移除；顶部栏的 #settings-btn 仍在，设置依然可达 */
     u.$('#settings-btn').addEventListener('click', e => { opener = e.currentTarget; S.open(); });
-    u.$('#foot-settings').addEventListener('click', e => { opener = e.currentTarget; S.open(); });
 
     /* 全局 Esc 关闭（若遮蔽键为 Esc，则由 panic 的捕获阶段优先处理） */
     window.addEventListener('keydown', e => {

@@ -59,11 +59,411 @@
     return tail.length ? head.concat(tail) : head;
   }
 
+  /* ---------------- 编号直达置顶 ----------------
+     用户直接甩一个禁漫作品编号（`1474541` / `jm1474541`）时，sources.js 会**按编号**
+     把那一本取回来并打上 `jmDirect` 标记；这里把它稳定分区到**所有排序结果的最前面**。
+     位置选在 applyView() 的最后一环（sinkLastSources 之后），所以：
+       · 不管 R.sort 是默认 / 页数 / 源名 / 标题，也不管 appendMode（继续加载）——
+         置顶分区都是最后一道，必然吃到第一位；
+       · 不参与打分（relevance 给数字输入打不出好分），所以不靠「分数高」保证，
+         用与末位源对称的**硬性稳定分区**实现；
+       · 「拷贝漫画排最后」的分区在这个分区之前跑完，两者互不干扰（末位分区只动
+         copymanga 那些条目，置顶分区只把编号直达项提到最前，其余条目相对顺序一条不动）；
+       · 也不进 buildLayout / sameish —— 同系列堆叠照旧，只是它一定落在第一个布局节点。
+     去重：编号直达项是**最高优先级**，命中的那一本不能被「中文版去重」剔掉 ——
+     这一条在 dropZhLangDup 里显式放过（见 kind 判定），这里再把与它同 key 的重复项摘掉，
+     保证页面上只有它这一张（同 key 的其它语言变体是不同 key，不受影响）。 */
+  function isDirectHit(it) {
+    if (!it) return false;
+    if (it.jmDirect || it.directHit) return true;
+    return !!(HS.sources && HS.sources.isJmDirectHit && HS.sources.isJmDirectHit(it));
+  }
+  /** 稳定分区：编号直达项按原顺序在最前，其余条目相对顺序一条不动 */
+  function liftDirectHits(list) {
+    const head = [], rest = [];
+    (list || []).forEach(it => { (isDirectHit(it) ? head : rest).push(it); });
+    return head.length ? head.concat(rest) : rest;
+  }
+
+  /* ---------------- 多段命中（多关键词排序的主导项） ----------------
+     查询里出现多个关键词时，core.js 的 classifyQuery 会给出 segments（逐段判定的意图）。
+     这里数一件作品**同时命中了几段**，然后：
+
+       · 排序上：**先比命中段数，再比旧分数**（见 cmpHit / applyView 的比较器）——
+         严格的字典序主导，段数多的一定在前，不论它来自多弱的源、多小的热度。
+       · 分数上：命中段数 × SEG_HIT，全部命中再 + SEG_ALL（让 _score 自身也带着段数信息，
+         与排序口径一致）。
+
+     为什么必须是字典序、而不是「每段给固定分」就够：
+       旧分数项的跨度很大（源权重 10×0.5–1.25、标题完全命中 +16、标签命中 +9、
+       汉化 +6、画质/页数 +5……单项就能差 40 分以上），固定分再大也可能被旧项翻盘 ——
+       实测：一段命中但热度高的条目能压过两段命中的条目。所以「段数优先」用比较器实现，
+       固定分只负责让 _score 与排序口径一致。
+     为什么这样排：
+       · 用户打多个词 = 想要「同时满足这些词」的东西；旧口径里只要命中系列就能拿到
+         标签 / 系列 / 标题三项加分，单个关键词足以把「只跟它相关的作品」顶到最前。
+       · 段数相同时，源权重 / 热度 / 页数 / 汉化这些旧项照旧决定次序。
+       · **是排序偏好，不是过滤**：一段都没命中的条目照样保留在结果里，只是排在后面。
+       · 只有 multi（真·多关键词，段数 ≥2）才算段数 —— 单关键词查询的分数与顺序
+         与旧版逐字节一致（_segHit 为 undefined，字典序键恒为 0）。
+     ==================================================================== */
+  const SEG_HIT = 13;   // 每命中一段（进 _score）
+  const SEG_ALL = 9;    // 全部段都命中，_score 上再抬一档
+
+  /** 排序主键之一：命中段数（非多关键词查询一律 0） */
+  function segKey(it) { return (it && it._segHit) || 0; }
+  /** 排序比较器：① 多关键词命中段数（字典序主导）② 名字档（名字符合 > 仅标签命中）
+      ③ 名字贴合度（完全同名 > 前缀 > 包含）④ 旧分数 */
+  function cmpHit(a, b) {
+    return segKey(b) - segKey(a) || nameKey(b) - nameKey(a) || nameTie(a, b) || b._score - a._score;
+  }
+
+  /** 条目正文（小写）：标题 + 画师 + 系列 + 标签 + 备注。不缓存 —— 跨源合并会往 tags 里并数据 */
+  function itemBlob(it) {
+    return [it.title, it.artist, it.series, (it.tags || []).join(' '), it.note]
+      .filter(Boolean).join(' ').toLowerCase();
+  }
+
+  /** 别名命中：纯 ASCII 别名要求**词边界**（否则 'ol' 会命中 'loli' / 'college'），
+      中日文别名按包含匹配。 */
+  const ASCII_ONLY = /^[\x20-\x7e]+$/;
+  function aliasHit(blob, alias) {
+    const a = String(alias == null ? '' : alias).toLowerCase().trim();
+    if (!a) return false;
+    if (!ASCII_ONLY.test(a)) return blob.indexOf(a) >= 0;
+    let from = 0;
+    for (;;) {
+      const at = blob.indexOf(a, from);
+      if (at < 0) return false;
+      const pre = at > 0 ? blob.charAt(at - 1) : '';
+      const post = at + a.length < blob.length ? blob.charAt(at + a.length) : '';
+      if (!/[a-z0-9]/.test(pre) && !/[a-z0-9]/.test(post)) return true;
+      from = at + 1;
+    }
+  }
+
+  /** 一件作品是否命中某个查询段（b 传条目正文可以复用，避免每段拼一次） */
+  function segHit(it, seg, b) {
+    if (!seg) return false;
+    const blob = b == null ? itemBlob(it) : b;
+    if (seg.kind === 'series' && seg.series) {
+      const names = seg.aliases && seg.aliases.length ? seg.aliases : [seg.series];
+      if (it.series && names.indexOf(String(it.series).toLowerCase()) >= 0) return true;
+      return names.some(n => aliasHit(blob, n));
+    }
+    const list = (seg.aliases && seg.aliases.length) ? seg.aliases : [seg.text];
+    return list.some(a => aliasHit(blob, a));
+  }
+
+  /* ======================================================================
+     「名字符合」优先（本次修复的核心）
+     ----------------------------------------------------------------------
+     症状（用户报告）：搜 `人妻猎人` 时，排在最前面的不是名字就叫《人妻猎人》的那一本，
+     而是「标题里恰好含有『人妻』」的别的作品。
+     根因：core.js 的 classifyQuery('人妻猎人') 命中概念 `人妻`（conceptOf 允许中文短词
+     包含匹配）⇒ kind='genre'，于是 relevance() 走「按 tags 命中题材别名 ×5（上限 14）」
+     那一支，**titleFit 只在 kind==='title' 时才计分** —— 名字完全对上的一本只拿到
+     「标题字面 +9 / 标题归一 +5」，而一本名字毫不相干、只是标签沾边的作品靠
+     「源权重 + 中文 + 页数 + 标签量」就能反超。
+     语义：**名字符合（含译名 / 中译名）必须无条件排在「只是标签同义」的前面**。
+     做法（只影响排序，不做任何过滤 —— 一条结果都不会被删掉）：
+       · 每次都算标题贴合度（不再只在 kind==='title' 时算），并把它拆成
+         「直接同名」与「译名同名」两档（译名档权重略低，不能盖过直接同名）；
+       · 中英 / 中日互查（译名）：只读 dict.js 的 TAG_ZH / HS.CONCEPTS，不新增任何词表 ——
+         `人妻猎人` →（去掉已命中的概念词「人妻」）→ 残余 `猎人` → TAG_ZH 反查
+         → `hunter`；`明日方舟` →（seriesAliases）→ `arknights`；`寝取` → `netorare` / `ntr`；
+         `milf hunter` → `熟女` 这类反查也走同一条路；
+       · 简繁 / 异体：TAG_ZH 条目里并列的其它中文写法仍是**译名档**；
+                  结构判据 —— 查询在标题里同位置对齐、只差一个字（`人妻猎人`/`人妻獵人`、
+                     `寝取`/`寢取`）**并入「直接同名」档（+16，与完全同名同档）**；
+                     安全边界不变：2 字查询只认整串等长，≥3 字才允许子串滑动；
+       · 排序上新增**名字档比较器**（与既有的「多关键词命中段数」并列，段数仍优先）：
+         完全同名（直接）> 完全同名（译名 / 简繁）> 前缀 > 包含 > 无关；同档内再按旧分数；
+       · `copymanga 末位分区` / `编号直达置顶` / `同系列堆叠` / 追加顺序（R.order /
+         R.appendMode）都不在这个比较器的作用域里 —— 它们仍是 applyView() 的最后几道。
+     未做的（要改 core.js / sources.js 才能彻底解决，见交接报告）：
+       · classifyQuery 仍把 `人妻猎人` 判成 kind='genre'（概念 `人妻`），sources.js 据此
+         只按「人妻」检索，所以「名字就叫《人妻猎人》」的那几本**根本不在结果集里**时
+         无从谈起 —— 本次只能修「在结果集里时怎么排」。
+      ====================================================================== */
+
+  /* 中英 / 中日互查用的「译名等价串」：把查询换成它**在别的语言 / 别的写法下的样子**，
+     用来判断一条标题是不是就是用户要找的那部作品（只是译名 / 简繁不同）。
+     数据全部来自现成字段，**不新增词表**：
+       · classifyQuery 已认出的 concept.aliases（同一概念的中 / 日写法）
+       · TAG_ZH 正查（中文 → 英文 / 罗马字键）与反查（英文 / 罗马字键 → 中文值）
+       · 查询去掉已命中的概念 / 题材词后的**残余词**再查一次
+         （`人妻猎人` 命中概念「人妻」→ 残余 `猎人` → 反查 `hunter`）
+       · 同一个 TAG_ZH 条目里并列的**其它中文写法**（`netorare` → `寝取、寢取` 这种简繁并列）
+     注意：译名等价串**只与标题比对**，绝不参与标签计分 —— 标签分项口径一字未改。 */
+  const XALIAS_MAX = 48;
+  let ZH_REV_DERIVED = null;
+  /** 反查表：英文 / 罗马字键 → 该键指向的中文值（只为译名互查服务，只读 TAG_ZH） */
+  function revDict() {
+    if (ZH_REV_DERIVED) return ZH_REV_DERIVED;
+    const dict = HS.TAG_ZH || {};
+    const rev = Object.create(null);
+    Object.keys(dict).forEach(k => {
+      const v = String(dict[k] == null ? '' : dict[k]).toLowerCase().trim();
+      if (v) (rev[v] = rev[v] || []).push(String(k).toLowerCase());
+    });
+    ZH_REV_DERIVED = rev;
+    return rev;
+  }
+  function xAliases(q, intent) {
+    const low = String(q == null ? '' : q).toLowerCase().trim();
+    const set = [];
+    /* 查询自己已经命中的概念 / 题材词，**不能**再当成「译名」参与标题比对：
+       搜 `人妻猎人` 时「人妻」正是查询里那个词，用它去比标题就会把
+       《巨乳人妻玲子…》这种「只是标签沾边」的条目也判成「名字符合」——
+       那正是本次要修的反面。译名只留**查询里没出现过的其它写法 / 语言**。
+       （`寝取` 的本体就是题材别名，但它没有 concept.aliases，这里不拦；
+        它真正的译名来自反查表 netorare / ntr，仍然生效。） */
+    const own = Object.create(null);
+    const c = intent && intent.concept;
+    if (c) {
+      own[low] = 1;
+      (c.aliases || []).forEach(a => { own[String(a).toLowerCase()] = 1; });
+    }
+    /* 注意：**不能**把题材别名（genre.aliases）整批排除 —— 搜 `寝取` 时题材别名里就有
+       它真正的译名 `netorare` / `ntr`，搜 `明日方舟` 时系列别名里有 `arknights`；
+       排除掉就把译名判定一并废了。只排除「与查询本身完全同字」的写法（那是查询原词，
+       拿它比标题只会把「标题里含这个词」误判成名字符合）。 */
+    own[low] = 1;
+    const push = x => {
+      const s = String(x == null ? '' : x).toLowerCase().trim();
+      if (s.length < 2 || s === low || own[s]) return;
+      if (set.indexOf(s) < 0 && set.length < XALIAS_MAX) set.push(s);
+    };
+    const dict = HS.TAG_ZH || {};
+    const rev = revDict();
+    /* ① 同一概念的其它语言写法（core.js 已经算好了） */
+    if (c) (c.aliases || []).forEach(push);
+    if (intent && intent.genre) (intent.genre.aliases || []).forEach(push);
+    /* ② 中文 → 英文 / 罗马字（整串与残余词都查） */
+    const lookup = tok => {
+      const t = String(tok || '').toLowerCase();
+      if (t.length < 2) return;
+      const zh = dict[t];
+      if (zh) (rev[String(zh).toLowerCase()] || []).forEach(push);
+      const list = rev[t] || [];
+      if (list.length && list.length <= 8) list.forEach(push);
+    };
+    lookup(low);
+    /* 残余词：`人妻猎人` 去掉命中词「人妻」→ `猎人`。
+       残余词常常只是一个**词组片段**（`猎人` 在 TAG_ZH 里只是 `monster hunter`→`怪物猎人` 的尾段），
+       所以这里再做一次「中文值**包含**残余词」的反查 —— 仍然只读 TAG_ZH，不新增数据。 */
+    const residualLookup = tok => {
+      const t = String(tok || '').toLowerCase();
+      if (t.length < 2) return;
+      lookup(t);
+      let n = 0;
+      Object.keys(rev).forEach(v => {
+        if (n >= 6 || v.length < t.length || v.indexOf(t) < 0) return;
+        n++;
+        rev[v].slice(0, 2).forEach(k => {
+          /* 只取那条 key 里「除去公共中文部分」剩下的外文词：`monster hunter` → `hunter` */
+          String(k).split(/[\s/]+/).forEach(w => { if (w.length >= 2) push(w); });
+        });
+      });
+    };
+    /* 残余词：`人妻猎人` 去掉命中词「人妻」→ `猎人` */
+    const words = [];
+    if (c) (c.aliases || []).forEach(a => words.push(String(a).toLowerCase()));
+    if (intent && intent.genre) (intent.genre.aliases || []).forEach(a => words.push(String(a).toLowerCase()));
+    let residual = low;
+    words.sort((a, b) => b.length - a.length).forEach(a => {
+      if (a.length >= 2) residual = residual.split(a).join(' ');
+    });
+    residual.split(/\s+/).forEach(residualLookup);
+    /* ③ 同一个 TAG_ZH 条目里并列的其它中文写法（`netorare` → `寝取、寢取`），
+          以及「中文键 → 中文值」的等价写法（同一 tag 的简繁两种写法）。 */
+    const zhSiblings = tok => {
+      const t = String(tok || '').toLowerCase();
+      if (t.length < 2) return;
+      const sink = v => {
+        if (!v) return;
+        String(v).split(/[、,，/|]+/).forEach(x => {
+          const w = x.trim();
+          if (w.length >= 2 && /[\u3400-\u9fff]/.test(w)) push(w);
+        });
+      };
+      sink(dict[t]);
+      const list = rev[t] || [];
+      if (list.length && list.length <= 4) list.forEach(k => sink(dict[k]));
+    };
+    zhSiblings(low);
+    residual.split(/\s+/).forEach(zhSiblings);
+    return set;
+  }
+
+  const XALIAS_CACHE = {};
   /**
-   * 相关度：按「查询意图」用不同策略打分。
-   *   作品名（title）  → 尽量完全对上名字：完全同名 +16，前缀 +7，包含 +3
+   * 查询是否「看起来像一个作品名」——决定要不要做中英 / 简繁互查（译名判定）。
+   *   · 带括号 / 引号 / 数字：通常是「关键词串」或编号，不当作品名；
+   *   · 中日文：单块 ≤8 字（`人妻猎人` 算，`巨乳人妻玲子` 这种长串不算）；
+   *   · 拉丁：≤3 个词，且**至少一个词能在 TAG_ZH 的键里找到**
+   *     （`milf hunter` / `hitozuma hunter` 算 —— 它们是「罗马字 / 英译的作品名」；
+   *      `big breasts` 这种纯题材词不算，避免把题材词硬当作品名跨语言硬套）。
+   */
+  function queryLooksTitle(q) {
+    const s = String(q || '').trim();
+    if (!s || /[[\]【】()（）「」『』"']/.test(s) || /\d/.test(s)) return false;
+    if (/[\u3400-\u9fff\u3040-\u30ff]/.test(s)) return !/\s/.test(s) && s.length <= 8;
+    const words = s.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length || words.length > 3) return false;
+    if (!/^[a-z0-9!'.:\-\s]+$/.test(s)) return false;
+    const dict = HS.TAG_ZH || {}, rev = revDict();
+    return words.some(w => w.length >= 3 && (dict[w] != null || rev[w] != null));
+  }
+  /** 查询的「译名等价串」；查询本身不是作品名形状时返回空（避免把题材词当作品名跨语言硬套） */
+  function xAliasesFor(q, intent) {
+    if (!queryLooksTitle(q)) return [];
+    const key = String(q).toLowerCase();
+    if (!XALIAS_CACHE[key]) XALIAS_CACHE[key] = xAliases(q, intent);
+    return XALIAS_CACHE[key];
+  }
+
+  /** 一条标题与查询的贴合度（与 u.titleFit 完全同口径，只读调用） */
+  function fitOf(title, q) { return u.titleFit(title, q); }
+
+  /* 简繁「一字之差」容差：TAG_ZH 里**没有**对照的简繁对（`猎` / `獵` 这类：词典只有
+     `monster hunter`→`怪物猎人` 整词，没有 `猎人` 这一条）无法从数据里推导，但可以按
+     **结构**判：短串（查询）在长串（标题）里**同位置对齐**、只差一个字 —— 这几乎只可能是
+     同一部作品的简繁两种写法（`人妻猎人` / `人妻獵人`、`寝取` / `寢取らせ`）。
+     判据是**纯结构**的（仓库里没有简繁对照数据：`dict.js` 里 `獵` / `寢` 出现 0 次），
+     因此它分不清「真简繁对」与「任意差一个汉字的词对」—— `巨乳` / `巨孔`、`人妻` / `人妖`
+     同样满足结构。按维护者选定的**安全口径**，命中后按字数分档：
+       · **≥3 字**变体 → 并入 `fit`（直接同名档 +16）；
+       · **2 字**变体  → 只并入 `xfit`（译名档 +12；2 字无法与任意差一字词对区分，不许顶到第 1）。
+     限制（宁可漏判不可误判）：
+       · 只在查询是「作品名形状」（见 queryLooksTitle）时生效；
+       · 两边都得是中日文，对齐窗口内只允许一个字不同；
+       · 2 字查询**只认整串等长**的对照（`寝取` / `寢取`）—— 代码里是**显式的等长硬闸**
+         （不许任何前缀 / 子串对齐），允许它滑动会立刻误判
+         （实测 `巨乳` 会把《巨卡×女飘》当成同一个名字）；3 字起才允许子串对齐。
+       · 返回值 = 变体档：`0` 不命中 / `2` 两字变体（见 nameFit 的 ③ → xfit）/
+         `3` 三字及以上（见 nameFit 的 ③ → fit）。 */
+  const CVAR_MIN_SUB = 3;
+  function cjkOneCharVariant(title, q) {
+    if (!queryLooksTitle(q)) return 0;
+    const a = u.normTitle(title), b = u.normTitle(q);
+    if (!a || !b || a === b) return 0;
+    const short = a.length <= b.length ? a : b;
+    const long = a.length <= b.length ? b : a;
+    if (short.length < 2 || long.length < short.length) return 0;
+    if (!/[\u3400-\u9fff]/.test(short) || !/[\u3400-\u9fff]/.test(long)) return 0;
+    /* 2 字查询：**只认整串等长**的对照（`寝取` / `寢取`），一个位置的滑动都不许有。
+       少了这一条，`巨乳` 会在真标题《巨卡×女飄》上「同位置对齐、只差一个字」而误判成同名
+       （实测：真网关搜 `巨乳` 时它一度排在第 1 条）；≥3 字才放开子串滑动（见下面的 last）。 */
+    if (short.length < CVAR_MIN_SUB && a.length !== b.length) return 0;
+    /* 所有对齐位置都要试：`寢取らせ篇` 这类标题里，查询出现在中间而不是开头。
+       2 字查询这里只认「整串等长」的对照（`寝取` / `寢取`）—— 允许它做子串滑动会误判
+       （`巨乳` 会把《巨卡×女飘》当成同一个名字）；代价是 2 字查询在更长的标题里
+       （`寢取らせ篇`）只能靠译名（netorare / ntr）命中，这是有意的取舍。 */
+    const last = short.length >= CVAR_MIN_SUB ? long.length - short.length : 0;
+    for (let at = 0; at <= last; at++) {
+      let diff = 0, same = 0, ok = true;
+      for (let i = 0; i < short.length; i++) {
+        const x = short.charAt(i), y = long.charAt(at + i);
+        if (x === y) { same++; continue; }
+        if (!/[\u3400-\u9fff]/.test(x) || !/[\u3400-\u9fff]/.test(y)) { ok = false; break; }
+        diff++;
+        if (diff > 1) { ok = false; break; }
+      }
+      /* 窗口内只允许**一个字**不同，且其余每个位置都必须完全相同 */
+      if (ok && diff === 1 && same === short.length - 1) return short.length >= CVAR_MIN_SUB ? 3 : 2;
+    }
+    return 0;
+  }
+  /** 参与「名字符合」判定的标题字段：主标题 + 中译名（mk() 把中译名挂在 tags 里） */
+  function titleFields(it) {
+    const out = [String(it.title || '')];
+    const tags = it.tags || [];
+    for (let i = 0; i < tags.length && out.length < 4; i++) {
+      const t = String(tags[i] || '');
+      if (t && t !== out[0]) out.push(t);
+    }
+    return out;
+  }
+  /**
+   * 名字贴合度（含译名 / 中译名）：
+   *   fit  0–3 与 u.titleFit 同口径（3 完全同名 / 2 前缀 / 1 包含），取各标题字段最优
+   *   xfit 0–3 同上，但用「跨语言译名等价串」命中的（**≥3 字**的简繁一字之差已并入 fit，
+   *           **2 字**的简繁一字之差留在这里） —— 只算标题，不算标签
+   */
+  function nameFit(it, q, xa) {
+    const fields = titleFields(it);
+    /* ① 直接贴合：与 u.titleFit 完全同口径 */
+    let fit = 0;
+    for (let i = 0; i < fields.length; i++) fit = Math.max(fit, fitOf(fields[i], q));
+    /* ② 译名贴合：只比主标题，且只比「查询里没出现的其它语言 / 其它写法」 */
+    let xfit = 0;
+    if (xa && xa.length && fit < 3) {
+      const main = fields[0];
+      for (let i = 0; i < xa.length; i++) {
+        xfit = Math.max(xfit, u.titleFit(main, xa[i]));
+        if (xfit === 3) break;
+      }
+    }
+    /* ③ 只差一字的简繁变体（`人妻猎人` / `人妻獵人`）：**按字数分档并入** ——
+          ≥3 字进 `fit`（直接同名档 +16），2 字进 `xfit`（译名档 +12）。
+          判据不新造 —— 仍只走上面的 cjkOneCharVariant（同窗对齐、只差一个字、其余位置全同；
+          2 字查询只认整串等长，≥3 字才允许子串滑动）。
+          2 字为什么只进 xfit：判据是**纯结构**的（仓库无简繁对照数据），2 字里「真简繁对」
+          与「任意差一个汉字的词对」无法区分（`巨乳`/`巨孔`、`人妻`/`人妖`），并进直接同名档
+          会把无关的 2 字词顶到第 1 条；留在译名档既保住简繁互认的收益，又不压过真正的直接同名。
+          注意：TAG_ZH 派生的**跨语言译名**（中英 / 中日）仍只走 ② 的 xfit，**不**并入 fit ——
+          这里唯一提升的就是「≥3 字简繁一字之差」这一类。 */
+    if (!fit) {
+      for (let i = 0; i < fields.length; i++) {
+        const v = cjkOneCharVariant(fields[i], q);
+        if (v === 3 && xfit < 3) { fit = 3; break; }
+        if (v === 2 && xfit < 3) xfit = 3;
+      }
+    }
+    return { fit: fit, xfit: xfit };
+  }
+  /** 直接同名的加分：完全同名 +16 / 前缀 +7 / 包含 +3（与旧的 title 口径一致） */
+  const DIRECT_BONUS = [0, 3, 7, 16];
+  /** 译名同名的加分：整体低一档，保证「直接同名」永远压得住「译名同名」 */
+  const XLANG_BONUS = [0, 2, 5, 12];
+  /**
+   * 名字档（排序主键）：
+   *   ≥3  标题与查询**直接**完全同名 / **≥3 字**简繁一字之差（最硬）
+   *   2   标题是查询的**跨语言译名**完全同名 / **2 字简繁一字之差**（+12） / 直接前缀命中
+   *   1   标题含查询，或只是译名前缀 / 包含
+   *   0   名字对不上（只剩标签 / 其它分项）
+   * 档内保留小数位（xfit/10），让「译名贴合度更高的」在前。
+   */
+  function tierOf(fit, xfit) {
+    if (fit === 3) return 3;
+    if (fit === 2) return 2;
+    if (xfit === 3) return 2 + xfit / 10;
+    return Math.max(fit, xfit / 10);
+  }
+  /** 排序主键之二：名字档 */
+  function nameKey(it) { return (it && it._nameKey) || 0; }
+  /** 名字档内再比贴合度（直接贴合优先），最后才轮到旧分数 */
+  function nameTie(a, b) {
+    const fa = (a && a._fit) || 0, fb = (b && b._fit) || 0;
+    if (fb !== fa) return fb - fa;
+    const xa = (a && a._xFit) || 0, xb = (b && b._xFit) || 0;
+    return xb - xa;
+  }
+
+  /**
+   * 相关度：按「名字是否对得上」+「查询意图」用不同策略打分。
+   *   名字符合（任何意图都算）→ 完全同名 +16 / 前缀 +7 / 包含 +3；
+   *                              跨语言译名（中英 / 中日互查）同名 +12 / 前缀 +5 / 包含 +2
+   *                              （简繁**一字之差**：**≥3 字**并入「完全同名」档 +16，
+   *                                **2 字**按译名档 +12 —— 见 nameFit 的 ③）
+   *   作品名（title）  → 名字完全对不上的条目再 -3 往后放
    *   IP/角色（character）→ 尽量命中对应标签：标签命中 +9，系列一致 +6
    *   体裁/题材（genre）  → 尽量罗列相关题材：每命中一个相关题材词 +5（上限 14）
+   * 多关键词（multi）→ 在以上基础上叠加「命中段数」主导项（见上），旧项一律保留。
+   * ★本次修复★：名字贴合度**始终**参与打分与排序（不再只在 kind==='title' 时算），
+   *   见上面的「名字符合优先」段 —— 排序主键由 cmpHit 落实，是偏好不是过滤。
    */
   function relevance(item, q, f) {
     const it = R.intent || (q ? u.classifyQuery(q) : null);
@@ -74,14 +474,16 @@
       if (t.indexOf(q) >= 0) s += 9;
       const c = u.normTitle(item.title), nq = u.normTitle(q);
       if (nq && c.indexOf(nq) >= 0) s += 5;
-      const fit = u.titleFit(item.title, q);
-      item._fit = fit;
-      if (it && it.kind === 'title') {
-        s += [0, 3, 7, 16][fit] || 0;
-        if (!fit && (item.tags || []).length) s -= 3;   // 名字都对不上，往后放
-      } else if (fit === 3) {
-        s += 6;
-      }
+      /* 名字贴合度：始终计算，并写入 item 上的三个排序辅助字段
+         （_fit 仍是「直接贴合度」—— 简繁一字变体现在也算直接同名，所以 title 意图下
+           它同样会带出卡片上的「精确」角标，这是与「视作直接同名」一致的预期） */
+      const xa = xAliasesFor(q, it);
+      const nf = nameFit(item, q, xa);
+      item._fit = nf.fit;
+      item._xFit = nf.xfit;
+      item._nameFit = Math.max(nf.fit, nf.xfit);
+      item._nameKey = tierOf(nf.fit, nf.xfit);
+      s += Math.max(DIRECT_BONUS[nf.fit] || 0, XLANG_BONUS[nf.xfit] || 0);
     }
     if (it && it.kind === 'character') {
       const key = String(it.series || q || '').toLowerCase();
@@ -114,6 +516,18 @@
       item.langs.some(l => f.langs.indexOf(l) >= 0)) s += 4;
     if (item.series) s += 1.5;                    // 可归入系列的更可能被复用
     s += Math.min(2, (item.tags || []).length / 6);
+
+    /* —— 多关键词：命中段数进 _score（排序主键见 cmpHit）——
+       只有 multi（段数 ≥2）才计分：单关键词查询走不到这里，分数与旧版逐字节一致。
+       一段都没命中 → 加 0，条目照常保留（排序偏好，不是过滤）。 */
+    if (it && it.multi && it.segments && it.segments.length >= 2) {
+      let hit = 0;
+      const blob = itemBlob(item);
+      for (let i = 0; i < it.segments.length; i++) if (segHit(item, it.segments[i], blob)) hit++;
+      item._segHit = hit;
+      s += hit * SEG_HIT;
+      if (hit === it.segments.length) s += SEG_ALL;   // 全部关键词都满足：_score 再抬一档
+    }
     return s;
   }
 
@@ -162,8 +576,16 @@
     const adultMode = (HS.filters && HS.filters.adult) === 'strict' ? 'strict' : 'yes';
     if (adultMode === 'strict') out = out.filter(i => i.adult === true);
     else out = out.filter(i => i.adult !== false);
-    out.forEach(it => { it._score = relevance(it, (q || '').toLowerCase(), f || {}); });
-    out.sort((a, b) => b._score - a._score);
+    out.forEach(it => {
+      /* 先清掉上一次查询留在同一条目对象上的排序辅助键（对象可能被复用）——
+         非多关键词查询的段数键必须恒为 0；名字档 / 贴合度同理，必须由本次 relevance 重算，
+         否则继续加载（追加）时新条目会拿着上一轮的名字档参与比较。 */
+      it._segHit = 0;
+      it._nameKey = 0; it._nameFit = 0; it._xFit = 0;
+      it._score = relevance(it, (q || '').toLowerCase(), f || {});
+    });
+    /* 多关键词：先命中段数、再名字档 / 贴合度，最后旧分数 */
+    out.sort(cmpHit);
     return preferZh(out);
   };
 
@@ -223,24 +645,40 @@
   }
 
   function applyView() {
+    const direct = (R.items || []).filter(isDirectHit);
     let list = R.items.slice();
+    /* 编号直达项是最高优先级：先按「和用户当前筛选一致」的口径留下它，
+       再从候选里摘掉与它同 key 的条目（同 key 只会是同一本，避免出现两张一样的卡）。
+       剩下的筛选 / 排序 / 追加顺序 / 末位源分区**一律照原样**，一条都不动。 */
+    const keepDirect = direct.filter(i =>
+      (!R.sourceFilter || i.source === R.sourceFilter) && (!R.zhOnly || i.zh));
+    if (keepDirect.length) {
+      const dk = {};
+      keepDirect.forEach(i => { dk[keyOf(i)] = 1; });
+      list = list.filter(i => !dk[keyOf(i)]);
+    }
     if (R.sourceFilter) list = list.filter(i => i.source === R.sourceFilter);
     if (R.zhOnly) list = list.filter(i => i.zh);
     const by = {
-      rank: (a, b) => (b.zh ? 1 : 0) - (a.zh ? 1 : 0) || b._score - a._score,
+      rank: (a, b) => (b.zh ? 1 : 0) - (a.zh ? 1 : 0) || cmpHit(a, b),
       pages: (a, b) => (b.pages || 0) - (a.pages || 0),
       source: (a, b) => (a.sourceName || '').localeCompare(b.sourceName || '') || b._score - a._score,
       title: (a, b) => (a.title || '').localeCompare(b.title || '')
-    }[R.sort] || ((a, b) => b._score - a._score);
-    /* 默认排序：先保证「相似结果内中文版在前」，再按分数 */
+    }[R.sort] || cmpHit;
+    /* 默认排序：先保证「相似结果内中文版在前」，再按多关键词命中段数 → 旧分数。
+       注意：页数 / 源名 / 标题是用户显式选的排序，比较器一字未动 —— 多段打分只会
+       影响它们的**同值并列**（并列时按相关性先后），不会盖过它们的主键。 */
     const ranked = R.sort === 'rank'
-      ? preferZh(list.slice().sort((a, b) => b._score - a._score))
+      ? preferZh(list.slice().sort(cmpHit))
       : list.sort(by);
     const ordered = R.appendMode ? appendOrder(ranked) : ranked;
     /* 最后一道：末位源（copymanga，注册表里 last:true）硬性压到所有其它源之后。
        放在 appendOrder 之后 → 「继续加载」时新一批的 copymanga 也只会接在最末尾；
        稳定分区保证非 copymanga 的老顺序（R.order 里的既有名次）一条都不动。 */
-    const out = sinkLastSources(ordered);
+    const sunk = sinkLastSources(ordered);
+    /* 真正最后一道：编号直达项置顶（在末位源分区之后 → 「拷贝漫画排最后」也挤不掉它）。
+       所有排序模式 / 追加模式下都成立：这里是唯一的出口。 */
+    const out = liftDirectHits(keepDirect.concat(sunk));
     R.order = out.map(keyOf);
     return out;
   }
@@ -559,6 +997,8 @@
     const pool = (known || []).slice();
     const out = [];
     list.forEach(nb => {
+      /* 编号直达项优先级最高：它是用户点名要的那一本，任何去重都不能把它剔掉 */
+      if (isDirectHit(nb)) { out.push(nb); pool.push(nb); return; }
       if (pool.some(ea => zhLangDup(ea, nb))) {
         R._zhDupDropped = (R._zhDupDropped || 0) + 1;
         return;
@@ -749,9 +1189,15 @@
     return c ? c.label : '';
   }
 
-  /** 角标（卡片角上与放大视图共用）：汉化 → R18G / AI → 精确 → 源 → 类型 → 页数 → 多站 */
+  /** 角标（卡片角上与放大视图共用）：编号直达 → 汉化 → R18G / AI → 精确 → 源 → 类型 → 页数 → 多站 */
   function badgeNodes(it) {
     const out = [];
+    /* 编号直达：用户点名要的那一本，标签就是它的编号本身（`jm1474541`）。
+       容器加 is-hi（见 cardNode）→ 样式把整排角标挪到**右上角**，与左上角那排不重叠。 */
+    if (isDirectHit(it)) out.push(u.el('span', {
+      class: 'hs-pill hs-pill-jm',
+      title: '编号直达：按禁漫编号取回的这本作品（' + (it.jmDirectId || '') + '）'
+    }, u.esc(it.jmBadge || ('jm' + (it.jmDirectId || it.id || '')))));
     if (it.zh) out.push(u.el('span', {
       class: 'hs-pill hs-pill-zh',
       title: it.zhScan ? '有汉化 / 翻译版本' : '有中文版本'
@@ -804,7 +1250,7 @@
     const imgBox = u.el('div', { class: 'hs-card-img' });
     imgBox.appendChild(img);
 
-    const badges = u.el('div', { class: 'hs-card-badges' });
+    const badges = u.el('div', { class: 'hs-card-badges' + (isDirectHit(it) ? ' is-hi' : '') });
     badgeNodes(it).forEach(n => badges.appendChild(n));
     imgBox.appendChild(badges);
 
@@ -835,6 +1281,11 @@
     card.appendChild(body);
 
     const actions = u.el('div', { class: 'hs-card-actions' });
+    /* 收藏爱心（fav.js）：插在动作区第一个位置，与「在线阅读 / 打开原站」并列。
+       fav.js 缺失时整块跳过 —— 卡片构建不能因为收藏模块不在就报错。
+       这里只调用它的两个口子（makeCardBtn / paintBtn），爱心自己的 click 已经拦住冒泡，
+       不会触发 #results-grid 的「点卡片 = 放大」委托。 */
+    if (HS.fav && HS.fav.makeCardBtn) actions.appendChild(HS.fav.makeCardBtn(it));
     /* 打开原站 / 在线阅读：阅读器支持的来源（HS.reader.supports）就地变成「在线阅读」，
        点它**直接开阅读器**（不再跳原站）；不支持的来源保持原样（仍是跳原站的 <a>，功能不丢）。
        两条路径都显式 stopPropagation：#results-grid 的单击委托是「点卡片 = 放大」，
@@ -1040,6 +1491,9 @@
     });
     R._nodes = els;
     R._rendered = els.length;
+    /* 复用的旧卡片上，爱心可能还停在上一个条目的状态（DOM 复用不会重建它），
+       这里统一重扫一次刷成当前收藏态；fav.js 不在就跳过。 */
+    if (HS.fav && HS.fav.sync) HS.fav.sync(grid);
     /* 入场动画跑完就把标记摘掉，之后再移动节点也不会重播 */
     if (fresh) window.setTimeout(() => { els.forEach(e => e.classList.remove('hs-card-new')); }, 700);
     requestAnimationFrame(applyFanDirection);
@@ -1127,6 +1581,9 @@
   R.applyView = applyView;
   R.sinkLastSources = sinkLastSources;
   R.isLastSource = isLastSource;
+  /* 供自测与调试：编号直达（置顶分区 + 标记判定） */
+  R.isDirectHit = isDirectHit;
+  R.liftDirectHits = liftDirectHits;
 
   /* ---------------- 工具 ---------------- */
 
@@ -1374,7 +1831,10 @@
           '<div class="hs-cm-tags hs-card-tags" data-cm-tags></div>' +
           '<dl class="hs-cm-meta" data-cm-meta></dl>' +
           '<div class="hs-cm-actions">' +
+            /* 「在线阅读」固定在动作区第一位（DOM 顺序，不用 CSS order）：
+               读屏/Tab 顺序与视觉顺序一致；不支持的来源靠 hidden 隐藏，不占位也不可聚焦。 */
             '<button class="hs-btn hs-btn-primary" type="button" data-cm-read hidden>在线阅读</button>' +
+            '<button class="hs-btn hs-btn-ghost" type="button" data-cm-fav>收藏</button>' +
             '<a class="hs-btn hs-btn-ghost" data-cm-open target="_blank" rel="noopener noreferrer">打开原站</a>' +
             '<button class="hs-btn hs-btn-ghost" type="button" data-cm-copy>复制链接</button>' +
             '<button class="hs-btn hs-btn-ghost" type="button" data-cm-artist hidden>按画师筛选</button>' +
@@ -1628,6 +2088,10 @@
       if (canRead) { cmImg.setAttribute('data-rd', '1'); cmImg.title = '在线阅读'; }
       else { cmImg.removeAttribute('data-rd'); cmImg.removeAttribute('title'); }
     }
+
+    /* 收藏按钮（fav.js）：文案与实心/空心状态必须跟着当前条目走。
+       cm.__item 刚在上面赋好，这里同步一次；点击行为由 fav.js 自己接线。 */
+    if (HS.fav && HS.fav.wireModal) HS.fav.wireModal(u.$('[data-cm-fav]', cm), cm);
 
     /* 尺寸 = 卡片本身的 2 倍（"放大到原来的一倍"），**在显示之前就定好**：
        显示后再改宽度会引发一次整层重排+重画，那一下就是用户看到的"放大时顿挫"。 */

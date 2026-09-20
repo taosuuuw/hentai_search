@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "id": "dandadan",
+  "name": "胆大党",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「绫濑桃」不会加载本包。",
+  "_seriesNote": "`dandadan` **不在** NS.SERIES 里，故系列别名用 `to.term` 写成不可点击的说明。",
+  "_coverageNote": "角色层 8 条。绫濑桃与厄卡伦进主动档。`高仓健` 与日本已故影星同名，已降档并标多义。",
+  "anchors": [
+    "胆大党", "dandadan", "当哒当", "绫濑桃", "高仓健", "厄卡伦", "高速婆婆", "圆城寺仁",
+    "白鸟爱罗", "momo"
+  ],
+  "entries": [
+    { "from": "胆大党", "to": { "term": "dandadan" }, "kind": "term", "label": "胆大党（Dandadan）", "conf": 0.9, "ambiguous": false, "why": "官方中文名之一 → 英文 Dandadan" },
+    { "from": "当哒当", "to": { "term": "dandadan" }, "kind": "term", "label": "胆大党（Dandadan）", "conf": 0.88, "ambiguous": false, "why": "官方中文名之一（另一译法）→ Dandadan" },
+    { "from": "绫濑桃", "to": { "character": "ayase momo" }, "kind": "character", "label": "绫濑桃", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → ayase momo；本作女主角" },
+    { "from": "厄卡伦", "to": { "character": "okarun" }, "kind": "character", "label": "高仓健（厄卡伦）", "conf": 0.82, "ambiguous": false, "why": "男主角的绰号 Okarun 的中文音译，圈内更常用" },
+    { "from": "高仓健", "to": { "character": "takakura ken" }, "kind": "character", "label": "高仓健", "conf": 0.7, "ambiguous": true, "why": "男主官方中文名 → takakura ken；但与日本已故影星高仓健同名，故标多义" },
+    { "from": "高速婆婆", "to": { "character": "turbo granny" }, "kind": "character", "label": "高速婆婆", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → turbo granny" },
+    { "from": "圆城寺仁", "to": { "character": "jiji" }, "kind": "character", "label": "圆城寺仁（Jiji）", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → 绰号 Jiji" },
+    { "from": "白鸟爱罗", "to": { "character": "shiratori aira" }, "kind": "character", "label": "白鸟爱罗", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → shiratori aira" },
+    { "from": "桃", "to": { "character": "ayase momo" }, "kind": "character", "label": "绫濑桃", "conf": 0.62, "ambiguous": true, "why": "「绫濑桃」的单字简称；也是桃花、桃太郎等常用字，歧义极大，只作兜底" }
+  ]
+}

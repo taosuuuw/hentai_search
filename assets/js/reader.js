@@ -54,14 +54,57 @@
 
   /* 图片缩放：范围 50%–300%，步进 20%（Ctrl/Cmd + + / - / 0 也能用）。
      倍数只驱动 root 上的 CSS 变量 --hs-rd-zoom（图片尺寸由它算出来），
-     不写进页码 / 章末判定用的几何量，所以缩放不会动进度与章末逻辑 */
+     不写进页码 / 章末判定用的几何量，所以缩放不会动进度与章末逻辑。
+     **倍率按作品记忆**：不再是全局一个值 —— 没见过的新作品一律 100%，
+     在某作品里改过倍率就记住**那个作品**的（同作品换章共享，见 zoomKeyOf）。 */
   const ZOOM_MIN = 0.5, ZOOM_MAX = 3, ZOOM_STEP = 0.2;
+
+  /* ---- 按作品记忆的缩放：自己的 localStorage 键（不往 HS.settings 里塞新结构） ----
+     键 hs.rd.zoom.v1  结构 { v:1, items:{ "<source>:<id>": { z:1.4, t:1699999999999 } } }
+       · 主键口径与收藏一致（fav.js 的 norm()）：有 id 就用 "<source>:<id>"；
+         没有 id 才退到 url → key（归一化标题）→ title 兜底（见 zoomKeyOf）。
+         **chapter 不进主键** —— 同一作品的各章共用一条记录。
+       · z = 倍率（50%–300%，两位小数），t = 最后一次写入时间（只用于上限淘汰）。
+       · 上限 500 条，超了淘汰 t 最小（最旧）的；写盘失败再丢最旧的一批重试一次。
+       · 键不存在 / JSON 损坏 / 结构不对 / 存储不可用（无痕模式、配额满）一律静默降级：
+         读回落 100%，写返回 false 且**不影响本次会话里的缩放**，绝不抛。 */
+  const ZOOM_KEY = 'hs.rd.zoom.v1';
+  const ZOOM_VER = 1;
+  const ZOOM_MAX_ITEMS = 500;
+  const ZOOM_KEY_MAX = 180;      // 键总长上限（与 fav.js 同口径：个别源的 id 本身就是一条长 href）
+  const ZOOM_SUB_MAX = 160;      // id / 兜底串的上限
+
+  /* ---- 按需加载（lazy src）参数 -------------------------------------------
+     · 页盒**全部**先渲染成占位盒（宽高比照旧由 --hs-rd-ar 撑住，布局不跳），
+       但一开始谁都不带 src。
+     · 真正写 src 的只有「当前视口附近」那些页：纵向 = 窗口 [当前页 -NEAR_V,
+       当前页 +NEAR_V+2]（往前多留两页，阅读是从上往下走的），横向单页 = 当前页 ±1
+       （左右各留一张，翻页几乎瞬时）。
+     · 推进加载窗口的**只有一条链**（本文件没有 IntersectionObserver）：
+       滚动 → onScroll 的 rAF → schedulePump() → pumpNear()。
+       各入口另外显式调一次，不等滚动：RD.open() / jumpChapter() / appendNext()
+       负责首屏、切章、自动接续，goToIndex() 负责纵向跳页，onVisible() 负责
+       标签页回前台；横向走 paintHPage() → pumpH()。
+       历史提醒：这里曾有一套页面观察器（pio），但它只在 loadPage() 里 observe()，
+       而同一次调用末尾已经打了 data-loaded，回调必然走早退分支 —— **永远不会真的
+       发起一次新加载**；它的 root 还写成纵向并不滚动的 .hs-rd-scroll。已整段删除。
+     · 已经加载过的页**不卸载**（S.loaded 记账 + 页盒带 data-loaded）：
+       上下回滚时不会重新发起请求、不会闪，也不会因为卸载又把滚动高度改掉。
+       代价只是内存里多留几张已看过的图，比来回抖动划算得多。
+     · 本地实测（Chromium，隐藏文档）：document.visibilityState === 'hidden' 时
+       Chrome 对 loading="lazy" 的图片**推迟 onload** —— 请求照发、200 照记，
+       但就是不绘制，表现为「占位盒不换图、计数停在 0 0 页」。这里给按需加载的
+       图写 loading="eager" 就是绕开那条路径（加载范围已经由我们自己控住了，
+       不需要浏览器再猜），可见文档下行为也更可预期。 */
+  const NEAR_V = 3;          // 纵向：当前页上下各提前加载几页
+  const NEAR_H = 1;          // 横向：当前页左右各提前加载几页
 
   let root = null;     // 覆盖层（惰性创建）
   let el = {};         // 覆盖层里的各个节点
   let open = false;
   let io = null;       // 章末观察器
   let rafPending = false;
+  let pumpPending = false;
   let autoTimer = null;
 
   /* 当前这次阅读的全部状态 */
@@ -130,10 +173,21 @@
           '</div>' +
         '</div>' +
         '<div class="hs-rd-tools">' +
-          '<label class="hs-rd-chap" data-rd-chapwrap hidden>' +
-            '<select class="hs-rd-sel" data-rd-chap aria-label="选择章节"></select>' +
-            '<i class="hs-rd-caret">' + (HS.icon.chev || '') + '</i>' +
-          '</label>' +
+          /* 章节入口：一个**明确的按钮**（写着当前是第几话 / 共几话）+ 点开的章名列表。
+             列表是覆盖层里的 fixed 面板（不写进文档流，不撑开顶栏），滚动 / 点选都在里面做。 */
+          '<div class="hs-rd-chap" data-rd-chapwrap hidden>' +
+            '<button class="hs-rd-chapbtn" type="button" data-rd-chapbtn aria-haspopup="listbox"' +
+              ' aria-expanded="false" title="选择章节">' +
+              '<span class="hs-rd-chapcur" data-rd-chapcur></span>' +
+              '<i class="hs-rd-caret">' + (HS.icon.chev || '') + '</i>' +
+            '</button>' +
+            '<div class="hs-rd-chappick" data-rd-chappick hidden>' +
+              '<div class="hs-rd-chappickhead">' +
+                '<span>选择章节</span><span class="hs-rd-chapnum" data-rd-chapnum></span>' +
+              '</div>' +
+              '<div class="hs-rd-chaplist" data-rd-chaplist role="listbox" aria-label="章节列表"></div>' +
+            '</div>' +
+          '</div>' +
           '<button class="hs-rd-dir" type="button" data-rd-dir aria-pressed="false" title="切换阅读方向：上下连续 / 左右单页">' +
             '<span class="hs-rd-dir-ico" data-rd-dirico>' + ICO_V + '</span>' +
             '<span data-rd-dirlab>上下</span></button>' +
@@ -177,7 +231,11 @@
     el.src = u.$('[data-rd-src]', root);
     el.home = u.$('[data-rd-home]', root);
     el.chapWrap = u.$('[data-rd-chapwrap]', root);
-    el.chap = u.$('[data-rd-chap]', root);
+    el.chapBtn = u.$('[data-rd-chapbtn]', root);
+    el.chapCur = u.$('[data-rd-chapcur]', root);
+    el.chapPick = u.$('[data-rd-chappick]', root);
+    el.chapNum = u.$('[data-rd-chapnum]', root);
+    el.chapList = u.$('[data-rd-chaplist]', root);
     el.dir = u.$('[data-rd-dir]', root);
     el.zoomWrap = u.$('.hs-rd-zoom', root);
     el.zoomVal = u.$('[data-rd-zoomval]', root);
@@ -199,7 +257,17 @@
     el.error = u.$('[data-rd-error]', root);
 
     u.$$('[data-rd-close]', root).forEach(b => b.addEventListener('click', () => RD.close()));
-    el.chap.addEventListener('change', () => jumpChapter(parseInt(el.chap.value, 10) || 0));
+    if (el.chapBtn) el.chapBtn.addEventListener('click', e => { e.stopPropagation(); toggleChapPick(); });
+    /* 章名列表：一个委托监听搞定任意多章（100+ 话也不逐个挂 listener），点中即切章 */
+    if (el.chapList) el.chapList.addEventListener('click', e => {
+      const it = e.target && e.target.closest ? e.target.closest('.hs-rd-chapitem') : null;
+      if (!it) return;
+      e.stopPropagation();
+      closeChapPick();
+      jumpChapter(parseInt(it.getAttribute('data-chap'), 10) || 0);
+    });
+    /* 列表里滚轮只滚列表：横向模式下滚轮 = 翻页，别让鼠标停在章名列表上误翻页 */
+    if (el.chapPick) el.chapPick.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
     el.dir.addEventListener('click', () => setDir(S && S.dir === 'h' ? 'v' : 'h'));
     el.auto.addEventListener('click', () => setAuto(!S.auto));
     /* 缩放：两个按钮 + 点倍数复位（Ctrl/Cmd 组合键在 onKey 里处理） */
@@ -224,7 +292,166 @@
     }
   }
 
+  /* ---------------- 按需加载（只给视口附近的页写 src） ----------------
+     记账：S.loaded[i] = 这一页已经真正发过请求（含失败 / 手动重试），**不卸载**；
+           S.inWindow[i] = 这一页现在落在加载窗口里（滑出去只把标记清掉，src 留着）。
+     唯一的触发链（本文件没有 IntersectionObserver）：
+       onScroll（.hs-rd / .hs-rd-scroll 的 scroll，rAF 合并）→ schedulePump()
+       → pumpNear()：窗口 = currentIndex() 的 -NEAR_V ~ +(NEAR_V+2)。
+     各入口另外**显式**调一次，不等滚动：
+       · RD.open() / jumpChapter() / appendNext() —— 首屏、切章、自动接续
+       · goToIndex()（纵向跳页）/ onVisible()（标签页回前台）
+       · 横向走 paintHPage() → pumpH()（当前页 ±1，一次只有一页在视口里）
+     src 一旦挂上就不再摘（已加载的页不卸载）：上下回滚不重新请求、不闪，
+     滚动高度也不会因为卸载而变。 */
+  /** 判断 / 清账：窗口内的页要 src，窗口外的只清 inWindow 标记（不卸载已加载的） */
+  function pumpNear() {
+    if (!S || !root) return;
+    const list = pageEls();
+    if (!list.length) return;
+    const n = list.length;
+    const idx = u.clamp(currentIndex(), 0, n - 1);
+    /* 纵向多留一点「往前」的余量（阅读是从上往下走的），到头了就夹住 */
+    const back = NEAR_V, ahead = NEAR_V + 2;
+    const lo = Math.max(0, idx - back);
+    const hi = Math.min(n - 1, idx + ahead);
+    for (let i = 0; i < n; i++) {
+      const want = i >= lo && i <= hi;
+      if (want) loadPage(list[i], i);
+      else if (S.inWindow[i]) S.inWindow[i] = false;
+    }
+  }
+
+  /** 横向：只加载当前页 ±1 —— 当前页必须**立刻**加载（一次只有一页在视口里） */
+  function pumpH() {
+    if (!S || !root) return;
+    const list = pageEls();
+    if (!list.length) return;
+    const n = list.length;
+    const idx = u.clamp(S.hIdx >= 0 ? S.hIdx : 0, 0, n - 1);
+    const lo = Math.max(0, idx - NEAR_H), hi = Math.min(n - 1, idx + NEAR_H);
+    for (let i = lo; i <= hi; i++) loadPage(list[i], i);
+  }
+
+  /** 滚动 → rAF 合并：真正的 src 交给下一帧的 pumpNear()（一次滚动只重算一次窗口，不抖） */
+  function schedulePump() {
+    if (!open || !S || pumpPending) return;
+    pumpPending = true;
+    const run = () => { pumpPending = false; if (open && S) pumpNear(); };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(run);
+    else setTimeout(run, 16);
+  }
+
+  /** 让一页**真正开始加载**：已经发过请求的一律跳过（不重复请求、不重绘 canvas）。
+      返回 true 表示这一刻状态有变化（新进入加载窗口 / 新发起请求）。 */
+  function loadPage(box, i) {
+    if (!box || !S) return false;
+    let dirty = false;
+    if (!S.inWindow[i]) { S.inWindow[i] = true; dirty = true; }
+    if (box.getAttribute('data-loaded')) return dirty;
+    box.setAttribute('data-loaded', '1');
+    S.loaded[i] = true;
+    loadImg(box, 0, 0);
+    return true;
+  }
+
+  /** 关掉阅读器时收住按需加载：丢掉还没执行的那次 pump（页盒随即被 clearPages 清空） */
+  function releaseImages() {
+    pumpPending = false;
+  }
+
+  /** 标签页从前台 / 后台切回来时补一次按需加载。
+      隐藏文档里 Chrome 对图片的处理不可靠（实测：loading="lazy" 的 onload 被推迟，
+      请求发出去、200 也记了，但就是不绘制）。可见之后对所有「已经挂了 src、却还没
+      载入成功」的页调一次 img.decode()，把浏览器欠下的那次绘制补上；
+      已经在窗口里的页照 pumpNear() 正常处理。 */
+  function onVisible() {
+    if (!open || !S) return;
+    if (document.visibilityState === 'hidden') return;
+    schedulePump();
+    if (isH()) pumpH();
+    u.$$('.hs-rd-img img', el.pages).forEach(im => {
+      if (!im.getAttribute('src') || im.naturalWidth > 0) return;
+      const box = im.closest && im.closest('.hs-rd-pg');
+      if (box && box.classList.contains('is-ok')) return;
+      try { if (im.decode) im.decode().catch(() => {}); } catch (e) {}
+    });
+  }
+
   /* ---------------- 顶栏 / 章末条 / 底部进度 ---------------- */
+  /** 第 i 话的显示名：优先用上游给的名字，空名字才回落到「第 N 话」。
+      cap > 0 时截断（按钮里的字太长会把工具条挤爆），列表里用全名。 */
+  function chapLabelFor(i, cap) {
+    let s = chapLabel(i);
+    if (cap && s.length > cap) s = s.slice(0, cap - 1) + '…';
+    return s;
+  }
+
+  /** 章节入口按钮上的字：「当前话名 · 第 N / 共 M 话」（多章才有意义） */
+  function paintChapCur() {
+    if (!S || !el.chapCur) return;
+    const n = S.chapters.length;
+    if (n <= 1) return;
+    const i = u.clamp(visibleChapter(), 0, n - 1);
+    el.chapCur.textContent = chapLabelFor(i, 16) + ' · 第 ' + (i + 1) + ' / 共 ' + n + ' 话';
+  }
+
+
+  /** 重建章名列表：只在章节数变化时做（滚动时只更新高亮，不重建，别打断用户滚动 / 点击）。
+      行元素带 data-chap = 下标，点击走 el.chapList 上那个委托监听。 */
+  function buildChapList() {
+    if (!S || !el.chapList) return;
+    const n = S.chapters.length;
+    el.chapList.innerHTML = S.chapters.map((c, i) =>
+      '<button class="hs-rd-chapitem" type="button" role="option" data-chap="' + i + '"' +
+      ' title="' + u.esc(c.name || ('第 ' + (i + 1) + ' 话')) + '">' +
+      '<span class="hs-rd-chapno">' + (i + 1) + '</span>' +
+      '<span class="hs-rd-chapname">' + u.esc(c.name || ('第 ' + (i + 1) + ' 话')) + '</span>' +
+      '</button>').join('');
+    el.chapList.setAttribute('data-n', String(n));
+    if (el.chapNum) el.chapNum.textContent = '共 ' + n + ' 话';
+    paintChapActive();
+  }
+
+  /** 把当前话在列表里标出来（is-cur + aria-selected）；列表没建过就先建 */
+  function paintChapActive() {
+    if (!S || !el.chapList) return;
+    const n = S.chapters.length;
+    if (parseInt(el.chapList.getAttribute('data-n'), 10) !== n) { buildChapList(); return; }
+    const i = u.clamp(visibleChapter(), 0, n - 1);
+    u.$$('.hs-rd-chapitem', el.chapList).forEach((b, k) => {
+      const on = k === i;
+      b.classList.toggle('is-cur', on);
+      if (on) b.setAttribute('aria-selected', 'true'); else b.removeAttribute('aria-selected');
+    });
+  }
+
+  /** 打开 / 收起章节列表 */
+  function toggleChapPick(force) {
+    if (!el.chapPick || !el.chapBtn) return;
+    const want = (typeof force === 'boolean') ? force : el.chapPick.hidden;
+    el.chapPick.hidden = !want;
+    el.chapBtn.setAttribute('aria-expanded', want ? 'true' : 'false');
+    if (want) {
+      paintChapActive();
+      /* 打开时把当前话滚进视野（100+ 话时不做这一步等于每次都要自己找） */
+      const cur = u.$('.hs-rd-chapitem.is-cur', el.chapList);
+      if (cur && cur.scrollIntoView) { try { cur.scrollIntoView({ block: 'center' }); } catch (e) {} }
+    }
+  }
+
+  function closeChapPick() { toggleChapPick(false); }
+
+  /** 点面板 / 按钮之外的地方 = 收起（用捕获阶段的 pointerdown：一定在切页判定之前，不会漏） */
+  function onDocDown(e) {
+    if (!open || !el.chapPick || el.chapPick.hidden) return;
+    const t = e.target;
+    /* 注意：e.target === document 时 closest('[data-rd-chappick]') 会命中文档根，
+       等于永远不收；所以只用面板节点自己 contains() 判，且必须排除 document 本身。 */
+    if (t && t.nodeType === 1 && (el.chapPick.contains(t) || (el.chapBtn && el.chapBtn.contains(t)))) return;
+    closeChapPick();
+  }
+
   function paintBar() {
     if (!S) return;
     el.title.textContent = S.title || (SRC_NAME[S.source] + ' #' + S.id);
@@ -234,14 +461,14 @@
     const multi = S.chapters.length > 1;
     el.chapWrap.hidden = !multi;
     if (multi) {
-      /* 只在章节数量变化时重建 option，否则每次滚动都重建会打断用户的下拉操作 */
-      const want = S.chapters.length;
-      if (parseInt(el.chap.getAttribute('data-n'), 10) !== want) {
-        el.chap.innerHTML = S.chapters.map((c, i) =>
-          '<option value="' + i + '">' + u.esc(c.name || ('第 ' + (i + 1) + ' 话')) + '</option>').join('');
-        el.chap.setAttribute('data-n', String(want));
-      }
-      el.chap.value = String(visibleChapter());
+      const i = u.clamp(visibleChapter(), 0, S.chapters.length - 1);
+      if (el.chapCur) el.chapCur.textContent =
+        chapLabelFor(i, 16) + ' · 第 ' + (i + 1) + ' / 共 ' + S.chapters.length + ' 话';
+      paintChapActive();
+      if (el.chapBtn) el.chapBtn.title = '选择章节：当前 ' + chapLabel(i) +
+        '（第 ' + (i + 1) + ' / 共 ' + S.chapters.length + ' 话）';
+    } else {
+      closeChapPick();
     }
     el.auto.setAttribute('aria-pressed', S.auto ? 'true' : 'false');
     el.auto.classList.toggle('is-on', !!S.auto);
@@ -266,7 +493,11 @@
   function paintProg(idx) {
     if (!S) return;
     const ch = visibleChapter();
-    if (S.chapters.length > 1 && el.chapWrap && !el.chapWrap.hidden) el.chap.value = String(ch);
+    /* 滚动时只更新按钮上的当前话名（列表高亮要遍历上百个节点，等真的打开列表再刷） */
+    if (S.chapters.length > 1 && el.chapWrap && !el.chapWrap.hidden) {
+      if (el.chapCur) el.chapCur.textContent =
+        chapLabelFor(ch, 16) + ' · 第 ' + (ch + 1) + ' / 共 ' + S.chapters.length + ' 话';
+    }
     let txt = (idx || 0) + ' / ' + (S.pageTotal || pageEls().length) + ' 页';
     if (S.chapters.length > 1) txt += ' · 第 ' + (ch + 1) + ' 话 / 共 ' + S.chapters.length + ' 话';
     el.prog.textContent = txt;
@@ -327,7 +558,108 @@
     if (!quiet) HS.toast(isH() ? '已切到左右单页（←/→ 或点左/右半屏翻页）' : '已切到上下连续', 'info', 1600);
   }
 
-  /* ---------------- 图片缩放（--hs-rd-zoom） ---------------- */
+  /* ---------------- 图片缩放（--hs-rd-zoom） ----------------
+     ── 存储层：按作品记倍率 ─────────────────────────────────────────────────
+     为什么不用 HS.settings.readerZoom 当「新作品的缺省倍率」：
+       用户的要求是「没打过交道的作品一律 100%」。老版本把倍率存成**全局唯一值**，
+       升级上来的人盘上就留着 1.4；拿它当缺省等于让第一个打开的新作品继承那个全局值 ——
+       正好是这次要修掉的行为。设置页 / 任何 UI 也都没有读写这个字段（全仓库只有本文件
+       提过它），所以它现在**既不读也不写**，只是一个留在盘上的遗留字段（不删、不清，
+       免得动到用户其它数据）。将来若真要做「新作品缺省倍率」的界面，改 NEW_WORK_ZOOM
+       这一处即可 —— 且必须只作用在**没有自己记忆**的作品上（zoomGet 的两个兜底分支）。 */
+  const NEW_WORK_ZOOM = 1;
+
+  /* 本地存储读写：一律包 try/catch（无痕模式 / 被策略禁用时 localStorage 会直接抛） */
+  function rdLsGet(key) { try { return window.localStorage.getItem(key); } catch (e) { return null; } }
+  function rdLsSet(key, raw) { try { window.localStorage.setItem(key, raw); return true; } catch (e) { return false; } }
+
+  /** 作品主键：与收藏一致的口径 —— 有 id 用 "<source>:<id>"，没有才兜底到 url / 标题。
+      为什么强调这一点：it.key 是「归一化标题」（core.js 的 u.normTitle），
+      同一部作品在不同源上 key 相同、不同作品也可能撞上，拿它当主键会让不同作品的倍率互相覆盖。
+      返回 '' 表示连兜底都没有（这条记录不落盘，永远 100%），绝不写一个空键进去。 */
+  function zoomKeyOf(item) {
+    if (!item) return '';
+    const source = String(item.source == null ? '' : item.source).trim().slice(0, 40) || 'unknown';
+    const id = String(item.id == null ? '' : item.id).trim();
+    /* id 缺失时的兜底顺序与收藏相同：url → key（归一化标题）→ title */
+    const alt = id ? '' : String(item.url || item.key || item.title || '').trim();
+    const sub = (id || alt).slice(0, ZOOM_SUB_MAX);
+    if (!sub) return '';
+    const k = source + ':' + sub;
+    return k.length > ZOOM_KEY_MAX ? k.slice(0, ZOOM_KEY_MAX) : k;
+  }
+
+  /** 读出 items 表：键不存在 / JSON 损坏 / 结构不对 → 空表（调用方随即回落 100%） */
+  function zoomReadItems() {
+    const raw = rdLsGet(ZOOM_KEY);
+    if (!raw) return {};
+    let db = null;
+    try { db = JSON.parse(raw); } catch (e) { return {}; }
+    if (!db || typeof db !== 'object' || Array.isArray(db)) return {};
+    const items = db.items;
+    if (!items || typeof items !== 'object' || Array.isArray(items)) return {};
+    return items;
+  }
+
+  const zoomPack = items => JSON.stringify({ v: ZOOM_VER, items: items });
+
+  /** 按 t 升序（最旧在前）：t 缺失 / 坏掉的当 0（最先被淘汰）；同 t 按键名定序，结果可复现 */
+  function zoomOldest(items) {
+    return Object.keys(items).map(k => {
+      const r = items[k];
+      const t = (r && typeof r === 'object') ? Number(r.t) : 0;
+      return { k: k, t: isFinite(t) ? t : 0 };
+    }).sort((a, b) => (a.t - b.t) || (a.k < b.k ? -1 : (a.k > b.k ? 1 : 0)));
+  }
+
+  /** 条数上限：超出 ZOOM_MAX_ITEMS 就淘汰最旧的那些 */
+  function zoomEvict(items) {
+    const n = Object.keys(items).length;
+    if (n <= ZOOM_MAX_ITEMS) return items;
+    zoomOldest(items).slice(0, n - ZOOM_MAX_ITEMS).forEach(r => { delete items[r.k]; });
+    return items;
+  }
+
+  /** 写回 items 表；整包写失败（配额满之类）就丢掉最旧的一批再试一次，仍失败返回 false */
+  function zoomWriteItems(items) {
+    if (rdLsSet(ZOOM_KEY, zoomPack(items))) return true;
+    const rows = zoomOldest(items);
+    const drop = Math.max(1, Math.floor(rows.length / 10));
+    if (rows.length - drop < 1) return false;       // 只剩一两条：宁可不写，也别把记录清空
+    rows.slice(0, drop).forEach(r => { delete items[r.k]; });
+    return rdLsSet(ZOOM_KEY, zoomPack(items));
+  }
+
+  /** 倍率归一：夹到 50%–300% 并取两位小数（与 setZoom 完全同一套规则） */
+  function normZoom(v) {
+    return Math.round(u.clamp(v, ZOOM_MIN, ZOOM_MAX) * 100) / 100;
+  }
+
+  /** 读这个作品的倍率：没记过 / 记的值坏了 / 键都建不出来 → NEW_WORK_ZOOM（100%） */
+  function zoomGet(item) {
+    const k = zoomKeyOf(item);
+    if (!k) return normZoom(NEW_WORK_ZOOM);
+    const rec = zoomReadItems()[k];
+    /* 容忍几种历史 / 手改形态：数字、数字字符串、{z,t} 对象 */
+    let v = NaN;
+    if (typeof rec === 'number') v = rec;
+    else if (typeof rec === 'string') v = Number(rec);
+    else if (rec && typeof rec === 'object') v = Number(rec.z);
+    if (!isFinite(v) || v <= 0) return normZoom(NEW_WORK_ZOOM);
+    return normZoom(v);
+  }
+
+  /** 记下这个作品（key = zoomKeyOf 的结果）的倍率；key 为空就只在会话里生效。
+      100% 也照记：在某作品里按 Ctrl+0 复位 = 这个作品要 100%。
+      写不进盘也不算失败 —— 本次会话里的缩放照常生效，只是下次打开回到 100%。 */
+  function zoomSet(key, v) {
+    if (!key) return false;
+    const items = zoomReadItems();
+    items[key] = { z: normZoom(v), t: Date.now() };
+    zoomEvict(items);
+    return zoomWriteItems(items);
+  }
+
   /** 把倍数画到 CSS 变量上：图片尺寸由变量算出来，页码 / 章末几何完全不受影响 */
   function paintZoom() {
     if (!root || !S) return;
@@ -342,26 +674,20 @@
     if (el.zoomIn) el.zoomIn.disabled = z >= ZOOM_MAX - 1e-6;
   }
 
-  /** 设定缩放倍数：夹到 50%–300%，写进 HS.settings.readerZoom 持久化（照 readerDir 的写法） */
+  /** 设定缩放倍数：夹到 50%–300%，按**当前作品**记忆（S.zoomKey 在 RD.open 时算好） */
   function setZoom(v, quiet) {
     if (!S) return;
-    const next = Math.round(u.clamp(v, ZOOM_MIN, ZOOM_MAX) * 100) / 100;
+    const next = normZoom(v);
     if (next === S.zoom) { paintZoom(); return; }
     S.zoom = next;
-    HS.settings.readerZoom = next;
-    if (HS.store && HS.store.save) HS.store.save(HS.settings);
+    /* 作品主键在 RD.open 时就算好并存进 S —— 别在这里现算 item：S.item 是调用方给的对象，
+       中途被换掉的话就会把倍率记到另一个作品头上 */
+    zoomSet(S.zoomKey, next);
     paintZoom();
     if (!quiet) HS.toast('缩放 ' + Math.round(next * 100) + '%', 'info', 1100);
   }
 
   function zoomBy(d) { if (S) setZoom((S.zoom || 1) + d, true); }
-
-  /** 读上次存的缩放倍数：没存过 / 不是数字 / 超出范围都回落到 100% */
-  function zoomSaved() {
-    const v = Number(HS.settings && HS.settings.readerZoom);
-    if (!isFinite(v) || v <= 0) return 1;
-    return Math.round(u.clamp(v, ZOOM_MIN, ZOOM_MAX) * 100) / 100;
-  }
 
   /** Ctrl/Cmd + '+/-/0'：命中返回 true。key 在各键盘 / 布局下写法不一，几种都认 */
   function zoomKeys(e) {
@@ -414,12 +740,13 @@
     const st = document.createElement('style');
     st.id = SCRAMBLE_CSS_ID;
     st.textContent =
-      '.hs-rd-img canvas{display:block;width:auto;height:auto;margin:0 auto;' +
-      'max-width:calc(100% * var(--hs-rd-zoom,1));' +
-      'max-height:calc(var(--hs-rd-img-max,96vh) * var(--hs-rd-zoom,1));}' +
+      /* 纵向与 .hs-rd-img img 一致：铺满页宽（页宽里已经含了缩放倍数），不再给第二条上限。
+         canvas 同样是「有固有宽高比的替换元素」：max-width 与 max-height 一起给会被等比
+         缩到两条上限之内，各页渲染宽度就不一样（和图片那条规则是同一个坑）。 */
+      '.hs-rd-img canvas{display:block;width:100%;height:auto;margin:0 auto;' +
+      'max-width:none;max-height:none;}' +
       '.hs-rd[data-dir="h"] .hs-rd-img canvas{width:calc(100% * var(--hs-rd-zoom,1));' +
-      'max-width:none;height:auto;max-height:calc(100% * var(--hs-rd-zoom,1));object-fit:contain;}' +
-      '@media (max-height:520px){.hs-rd-img canvas{max-height:calc(88vh * var(--hs-rd-zoom,1));}}';
+      'max-width:none;height:auto;max-height:calc(100% * var(--hs-rd-zoom,1));object-fit:contain;}';
     (document.head || document.documentElement).appendChild(st);
   }
 
@@ -468,7 +795,8 @@
        图片载入后由 .is-ok 把 aspect-ratio 收成 auto，盒子才会贴着图片、不留空白 */
     if (p.w > 0 && p.h > 0) holder.style.setProperty('--hs-rd-ar', p.w + ' / ' + p.h);
     box.appendChild(holder);
-    loadImg(box, 0, 0);
+    /* 这里**不**写 img / src：按需加载由 pumpNear() / pumpH() 决定谁先真正开始取图
+       （页盒先全部渲染成占位盒，布局高度由上面的 --hs-rd-ar 撑住，不会跳） */
     return box;
   }
 
@@ -486,7 +814,10 @@
     const src = bust ? (base + (base.indexOf('?') >= 0 ? '&' : '?') + '_r=' + bust) : base;
     holder.classList.remove('is-fail');
     holder.innerHTML = '';
-    const img = u.el('img', { alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
+    /* loading="eager"：加载范围已经由 pumpNear() / pumpH() 控住，不需要浏览器再猜；
+       而且隐藏文档里 Chrome 会**推迟 loading="lazy" 图片的 onload**（请求照发、200 照记，
+       就是不绘制），改成 eager 就走不到那条路径上。 */
+    const img = u.el('img', { alt: '', loading: 'eager', decoding: 'async', referrerpolicy: 'no-referrer' });
     img.addEventListener('load', () => {
       /* 禁漫：先按站点算法把分块还原到 canvas，再标 is-ok（图片本身已经加载完了）。
          还原失败就把失败标在盒子上并按原图显示 —— 不静默乱画，也不留白。 */
@@ -526,6 +857,8 @@
 
   /** 清空页面并释放图片：别让一堆大图挂在内存里 */
   function clearPages() {
+    releaseImages();
+    if (S) { S.loaded = {}; S.inWindow = {}; }        // 页盒全没了，按需加载的记账一并归零
     u.$$('img', el.pages).forEach(im => { im.removeAttribute('src'); });
     el.pages.innerHTML = '';
   }
@@ -599,7 +932,8 @@
       el.error.hidden = true;
       paintBar(); paintFoot(); paintProg(1);
       resetScroll();
-      if (isH()) paintHPage();            // 横向：只显示出第 1 页
+      pumpNear();                         // 新章第 1 页（含后面几页）立刻开始加载，不等滚动
+      if (isH()) paintHPage();            // 横向：只显示出第 1 页（paintHPage 里也会补 pumpH）
       watchFoot();
       prefetchNext();
     } catch (e) {
@@ -644,6 +978,7 @@
       paintFoot();
       watchFoot();
       prefetchNext();
+      pumpNear();                         // 接上来的新章同样按窗口加载（别一次把整章都拉下来）
       /* 横向一次一页：接上以后直接把这一页翻到新章首页（瞬时换图；纵向维持原来的滚动位置不动） */
       if (isH()) goToIndex(firstNew);
     } catch (e) {
@@ -684,6 +1019,7 @@
       const list = pageEls();
       if (!list.length) { paintProg(0); return; }
       const idx = currentIndex();
+      schedulePump();                     // 滚过一屏就重算加载窗口（rAF 合并，滚动时不抖）
       paintProg(idx + 1);
       /* 横向：翻到最后一页就等于纵向「滚到底」——章末条、自动连读都从这儿触发 */
       if (isH()) {
@@ -720,9 +1056,10 @@
     const idx = u.clamp(i, 0, list.length - 1);
     if (isH()) {
       S.hIdx = idx;
-      paintHPage();
+      paintHPage();                       // paintHPage() 里会立刻按需加载这一页
     } else {
       list[idx].scrollIntoView({ behavior: 'auto', block: 'start' });
+      pumpNear();                         // 跳页后立刻按新位置（重新）算加载窗口
     }
     paintProg(idx + 1);
     syncFoot();
@@ -740,6 +1077,7 @@
     for (let n = 0; n < list.length; n++) list[n].classList.toggle('is-cur', n === i);
     /* 放大后页内可以滚 / 拖：换页就回到这一页的左上角 */
     if (el.pages) { el.pages.scrollTop = 0; el.pages.scrollLeft = 0; }
+    pumpH();                              // 一次只有一页在视口：当前页必须**立刻**开始加载
     paintProg(i + 1);
     syncFoot();
   }
@@ -810,7 +1148,12 @@
     if (!inField(e.target) && zoomKeys(e)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey || inField(e.target)) return;
     const k = e.key;
-    if (k === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); RD.close(); return; }
+    if (k === 'Escape') {
+      e.preventDefault(); e.stopImmediatePropagation();
+      /* 章名列表开着就先收列表（Escape 的第一层），再按一次才关阅读器 */
+      if (el.chapPick && !el.chapPick.hidden) closeChapPick(); else RD.close();
+      return;
+    }
     if (k === 'ArrowRight' || k === 'PageDown') { e.preventDefault(); e.stopImmediatePropagation(); jumpTo(1); return; }
     if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); e.stopImmediatePropagation(); jumpTo(-1); return; }
     /* 横向单页：↑/↓ 也当翻页（和滚轮的换算一致）；纵向照旧不抢上下键（要留给滚动） */
@@ -889,8 +1232,13 @@
       dir: HS.settings.readerDir === 'h' ? 'h' : 'v',
       /* 横向的当前页下标（显式状态，不依赖滚动位置）；-1 = 这一批页还没定位过 */
       hIdx: -1,
-      /* 上次用的缩放倍数（50%–300%），没存过 / 存坏了都当 100% */
-      zoom: zoomSaved()
+      /* 按需加载记账：loaded[i] = 这一页已经发过请求（不卸载）；
+         inWindow[i] = 这一页当前落在加载窗口里（滑出去只清标记，src 留着） */
+      loaded: {}, inWindow: {},
+      /* 缩放：**按作品**记忆。这个作品没记过（或记录坏了）就是 100%（NEW_WORK_ZOOM），
+         绝不会继承上一个作品 / 老版本那个全局值；主键在打开时算好，改倍率就写这个键。 */
+      zoom: zoomGet(item),
+      zoomKey: zoomKeyOf(item)
     };
     open = true;
     root.hidden = false;
@@ -907,9 +1255,12 @@
     el.tip.textContent = '';
     el.chapWrap.hidden = true;
     paintDir();                                          // 沿用上次的阅读方向（默认上下连续）
-    paintZoom();                                         // 沿用上次的缩放倍数（默认 100%）
+    paintZoom();                                         // 这个作品自己的倍率（没记过 = 100%）
     resetScroll();
+    closeChapPick();                                     // 每次打开都从「收起」开始
     window.addEventListener('keydown', onKey, true);
+    document.addEventListener('pointerdown', onDocDown, true);
+    document.addEventListener('visibilitychange', onVisible);
 
     /* 先确认网关在线：图片只能由网关代取（浏览器直连会撞防盗链 / 跨域），
        网关不在时就地给出「怎么启动」的中文提示，而不是让用户等一个笼统的失败 */
@@ -947,6 +1298,12 @@
       renderPages(0, S.pagesByCh[0]);
       root.classList.add('is-ready');
       paintBar(); paintFoot(); paintProg(1);
+      /* 首屏按需：只把「当前页 ± 几页」真正挂上 src，后面的等滚动到附近再说 */
+      pumpNear();
+      /* 横向单页：光加载还不够 —— 一屏只显示 .is-cur 那一页，首屏必须先把第 1 页标出来，
+         否则打开时整列都是 display:none（看着是空白），要按一次方向键才出图。
+         与 jumpChapter() 里那一行同款（本机实测：纵向打开正常，横向打开原本空白）。 */
+      if (isH()) paintHPage();
       watchFoot();
       prefetchNext();
     } catch (e) {
@@ -978,6 +1335,10 @@
     clearTimeout(autoTimer);
     autoTimer = null;
     window.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointerdown', onDocDown, true);
+    document.removeEventListener('visibilitychange', onVisible);
+    releaseImages();
+    closeChapPick();
     if (io) io.disconnect();
     if (root) {
       root.hidden = true;

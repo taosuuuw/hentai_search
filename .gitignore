@@ -23,3 +23,6 @@ venera_src/
 
 # 发布产物（git archive 打出的 zip 等，不入库）
 dist/
+
+# 词典内部索引：由维护者本地生成，只作离线查阅，不入库（用户要求）
+DICTIONARY-INDEX.md

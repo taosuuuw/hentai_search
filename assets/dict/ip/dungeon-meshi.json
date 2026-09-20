@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "id": "dungeon-meshi",
+  "name": "迷宫饭",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「玛露希尔」不会加载本包。",
+  "_seriesNote": "`dungeon meshi` **不在** NS.SERIES 里，故系列别名用 `to.term` 写成不可点击的说明。",
+  "_coverageNote": "角色层 10 条。莱欧斯 / 玛露希尔 / 法琳辨识度高，进或接近主动档；其余 0.75~0.82（兜底档）。注意 `法琳`(falin) 与芙莉莲的 `菲伦`(fern) 是不同字符串，不会互相命中。",
+  "anchors": [
+    "迷宫饭", "dungeon meshi", "delicious in dungeon", "地下城饭", "莱欧斯", "玛露希尔",
+    "奇尔查克", "先西", "法琳", "娜玛莉", "卡布尔", "德尔嘉鲁", "菊朗", "修洛", "玛露", "玛露西尔"
+  ],
+  "entries": [
+    { "from": "迷宫饭", "to": { "term": "dungeon meshi" }, "kind": "term", "label": "迷宫饭（Delicious in Dungeon）", "conf": 0.95, "ambiguous": false, "why": "官方中文名 → 英文 Dungeon Meshi / Delicious in Dungeon" },
+    { "from": "莱欧斯", "to": { "character": "laios touden" }, "kind": "character", "label": "莱欧斯·图登", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → laios touden" },
+    { "from": "玛露希尔", "to": { "character": "marcille donato" }, "kind": "character", "label": "玛露希尔·多纳托", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → marcille donato；本作人气最高的角色" },
+    { "from": "法琳", "to": { "character": "falin touden" }, "kind": "character", "label": "法琳·图登", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → falin touden" },
+    { "from": "奇尔查克", "to": { "character": "chilchuck tims" }, "kind": "character", "label": "奇尔查克·蒂姆斯", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → chilchuck tims" },
+    { "from": "先西", "to": { "character": "senshi" }, "kind": "character", "label": "先西", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → senshi" },
+    { "from": "娜玛莉", "to": { "character": "namari" }, "kind": "character", "label": "娜玛莉", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → namari" },
+    { "from": "卡布尔", "to": { "character": "kabru" }, "kind": "character", "label": "卡布尔", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → kabru" },
+    { "from": "德尔嘉鲁", "to": { "character": "dolgars" }, "kind": "character", "label": "德尔嘉鲁", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → dolgars" },
+    { "from": "菊朗", "to": { "character": "shuro" }, "kind": "character", "label": "菊朗", "conf": 0.7, "ambiguous": false, "why": "官方中文名 → shuro" },
+    { "from": "玛露", "to": { "character": "marcille donato" }, "kind": "character", "label": "玛露希尔·多纳托", "conf": 0.88, "ambiguous": false, "why": "玛露希尔的爱称「玛露」，圈内最常用叫法" },
+    { "from": "玛露西尔", "to": { "character": "marcille donato" }, "kind": "character", "label": "玛露希尔·多纳托", "conf": 0.82, "ambiguous": false, "why": "官方中文名的另一种通行译法（萌娘百科用「玛露西尔」），与「玛露希尔」互为补充" }
+  ]
+}

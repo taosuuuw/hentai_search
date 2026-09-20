@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "id": "dress-up-darling",
+  "name": "更衣人偶坠入爱河",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「喜多川海梦」不会加载本包。",
+  "_coreOverlapNote": "本包**刻意不写** from='更衣人偶'：core.js 已有该 series 条目（→ dress up darling）。而 '更衣人偶' 是 '更衣人偶坠入爱河' 的子串，重复会互相降档。'更衣人偶坠入爱河' 只作锚点。",
+  "_coverageNote": "角色层 7 条。本作角色数量少但同人密度极高，海梦进主动档。",
+  "anchors": [
+    "更衣人偶坠入爱河", "dress up darling", "sono bisque doll", "喜多川海梦",
+    "五条新菜", "乾纱寿叶", "乾心寿", "海梦", "玛琳", "新菜", "五条"
+  ],
+  "entries": [
+    { "from": "喜多川海梦", "to": { "character": "kitagawa marin" }, "kind": "character", "label": "喜多川海梦", "conf": 0.88, "ambiguous": false, "why": "官方中文名 → kitagawa marin；本作人气最高的角色，同人密度极高" },
+    { "from": "海梦", "to": { "character": "kitagawa marin" }, "kind": "character", "label": "喜多川海梦", "conf": 0.85, "ambiguous": false, "why": "「喜多川海梦」的简称，圈内常用" },
+    { "from": "五条新菜", "to": { "character": "gojou wakana" }, "kind": "character", "label": "五条新菜", "conf": 0.82, "ambiguous": false, "why": "官方中文名 → gojou wakana" },
+    { "from": "乾纱寿叶", "to": { "character": "inui sajuna" }, "kind": "character", "label": "乾纱寿叶", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → inui sajuna" },
+    { "from": "乾心寿", "to": { "character": "inui shinju" }, "kind": "character", "label": "乾心寿", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → inui shinju" },
+    { "from": "更衣人偶坠入爱河", "to": { "series": "dress up darling" }, "kind": "series", "label": "更衣人偶坠入爱河", "conf": 0.9, "ambiguous": false, "why": "官方中文全名 → 英文检索名 dress up darling" },
+    { "from": "喜多川", "to": { "character": "kitagawa marin" }, "kind": "character", "label": "喜多川海梦", "conf": 0.72, "ambiguous": true, "why": "「喜多川海梦」的姓氏简称；单独用时也是常见日文姓氏" },
+    { "from": "玛琳", "to": { "character": "kitagawa marin" }, "kind": "character", "label": "喜多川海梦", "conf": 0.85, "ambiguous": false, "why": "海梦的名字 Marin 的中文音译，圈内常用" },
+    { "from": "新菜", "to": { "character": "gojou wakana" }, "kind": "character", "label": "五条新菜", "conf": 0.8, "ambiguous": false, "why": "「五条新菜」的名简称" },
+    { "from": "五条", "to": { "character": "gojou wakana" }, "kind": "character", "label": "五条新菜", "conf": 0.66, "ambiguous": true, "why": "「五条新菜」的姓氏简称；但咒术回战的五条悟也姓五条，是真实跨作品重名" }
+  ]
+}

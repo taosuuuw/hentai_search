@@ -91,7 +91,7 @@ const PORT = parseInt(argOf('port') || process.env.PORT || '8788', 10);
 const ROOT = path.resolve(argOf('root') || path.join(__dirname, '..'));
 const UA_CHROME = 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ1A.230305.002; wv) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.0.0 Mobile Safari/537.36';
-const GW_VERSION = '1.1.0';
+const GW_VERSION = '1.1.1';
 
 const state = {
   picacgToken: String(process.env.PICACG_TOKEN || '').trim(),
@@ -459,6 +459,10 @@ async function picacgSearch(query) {
 const COPY_SECRET_B64 = 'M2FmMDg1OTAzMTEwMzJlZmUwNjYwNTUwYTA1NjNhNTM=';
 const COPY_UMSTRING = 'b4c89ca4104ea9a97750314d791520ac';
 const COPY_VERSION = '3.0.6';
+/* 阅读器的章节清单：上游 limit 实测封顶 100（写 200/500/1000 直接 code 210），
+   所以只能靠 offset 翻页；硬上限 500 章（haizeiwang 实测 398 章能全部取回）。 */
+const COPY_CHAPTER_PAGE = 100;
+const COPY_MAX_CHAPTERS = 500;
 
 async function copyApiBase() {
   if (state.copyApi && Date.now() - state.copyApiAt < 3600e3) return state.copyApi;
@@ -643,10 +647,30 @@ async function proxyFetch(url, referer) {
   }
   const headers = { 'user-agent': UA_CHROME, accept: 'text/html,application/xhtml+xml,*/*' };
   headers.referer = referer || (u.origin + '/');
+  /* danbooru 的图床（*.donmai.us）：有「刚过完 CF 的 cookie + 同一个 UA」就原样带上，
+     让 /api/proxy 也能取到图（这样用户 IP 不必暴露给图床，见上面 CF 通行证缓存）。
+     没有凭证 / 凭证过期 / 从没撞过 CF / 是别的主机 → 这一段一行都不执行，
+     请求头与改动前逐字节一致（其它源的透传是硬要求，别在这里动任何东西）。 */
+  const cred = cfCredInjectable(u.hostname) ? cfCredHeaderFor(u.hostname, u.pathname) : null;
+  if (cred) {
+    headers.cookie = cred.cookie;
+    if (cred.ua) headers['user-agent'] = cred.ua;
+  }
   try {
     const r = await outFetch(url, { headers: headers, timeout: 12000 });
     deadHosts.delete(u.host);
-    return { status: r.status, buf: r.buf, type: r.headers.get('content-type') || 'text/html; charset=utf-8' };
+    /* 带出去的凭证被上游否了（CF 又拦了）：立刻丢掉，免得后面每一页都先白撞一次 403。
+       回给浏览器的仍然是上游那一个原始响应，语义一点不变。 */
+    if (cred && cfCredRejected(r.status, r.headers)) {
+      cfCredDrop(u.hostname);
+      log('CF 通行证对 ' + u.hostname + ' 已失效（HTTP ' + r.status + '），已丢弃；本条仍按原样返回，' +
+        '下次渲染过验证时会重新缓存');
+    }
+    /* headers 也带出来：/api/proxy 要靠 cf-mitigated 判断「这张/这段是不是 CF 挑战页」 */
+    return {
+      status: r.status, buf: r.buf, headers: r.headers,
+      type: r.headers.get('content-type') || 'text/html; charset=utf-8'
+    };
   } catch (e) {
     deadHosts.set(u.host, Date.now() + DEAD_MS);
     throw e;
@@ -911,6 +935,71 @@ let cfCooldownUntil = 0;
 let cfLastErr = '';
 const CF_CHALLENGE_RE = /just a moment|请稍候|attention required|checking your (browser|connection)|verifying you are human|正在验证|人机验证|cf-chl|_cf_chl_/i;
 
+/* --- 「这是不是 Cloudflare 的挑战页」的可复用判断（porn-comic 与 danbooru 共用）-------
+   为什么不能只看 403：CF 的拦截页在实测里用过 403 / 429 / 503 / 520–527 中的任意一个，
+   甚至能回 200 + 挑战页；而 danbooru 的图床（cdn.donmai.us）回 403 时**响应头带
+   `cf-mitigated: challenge`** —— 那是最硬的证据。所以三层一起看：
+     ① 响应头 cf-mitigated: challenge
+     ② 正文特征（标题 Just a moment…、#challenge-running / #challenge-error-text、
+        cf-chl* 脚本、cf-mitigated 字样）
+     ③ 状态码 403 / 429 / 503 / 520–527
+   正常页面里也会引用 cdn-cgi/challenge-platform 的脚本，所以调用方可以传 okRe
+   （「这是真内容」的特征），okRe 命中就一律判「不是挑战页」—— 真内容优先。 */
+function cfMitigatedHeader(headers) {
+  if (!headers) return '';
+  try {
+    if (typeof headers.get === 'function') return String(headers.get('cf-mitigated') || '');
+    return String(headers['cf-mitigated'] || headers['CF-Mitigated'] || '');
+  } catch (e) { return ''; }
+}
+
+/** 只看正文：是不是 CF 的挑战/拦截页 */
+function cfChallengeHtml(html) {
+  const s = String(html || '');
+  if (!s) return false;
+  if (CF_CHALLENGE_RE.test(s)) return true;
+  if (/<title>\s*(just a moment|请稍候|attention required)/i.test(s)) return true;
+  if (/id="(challenge-running|challenge-stage|challenge-form|challenge-error-text|cf-chl)/i.test(s)) return true;
+  if (/cf-mitigated/i.test(s)) return true;
+  return false;
+}
+
+/** 状态码 + 响应头 + 正文 三层合判；okRe 命中 → 一律判「不是挑战页」 */
+function cfIsChallenge(status, headers, html, okRe) {
+  const s = String(html || '');
+  if (okRe && okRe.test(s)) return false;
+  if (/challenge/i.test(cfMitigatedHeader(headers))) return true;
+  if (cfChallengeHtml(s)) return true;
+  const st = Number(status) || 0;
+  return st === 403 || st === 429 || st === 503 || (st >= 520 && st <= 527);
+}
+
+/** 「过不去 CF」时给一句**可行动**的中文（谁失败、现在能不能救、接下来做什么）
+ *  —— 不抛栈、不把挑战页当正文，也不建议用户「稍后重试」了事。 */
+function cfSolverHint(what, e) {
+  const why = cfUnavailableReason();
+  const left = Math.ceil(cfCooldownLeft() / 1000);
+  let why2;
+  if (why) {
+    why2 = '本机 Chrome 通道在当前环境不可用（' + why + '）';
+  } else if (left > 0) {
+    why2 = '网关刚刚在这条通道上失败过一次，冷却中（还有 ' + left + ' 秒，共 ' +
+      Math.round(CF_FAIL_COOLDOWN / 1000) + ' 秒；连着硬闯只会让出口 IP 名声更差，所以不自动重试）' +
+      (cfLastErr ? '；上次失败：' + cfLastErr : '');
+  } else {
+    why2 = '本机 Chrome 没能过 Cloudflare 验证' + (e && e.message ? '（' + e.message + '）' : '') +
+      (cfLastErr ? '；最近一次失败：' + cfLastErr : '');
+  }
+  return what + '：' + why2 + '。可以：① 确认这台机器上 Chrome 能打开对应网站' +
+    '（沙箱/受限环境里 Chrome 常因命名管道被禁而起不来，报错就是「Chrome 没能启动」）；' +
+    '② 换一个出口代理再试（网关用 --proxy http://127.0.0.1:7897 或先设 HTTPS_PROXY，' +
+    '过验证的成功率跟出口 IP 名声直接相关）；③ 过一会儿再来。';
+}
+
+/** 最近一次真实尝试是不是失败（失败时间晚于最近一次成功）——
+ *  /api/ping 用来说实话：只看可执行文件在不在的话，沙箱里也会报「可用」。 */
+function cfSolverFailing() { return cfState.lastFailAt > (cfState.lastOkAt || 0); }
+
 let cfProfileDir = '';
 const CF_PROFILE_PREFIX = 'erometa-cf-';
 
@@ -991,7 +1080,11 @@ function cfUnavailableReason() {
 const cfState = {
   proc: null, ws: null, ua: '', uaParams: null,
   ready: null, chain: Promise.resolve(), nextId: 0, pending: new Map(),
-  timer: null, solvedAt: 0, renders: 0
+  timer: null, solvedAt: 0, renders: 0,
+  /* 「真验证过没有、最近一次成没成」的如实记录。
+     available 只回答「可执行文件在不在」，在沙箱里照样是 true（实测），
+     所以 /api/ping 另外暴露 verified / failing / lastOkAt / lastErrorAt。 */
+  lastOkAt: 0, lastFailAt: 0
 };
 
 function cdpSend(method, params, sid) {
@@ -1198,6 +1291,178 @@ function cfCacheSet(url, html) {
 }
 function cfCooldownLeft() { return Math.max(0, cfCooldownUntil - Date.now()); }
 
+/* ------------------ CF 通行证（cookie + UA）进程内短缓存 ------------------
+   为什么要有这一段：danbooru 的**接口和图床都在 Cloudflare 后面**。接口能靠本机 Chrome
+   渲染捞回来（cfRender），但图片字节没法从渲染层拿（Chrome 对一张图只会给 <img> 外壳）——
+   于是 /api/proxy 打 cdn.donmai.us 一直是 403 挑战页，只能让**浏览器自己直连图床**
+   （代价：用户 IP 暴露给图床，这正是本轮要改掉的）。
+   办法：cfRender 成功那一刻，用同一条 CDP 连接把这次「过了验证」的浏览器状态取出来：
+     · cookie —— 浏览器里的 cookie 里，只留属于这个站点 zone 的（逐条按 domain 过滤）；
+     · User-Agent —— 页面自己看到的 navigator.userAgent（Emulation 覆盖后的那个）。
+   cf_clearance 绑定**出口 IP + UA**，所以这两样必须成对、原样带上，而且：
+     · 出口一致：Chrome 启动时带的 --proxy-server 就是网关自己的出口（见 cfLaunch）；
+     · UA 用页面里读到的那个，不是 UA_CHROME，也不是 headless 的 UA。
+   只在**进程内存**里（Map + TTL）：不写盘、不进日志 —— 日志最多说「缓存了几个、主机是谁」。
+   ------------------------------------------------------------------------ */
+const CF_CRED_TTL = 15 * 60e3;    /* 通行证 15 分钟：太短会频繁惊动 Chrome，太长会拿着失效凭证空打 */
+const CF_CRED_MAX = 16;           /* 主机条目上限（实际只会有 danbooru 一族） */
+const cfCreds = new Map();        /* host / zone -> { at, ua, cookies:[{name,value,domain,path}] } */
+
+/** 主机名 → 查询键：先精确主机，再退到 zone（后两段，如 cdn.donmai.us → donmai.us）。
+ *  为什么要 zone：cfRender 渲染的是接口域 danbooru.donmai.us，而要代取的是图床域
+ *  cdn.donmai.us；cf_clearance 常挂在 zone（.donmai.us）上，一份凭证得能被同 zone 查到。 */
+function cfCredKeys(host) {
+  const h = String(host || '').toLowerCase().replace(/^\./, '').replace(/:\d+$/, '');
+  const out = [];
+  if (h) out.push(h);
+  const p = h.split('.');
+  if (p.length > 2) {
+    const zone = p.slice(-2).join('.');
+    if (out.indexOf(zone) < 0) out.push(zone);
+  }
+  return out;
+}
+
+/** cookie 的 domain 能不能发给这个主机（host-only 与 .zone 两种都按后缀规则判） */
+function cfCookieDomainMatch(domain, host) {
+  const d = String(domain || '').toLowerCase().replace(/^\./, '');
+  const h = String(host || '').toLowerCase();
+  if (!d || !h) return false;
+  return d === h || (h.length > d.length && h.slice(-(d.length + 1)) === '.' + d);
+}
+
+/** cookie 的 path 能不能发给这个请求路径 */
+function cfCookiePathMatch(cpath, reqPath) {
+  const cp = String(cpath || '/');
+  const rp = String(reqPath || '/');
+  if (cp === '/' || cp === rp) return true;
+  if (rp.indexOf(cp) !== 0) return false;
+  return cp.slice(-1) === '/' || rp.charAt(cp.length) === '/' || rp.charAt(cp.length) === '?';
+}
+
+/** 某一条记录的所有别名键（主机 + zone）一起清掉 */
+function cfCredExpire(rec) {
+  let n = 0;
+  for (const [k, v] of Array.from(cfCreds.entries())) if (v === rec) { cfCreds.delete(k); n++; }
+  return n;
+}
+
+/** 取一份还没过期的凭证；过期即删（连别名键一起）—— 拿不到就当作「没有缓存」，调用方走直连 */
+function cfCredGet(host) {
+  for (const k of cfCredKeys(host)) {
+    const hit = cfCreds.get(k);
+    if (!hit) continue;
+    if (Date.now() - hit.at > CF_CRED_TTL) { cfCredExpire(hit); continue; }
+    return hit;
+  }
+  return null;
+}
+
+/** 存一份凭证：主机键与 zone 键指向同一条记录；条数超上限按插入序淘汰 */
+function cfCredStore(host, cookies, ua) {
+  const rec = { at: Date.now(), ua: String(ua || ''), cookies: cookies || [] };
+  for (const k of cfCredKeys(host)) cfCreds.set(k, rec);
+  while (cfCreds.size > CF_CRED_MAX) cfCreds.delete(cfCreds.keys().next().value);
+  return rec;
+}
+
+/** 丢掉某个主机的凭证（上游说这张通行证不好使了 → 立刻回到「今天的直连透传」） */
+function cfCredDrop(host) {
+  let n = 0;
+  for (const k of cfCredKeys(host)) if (cfCreds.delete(k)) n++;
+  return n;
+}
+
+/** 给这个主机 + 这个路径算一条 Cookie 头；没有可用凭证时返回 null（= 一个字段都不加） */
+function cfCredHeaderFor(host, pathname) {
+  const rec = cfCredGet(host);
+  if (!rec) return null;
+  const path = String(pathname || '/');
+  const parts = (rec.cookies || [])
+    .filter(c => c && c.name && cfCookieDomainMatch(c.domain, host) && cfCookiePathMatch(c.path, path))
+    .map(c => c.name + '=' + c.value);
+  if (!parts.length) return null;
+  return { cookie: parts.join('; '), ua: rec.ua || '', count: parts.length };
+}
+
+/** 只有 danbooru 这一族（*.donmai.us）会被注入凭证 —— 别的主机**一个字段都不加**（硬要求） */
+function cfCredInjectable(host) { return DANBOORU_CF_HOST_RE.test(String(host || '')); }
+
+/** 「带出去的凭证被否了」的判定：CF 的拦截页（403/429/503/520–527 或 cf-mitigated 头）。
+ *  只看状态码与响应头，不去猜图片二进制里有没有挑战页字样。 */
+function cfCredRejected(status, headers) {
+  if (/challenge/i.test(cfMitigatedHeader(headers))) return true;
+  const st = Number(status) || 0;
+  return st === 403 || st === 429 || st === 503 || (st >= 520 && st <= 527);
+}
+
+/** 给 /api/ping 看的只读摘要：主机 + cookie 条数 + 多久前抓的（**绝不含 cookie 值**） */
+function cfCredSummary() {
+  const seen = [];
+  const out = [];
+  for (const k of Array.from(cfCreds.keys())) {
+    const rec = cfCredGet(k);
+    if (!rec || seen.indexOf(rec) >= 0) continue;
+    seen.push(rec);
+    out.push({
+      host: k, cookies: (rec.cookies || []).length,
+      ageSec: Math.round((Date.now() - rec.at) / 1000),
+      ttlSec: Math.round(CF_CRED_TTL / 1000)
+    });
+  }
+  return out;
+}
+
+/** cfRender 成功那一刻的「过验证状态快照」→ 进程内存。
+ *  抓不到也不抛：JSON 已经取回来了，只是图片这一路回到今天的直连行为。
+ *  cookie 值只进内存，绝不写盘、绝不进日志。 */
+async function cfCredCapture(url, sid) {
+  const host = stripHost(url);
+  try {
+    let ua = '';
+    try { ua = String((await cfEval('navigator.userAgent', sid)) || ''); } catch (e) {}
+    if (!ua) ua = String(cfState.ua || '');
+    /* 优先要「浏览器里全部 cookie」再按 zone 过滤（图床域上那份如果有，也能一起拿到）；
+       Storage 域不好使时退回只问这次渲染的那个地址。 */
+    let list = [];
+    try {
+      const r0 = await cdpSend('Storage.getCookies', {}, sid);
+      list = (r0 && r0.cookies) || [];
+    } catch (e) {
+      const origin = (String(url).match(/^(https?:\/\/[^/]+)/i) || [])[1] || '';
+      const r1 = await cdpSend('Network.getCookies', { urls: [origin + '/'] }, sid);
+      list = (r1 && r1.cookies) || [];
+    }
+    /* 抓取范围按 **zone**（donmai.us），不是只按渲染的那个主机：渲染的是 danbooru.donmai.us，
+       而要代取的是 cdn.donmai.us —— 图床域上那份 host-only 的 cookie 也必须一起收下
+       （cf_clearance 通常挂在 zone 上，但不保证；只按 host 收就会漏掉它，图片代理白跑一趟 403）。
+       发送时仍由 cfCredHeaderFor 按「请求主机 ↔ cookie 的 domain/path」逐条过滤，
+       所以只会发回它自己的域，绝不会串给别的主机（其它源的透传依旧逐字节不变）。 */
+    const zone = cfCredKeys(host).slice(-1)[0];
+    const inZone = d0 => {
+      const d = String(d0 || '').toLowerCase().replace(/^\./, '');
+      return !!d && (d === zone || d.slice(-(zone.length + 1)) === '.' + zone);
+    };
+    const kept = list.filter(c => c && c.name && inZone(c.domain)).map(c => ({
+      name: String(c.name),
+      value: String(c.value == null ? '' : c.value),
+      domain: String(c.domain || ''),
+      path: String(c.path || '/')
+    }));
+    if (!kept.length) {
+      log('CF 通过：这次没取到可复用的 cookie（主机 ' + host + '），/api/proxy 照旧直连透传');
+      return null;
+    }
+    const rec = cfCredStore(host, kept, ua);
+    log('CF 通过：已缓存 ' + kept.length + ' 个 cookie，主机 ' + host + '（' +
+      Math.round(CF_CRED_TTL / 60000) + ' 分钟内 /api/proxy 对 *.donmai.us 带上它，UA 一并带上）');
+    return rec;
+  } catch (e) {
+    log('CF 通过，但 cookie 缓存失败（不影响取数，图片回到直连）：' + ((e && e.message) || e));
+    return null;
+  }
+}
+
 /** 一次性闯关：起一个全新的 Chrome（全新 profile）→ 过验证 → 取 HTML → 关掉。
  *  为什么要「一次性」：实测这个站只在浏览器刚起来的那一次验证上放行，
  *  同一个 Chrome 里连着闯第二次就会被 CF 卡死在「Just a moment…」；
@@ -1206,6 +1471,10 @@ function cfCooldownLeft() { return Math.max(0, cfCooldownUntil - Date.now()); }
 async function cfRender(url, opt) {
   opt = opt || {};
   const timeout = opt.timeout || 40000;
+  /* 「这页算取到了」的正文长度门槛。默认 500（porn-comic 的列表页）；
+     但 danbooru 的 JSON 查看器页面只有 <pre> 里那点 JSON，小条目的正文可能不到 500 字节，
+     所以允许调用方调低（见 cfFetchWithSolver 的 minBody）。 */
+  const minBody = Number(opt.minBody) > 0 ? Number(opt.minBody) : 500;
   if (!opt.force) {
     const cached = cfCacheGet(url);
     if (cached) { log('CF 缓存命中：' + url.replace(/^https:\/\/[^/]+/, '')); return cached; }
@@ -1233,12 +1502,16 @@ async function cfRender(url, opt) {
           log('  CF[' + url.replace(/^https:\/\/[^/]+/, '') + '] ' + Math.round((Date.now() - (deadline - timeout)) / 1000) + 's 标题="' + String(st.title).slice(0, 60) + '" len=' + st.body + ' dom=' + st.dom);
         }
         if (/^chrome-error:/i.test(String(st.href))) throw new Error('Chrome 打不开这个地址（' + st.href + '）');
-        if (!st.dom && !CF_CHALLENGE_RE.test(String(st.title)) && st.body > 500) {
+        if (!st.dom && !CF_CHALLENGE_RE.test(String(st.title)) && st.body > minBody) {
           await sleep(900);                       /* 等首屏列表补完 */
           const html = await cfEval('document.documentElement.outerHTML', page.sid);
           if (html) {
-            cfState.renders++; cfState.solvedAt = Date.now();
+            cfState.renders++; cfState.solvedAt = Date.now(); cfState.lastOkAt = Date.now();
             cfCacheSet(url, String(html));
+            /* 顺手把「这次过了验证」的 cookie + UA 记进内存 —— /api/proxy 代取 *.donmai.us
+               的图片要用它（cf_clearance 绑 IP + UA，所以两样一起存、一起带）。
+               抓不到不影响本次取数，见 cfCredCapture。 */
+            await cfCredCapture(url, page.sid);
             return String(html);
           }
         }
@@ -1253,10 +1526,122 @@ async function cfRender(url, opt) {
   cfState.chain = p.then(() => undefined, () => undefined);
   return p.then(html => html, e => {
     cfCooldownUntil = Date.now() + CF_FAIL_COOLDOWN;
+    cfState.lastFailAt = Date.now();               /* /api/ping 据此把 available 降级成 false */
     cfLastErr = (e && e.message) || String(e);
     log('CF 验证失败，' + Math.round(CF_FAIL_COOLDOWN / 1000) + ' 秒内不再硬闯：' + cfLastErr);
     throw e;
   });
+}
+
+/* ==========================================================================
+   通用「先直连、撞 CF 再交给 Chrome」的取数 + 结果复用
+   --------------------------------------------------------------------------
+   给 danbooru（接口与图床都在 CF 后面）用；porn-comic 那条路继续走自己的 pcFetchPage。
+   实测（网关出口 = 本地代理 127.0.0.1:7897，2026-09）：
+     · GET https://danbooru.donmai.us/posts/1.json
+         → HTTP 403，正文 "Just a moment…"，响应头 cf-mitigated: challenge
+         → 同一个 URL 在用户浏览器里是 HTTP 200 + 合法 JSON（浏览器自己有 CF 通行证）
+     · GET https://cdn.donmai.us/180x180/<md5>.jpg（经网关 /api/proxy）
+         → 同一个 403 挑战页，**带不带 Referer 完全一样**（所以不是防盗链，是 CF）
+         → 用户浏览器直连同一个 URL → 200 真出图
+   两条结论决定了下面的实现：接口必须靠 Chrome 渲染捞回来；图片只能让浏览器自己去取。
+   ========================================================================== */
+const CF_HOST_BLOCK_MS = 10 * 60e3;   /* 某主机「必须过 CF」的记忆时长（比死布尔 pcNeedsRender 稳） */
+const cfHostBlocked = new Map();      /* host -> 最近一次被 CF 挡住的时间戳 */
+
+function cfHostBlockedRecently(host) {
+  const at = cfHostBlocked.get(host) || 0;
+  if (!at) return false;
+  if (Date.now() - at < CF_HOST_BLOCK_MS) return true;
+  cfHostBlocked.delete(host);         /* 过期就再直连试一次：换出口代理/CF 改判都能自己恢复 */
+  return false;
+}
+function cfMarkHostBlocked(host) { if (host) cfHostBlocked.set(host, Date.now()); }
+
+/** 把 HTML 实体还原（Chrome 的 outerHTML 里 " < > & 都是转义过的，不还原会 JSON.parse 失败） */
+function cfHtmlUnescape(s) {
+  return String(s || '')
+    .replace(/&(quot|#34|#x22);/gi, '"')
+    .replace(/&(apos|#39|#x27);/gi, "'")
+    .replace(/&(lt|#60|#x3c);/gi, '<')
+    .replace(/&(gt|#62|#x3e);/gi, '>')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&(amp|#38|#x26);/gi, '&');     /* & 一定放最后，否则会把 &amp;lt; 还原错 */
+}
+
+/** 从 Chrome 渲染出来的页面里把 JSON 抠回来。
+ *  Chrome 打开一个 JSON 地址时会套一个查看器，实测 DOM 是
+ *    <html><head>…</head><body><pre style="word-wrap:break-word;white-space:pre-wrap;">{…}</pre></body></html>
+ *  所以先取 <pre> 的文本；顺带对整个 <body> 去标签再试一次（结构变了也不至于立刻放弃）。
+ *  返回解析好的值；抠不出来返回 null（调用方据此报「Chrome 取回来了但不是 JSON」，绝不静默）。 */
+function cfJsonFromRenderedHtml(html) {
+  const s = String(html || '');
+  const tries = [];
+  const pre = s.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  if (pre) { tries.push(pre[1]); tries.push(pre[1].replace(/<[^>]+>/g, '')); }
+  const body = (s.match(/<body[^>]*>([\s\S]*)<\/body>/i) || [])[1];
+  if (body) tries.push(body.replace(/<[^>]+>/g, ''));
+  if (/^\s*[[{]/.test(s)) tries.push(s);
+  for (const raw of tries) {
+    const txt = cfHtmlUnescape(raw).trim();
+    if (!txt) continue;
+    try { return JSON.parse(txt); } catch (e) { /* 换下一个候选 */ }
+  }
+  return null;
+}
+
+/** 先直连，判定为 CF 挑战页就改走 cfRender（本机 Chrome）重取。
+ *  opt: { what, headers, timeout, okRe, minBody, renderTimeout, pre }
+ *    · okRe —— 「这是真内容」的特征（命中就不当挑战页）
+ *    · pre  —— 调用方已经拿到的响应（省一次直连请求），需要 { status, headers, text() }
+ *  返回 { text, status, via }，via = 'http' | 'chrome'。
+ *  失败一律抛中文错误，并且**保证不会把挑战页当成正文返回**。 */
+async function cfFetchWithSolver(url, opt) {
+  opt = opt || {};
+  const what = opt.what || ('取 ' + stripHost(url));
+  const host = stripHost(url);
+  let r = opt.pre || null;
+  if (!r && !cfHostBlockedRecently(host)) {
+    try {
+      r = await outFetch(url, { timeout: opt.timeout || 15000, headers: opt.headers });
+    } catch (e) {
+      /* 连不上也可能是 CF 在 TLS 层就掐了（浏览器过得去、Node 过不去）→ 有 Chrome 就试一次 */
+      if (cfUnavailableReason()) {
+        throw new Error('连不上 ' + what + '：' + ((e && e.message) || e) +
+          '；本机 Chrome 通道也不可用（' + cfUnavailableReason() + '）');
+      }
+      cfMarkHostBlocked(host);
+      log(what + '：直连失败（' + ((e && e.message) || e) + '），改走本机 Chrome 过验证');
+      r = null;
+    }
+  }
+  if (r) {
+    const text = typeof r.text === 'function' ? r.text() : String(r.text || '');
+    if (!cfIsChallenge(r.status, r.headers, text, opt.okRe)) {
+      if (r.status >= 400) {
+        throw new Error(readerUpstreamErr(what, { status: r.status, buf: Buffer.from(text, 'utf8') }));
+      }
+      return { text: text, status: r.status, via: 'http' };
+    }
+    cfMarkHostBlocked(host);
+    log(what + '：被 Cloudflare 挡住（HTTP ' + r.status + '），切换本机 Chrome 过验证');
+  }
+  /* Chrome 通道不可用就别白等（cfRender 也会抛，但这里能连原始状态码一起说清楚） */
+  if (cfUnavailableReason()) {
+    throw new Error(cfSolverHint(what + '（直连被 Cloudflare 挡住，HTTP ' +
+      ((r && r.status) || '网络错误') + '）', null));
+  }
+  let html;
+  try {
+    html = await cfRender(url, { timeout: opt.renderTimeout || 45000, minBody: opt.minBody });
+  } catch (e) {
+    throw new Error(cfSolverHint(what, e));       /* cfRender 自带的 90 秒冷却在这里被如实说出来 */
+  }
+  if (cfChallengeHtml(html)) {
+    /* 双保险：cfRender 自己已经拦过挑战页，这里再确认一次 —— 绝不把挑战页当正文往上送 */
+    throw new Error(cfSolverHint(what + '：Chrome 取回来的仍是 Cloudflare 挑战页（这次验证没通过）', null));
+  }
+  return { text: String(html), status: 200, via: 'chrome' };
 }
 
 /* ==========================================================================
@@ -1306,16 +1691,12 @@ function pcParse(html, host, limit) {
 let pcNeedsRender = false;
 
 /* 判断是不是 CF 的验证中间页。
-   注意：正常页面里也会引用 cdn-cgi/challenge-platform 的脚本，所以绝不能只看这个字符串 ——
-   先认列表特征（a.thumb / 作品链接），有列表就一定是真页面。 */
+   注意：正常页面里也会引用 cdn-cgi/challenge-platform 的脚本，所以绝不能只看那个字符串 ——
+   先认列表特征（a.thumb / 作品链接），有列表就一定是真页面。
+   挑战页本身复用通用的 cfChallengeHtml；状态码/响应头那一层交给 cfIsChallenge。 */
+const PC_OK_RE = /class="[^"]*\bthumb\b|href="\/(h|hentai|gif)\/\d+\.html"/;
 function pcIsChallenge(html) {
-  const s = String(html || '');
-  if (/class="[^"]*\bthumb\b/.test(s)) return false;
-  if (/href="\/(h|hentai|gif)\/\d+\.html"/.test(s)) return false;
-  if (/<title>\s*(just a moment|请稍候|attention required)/i.test(s)) return true;
-  if (/id="(challenge-running|challenge-stage|cf-chl)/i.test(s)) return true;
-  if (/cf-mitigated/i.test(s)) return true;
-  return false;
+  return !PC_OK_RE.test(String(html || '')) && cfChallengeHtml(html);
 }
 
 /** 取一页：先普通请求，被 CF 挡住就交给本机 Chrome 过验证 */
@@ -1324,7 +1705,8 @@ async function pcFetchPage(pathname) {
     try {
       const r = await outFetch(PC_BASE + pathname, { headers: PC_HEADERS, timeout: 15000 });
       const html = r.text();
-      if (!pcIsChallenge(html)) return { html: html, status: r.status, via: 'http' };
+      /* 状态码 + 响应头（cf-mitigated）+ 正文特征一起判：实测 CF 不一定用 403 */
+      if (!cfIsChallenge(r.status, r.headers, html, PC_OK_RE)) return { html: html, status: r.status, via: 'http' };
       pcNeedsRender = true;
       log('porn-comic 被 Cloudflare 挡住，切换到本机 Chrome 过验证');
     } catch (e) {
@@ -1582,6 +1964,18 @@ const MD_READER_LANG_QS = MD_READER_LANGS.map(l => '&translatedLanguage[]=' + l)
 /* aggregate 兜底时最多向 at-home 求证几次 / 最多保留几话（别把上游打成限流） */
 const MD_AGG_PROBE_MAX = 8;
 const MD_AGG_KEEP_MAX = 5;
+/* feed 的分页与硬上限 —— 实测（api.mangadex.org，本机出口）：
+     · /manga/<id>/feed 的 limit 上游封顶 500（写 1000 实测被拒/被夹回 500），
+       所以「一次 limit=500」在长连载上**必然**只拿到前 500 条：
+       实测 a1c7c817（One Piece）total=932 而 limit=500 只回 500 条；
+       801513ba（Berserk）total=4592 更极端。
+     · total 是这条 feed 在 contentRating 四档下的**总条数**（不是章节数），
+       所以分页要按 offset 翻到 total 为止，再用「同话多样本去重」落到章节数。
+     · 每页最多 2 次请求，翻到 MD_FEED_MAX_CHAPTERS 条为止：宁可多要一页，
+       也不静默停在 500（用户看到的「只显示几章」就是这个 500 造成的）。 */
+const MD_FEED_PAGE = 500;              /* 上游单页上限（实测） */
+const MD_FEED_MAX_CHAPTERS = 1000;     /* 硬上限：最多收 1000 条 feed 条目（= 2 页） */
+const MD_MAX_CHAPTERS = 1000;          /* 硬上限：返回给前端的章节数，超出时带 note 说明 */
 
 /** 章节显示名：第 N 话 · 标题（语言） */
 function mdChapterName(num, title, lang) {
@@ -1591,16 +1985,65 @@ function mdChapterName(num, title, lang) {
     (lang ? '（' + String(lang) + '）' : '');
 }
 
+/** feed 一页 → 原始条目（不过滤）。分页与语言参数由调用方拼。 */
+async function mdFeedPage(url, referer, what) {
+  const j = await readerJson(url, referer, what, 20000);
+  return { rows: asArray(j && j.data), total: Number((j && j.total) || 0) };
+}
+
+/** 把整条 feed 翻完（limit=MD_FEED_PAGE / offset 递增，最多 MD_FEED_MAX_CHAPTERS 条）。
+    返回 { list, total, cut, raw }：
+      · list  = 可读章节清单（过滤 externalUrl / pages=0，顺序 = 上游顺序；
+                同一话的多个语言版本按 MD_READER_LANGS 偏好只留最好的那一条）
+      · total = 上游给的条目总数（含被过滤掉的），用于判断「后面是不是真的还有」
+      · cut   = 撞到硬上限、后面还有条目（此时**必须**在 note 里说出来）
+      · raw   = 上游实际返回的可读条目数（去重前的条数，报告里用来对照）
+    中途网络/上游失败会照常抛出（调用方决定是「换一轮」还是「如实报错」）。 */
+async function mdFeedChapters(feedUrl, referer, what) {
+  const byId = new Map();          /* 话 id -> { order, rank, entry }（rank = 语言偏好的名次，越小越优先） */
+  let total = 0, cut = false, raw = 0, offset = 0, seq = 0;
+  for (;;) {
+    if (offset >= MD_FEED_MAX_CHAPTERS) { cut = true; break; }
+    const page = await mdFeedPage(feedUrl + '&limit=' + MD_FEED_PAGE + '&offset=' + offset, referer, what);
+    total = page.total || total;
+    if (!page.rows.length) break;
+    mdReadableChapters({ data: page.rows, langRank: true }).forEach(c => {
+      raw++;
+      const prev = byId.get(c.id);
+      if (!prev) { byId.set(c.id, { order: seq++, rank: c.rank, entry: c }); return; }
+      /* 同一话的不同语言版本：留下语言偏好更靠前的那一条；同级则保持先出现的那条 */
+      if (c.rank < prev.rank) { prev.rank = c.rank; prev.entry = c; }
+    });
+    offset += MD_FEED_PAGE;
+    if (page.rows.length < MD_FEED_PAGE) break;  /* 已经到底 */
+    if (total && offset >= total) break;
+  }
+  const list = Array.from(byId.values()).sort((a, b) => a.order - b.order)
+    .map(x => ({ id: x.entry.id, name: x.entry.name }));   /* 只留 id/name；order/rank/language 是内部字段 */
+  return { list: list, total: total, cut: cut, raw: raw };
+}
+
 /** feed → 可读章节清单。只过滤、不重排（顺序仍是上游返回顺序）：
     · attributes.externalUrl 非空 = 这一话只在原站/外链看，网关托不到图
-    · attributes.pages === 0    = 上游自己也没托管页 */
+    · attributes.pages === 0    = 上游自己也没托管页
+    langRank=true 时额外带 language/rank（供 mdFeedChapters 做同话去重）。 */
 function mdReadableChapters(feed) {
+  const wantRank = !!(feed && feed.langRank);
+  let seq = 0;
   return asArray(feed && feed.data).filter(c => {
     const a = (c && c.attributes) || {};
     return !a.externalUrl && Number(a.pages || 0) > 0;
   }).map(c => {
     const a = c.attributes || {};
-    return { id: String(c.id), name: mdChapterName(a.chapter, a.title, a.translatedLanguage) };
+    const out = { id: String(c.id), name: mdChapterName(a.chapter, a.title, a.translatedLanguage) };
+    if (wantRank) {
+      const lang = String(a.translatedLanguage || '').toLowerCase();
+      const at = MD_READER_LANGS.indexOf(lang);
+      out.language = lang;
+      out.rank = at < 0 ? MD_READER_LANGS.length : at;   /* 不在偏好表里的排最后 */
+      out.order = seq++;
+    }
+    return out;
   });
 }
 
@@ -1644,27 +2087,34 @@ async function readerMangadex(id, chapter) {
     return hostCache[k];
   };
 
-  /* limit 用 500（上游允许的上限）：164eff7a 这种就有 28 话，旧代码的 100 迟早会截断。
-     关键补的是 contentRating[] 四档 —— 少了 pornographic 的 feed 一律返回 0 话。 */
+  /* feed：**按 offset 翻完**（上游 limit 封顶 500，单页必然截断长连载，见上面的实测记录）。
+     contentRating[] 四档一个都不能少 —— 少了 pornographic 的 feed 一律返回 0 话。 */
   const feedUrl = 'https://api.mangadex.org/manga/' + encodeURIComponent(id) +
-    '/feed?limit=500&order[chapter]=asc' + MD_READER_RATING_QS;
+    '/feed?order[chapter]=asc' + MD_READER_RATING_QS;
   /* 主路 = 带语言偏好（跟旧行为一致）。它**不是**致命的：语言码被上游拒（实测 zh-hans
      会让整条 feed 判 400 validation_exception）或这一轮恰好取空，都继续往下走。 */
-  let list = [];
+  let list = [], mdTotal = 0, mdCut = false, mdRaw = 0, mdLangFallback = false;
   let firstErr = null;
   try {
-    list = mdReadableChapters(await readerJson(feedUrl + MD_READER_LANG_QS, referer, 'MangaDex', 20000));
+    const got = await mdFeedChapters(feedUrl + MD_READER_LANG_QS, referer, 'MangaDex');
+    list = got.list; mdTotal = got.total; mdCut = got.cut; mdRaw = got.raw;
   } catch (e) { firstErr = e; }
   /* 只有非 zh/en 版本的作品（实测 aff8827b=pl、c46f5f9f=it、91689e5b=id）→ 放开语言再拿一轮 */
   if (!list.length) {
     try {
-      list = mdReadableChapters(await readerJson(feedUrl, referer, 'MangaDex', 20000));
+      const got = await mdFeedChapters(feedUrl, referer, 'MangaDex');
+      list = got.list; mdTotal = got.total; mdCut = got.cut; mdRaw = got.raw; mdLangFallback = true;
       firstErr = null;
     } catch (e) {
       /* 两轮都失败 = 上游真连不上 / 被挡（不是「没有章节」）→ 抛第一轮的中文错误，
          绝不能悄悄退成「这本没有可读的图」 */
       throw (firstErr || e);
     }
+  }
+  /* 硬上限：章节数上限 MD_MAX_CHAPTERS。撞上限时**不静默**，在 note 里写明上游到底有多少话。 */
+  if (list.length > MD_MAX_CHAPTERS) {
+    list = list.slice(0, MD_MAX_CHAPTERS);
+    mdCut = true;
   }
   /* 兜底：feed 一个可读章节都没有 → aggregate 出候选，再用 at-home 逐个求证到底有没有图 */
   if (!list.length) {
@@ -1706,6 +2156,15 @@ async function readerMangadex(id, chapter) {
   if (!list.length && !pages.length) {
     out.note = 'MangaDex 这个条目没有可托管的章节：章节可能只在原站/外链观看（externalUrl），' +
       '或只有未被收录的版本，也可能刚好被限流了。';
+  } else if (mdCut) {
+    /* 撞了硬上限/上游分页上限时**必须说清楚**，别让用户以为自己看到的就是全部 */
+    out.note = 'MangaDex 的章节清单给了 ' + list.length + ' 话（上游这条 feed 共 ' +
+      (mdTotal ? (mdTotal + ' 条') : '更多条') + '、去重前 ' + mdRaw + ' 条可读条目），' +
+      '已到网关硬上限 ' + MD_FEED_MAX_CHAPTERS + ' 条 feed / ' + MD_MAX_CHAPTERS + ' 话，' +
+      '后面还有没取到的（多为同一话的其它语言版本）。要看后面的章节请去原站。';
+  } else if (mdLangFallback) {
+    out.note = 'MangaDex 这条 feed 没有中文/英文版本，已放开语言（' +
+      MD_READER_LANGS.join('/') + ' 之外也收）取回全部 ' + list.length + ' 话。';
   }
   return out;
 }
@@ -1734,23 +2193,126 @@ async function readerNhentai(id) {
   return { title: String(title), referer: referer, chapters: [], pages: pages };
 }
 
+/* --------------------------------------------------------------------------
+   Danbooru（danbooru.donmai.us）—— 单图作品；接口和图床**两层都在 Cloudflare 后面**
+   本机实测（2026-09，网关出口 = 本地代理 127.0.0.1:7897；同一台机器上的浏览器做对照）：
+     · 网关直接 GET /posts/<id>.json
+         → HTTP 403 + 正文 "Just a moment…" + 响应头 cf-mitigated: challenge
+       （带着 Referer: https://danbooru.donmai.us/ 也一样 —— 不是 Referer 的事）
+     · **同一个 URL 在用户浏览器里** → HTTP 200、正文是合法 JSON，而且带 CORS
+       （在 data: 页里 fetch 能读到 body；没有 ACAO 的话 fetch 会直接抛 TypeError）
+       —— 浏览器有 CF 通行证，Node 没有，这就是这个源「在线阅读基本必然失败」的原因。
+     · 图床同理：网关 /api/proxy 打 cdn.donmai.us/180x180/<md5>.jpg → 403 挑战页；
+       用户浏览器直连**同一个 URL** → 200 真出图（127×180 的缩略图渲染出来了）。
+   所以这里的做法是：
+     ① 接口走 cfFetchWithSolver：先直连，撞 CF 就交给本机 Chrome 渲染 JSON 查看器，
+        再把 JSON 从 <pre> 里抠回来（不执行 JS 的 Node 拿不到，浏览器渲染层拿得到）；
+     ② **图片也走网关 /api/proxy**：cfRender 成功那一刻，顺手把这次过验证的 cookie
+         （cf_clearance 等）与页面 UA 记进进程内存（15 分钟，键按主机/zone），/api/proxy
+         打 *.donmai.us 时原样带上 —— 这样用户 IP 不必暴露给图床。没有凭证时**完全保持
+         今天的直连透传**（今天的 403 行为不变）。pages[].url 的主/备顺序也跟着有没有
+         凭证走（有凭证 = /api/proxy 为主、cdn 直连为备，见 danbooruPage）；
+     ③ 结果按 4 分钟进程内缓存（与 E-Hentai 同口径），来回翻同一张图不再惊动 Chrome。
+   -------------------------------------------------------------------------- */
+const DANBOORU_HOST = 'danbooru.donmai.us';
+const DANBOORU_BASE = 'https://' + DANBOORU_HOST;
+/* 主机的 CF 兜底名单：接口域 + 图床域（都在 donmai.us 这个 CF zone 下） */
+const DANBOORU_CF_HOST_RE = /^([a-z0-9-]+\.)*donmai\.us$/i;
+/* 合法条目 JSON 的第一个字符：用它当「这是真内容」的特征，避免把真响应误当成挑战页 */
+const DANBOORU_JSON_OK_RE = /^\s*[[{]/;
+const DB_READER_CACHE_MS = 4 * 60e3;        /* 与 EH_CACHE_MS 同口径的进程内短缓存 */
+const dbReaderCache = new Map();            /* id -> { at, val } */
+
+/** danbooru 给回来的图片地址**可能是相对路径**（上游会给 `/data/xxx.jpg` 这种）。
+ *  相对地址原样用会同时废掉主、备两条路（本轮修的就是这里）：
+ *   · stripHost('/data/x.jpg') 得到空串 → gwFirst 恒 false，页地址留成**相对 URL**，
+ *     浏览器会把它打到网关静态根上（404），而不是图床；
+ *   · 备用地址 /api/proxy?url=%2Fdata%2Fx.jpg 会被网关以「url 必须是 http(s)」拒掉。
+ *  所以生成页地址前先把相对地址解析成绝对 URL（复用既有常量 DANBOORU_BASE，不新造域名）：
+ *   · 已经是绝对地址（带 scheme）→ **原样返回，一个字节都不动**（回归红线）；
+ *   · `//cdn.donmai.us/x.jpg` 这类协议相对形式交给 new URL(rel, base)，会补上 https:；
+ *   · 解析失败（畸形输入）→ 按原样返回，绝不抛。 */
+function danbooruAbsUrl(u) {
+  const raw = String(u == null ? '' : u);
+  if (!raw || /^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw;
+  try { return new URL(raw, DANBOORU_BASE + '/').href; } catch (e) { return raw; }
+}
+
+/** 一页图片地址。主/备顺序**按「有没有刚过完 CF 的凭证」决定**（本轮改的就是这里）：
+ *   · 有凭证 → 主 = 网关 /api/proxy（带上 cookie + UA 代取，**用户 IP 不暴露给图床**），
+ *             备 = cdn 直连（浏览器自带通行证；主地址被否时 reader.js 的 img.onerror
+ *             会自动换 data-url-alt 再试一次，前端一行都不用改）；
+ *   · 没凭证（从没撞过 CF / 凭证过了 15 分钟 TTL / 网关刚重启）→ **保持原样**：
+ *             主 = cdn 直连，备 = /api/proxy。
+ *  为什么不做成「无条件代理为主」：那样在没有凭证时首图必然先白撞一次 403（reader.js 的
+ *  alt 兜底能救回来，但每次翻页都要多挨一个失败请求，等于平白变慢）。按凭证有无决定顺序，
+ *  既拿到「不暴露 IP」的好处，又不会在没凭证时退化。 */
+function danbooruPage(fileUrl, referer, w, h) {
+  /* 先解析成绝对 URL：相对地址下 host 为空、gwFirst 恒 false，主地址会留成相对路径、
+     备用地址又会被 /api/proxy 以「非 http(s)」拒掉 —— 这类条目两条路都不可用。 */
+  const raw = danbooruAbsUrl(fileUrl);
+  const viaGw = readerProxyUrl(raw, referer);
+  const host = stripHost(raw);
+  let pathname = '/';
+  try { pathname = new URL(raw).pathname || '/'; } catch (e) { /* 非绝对 URL 就按根路径算 */ }
+  const gwFirst = !!(viaGw && cfCredInjectable(host) && cfCredHeaderFor(host, pathname));
+  const p = { url: gwFirst ? viaGw : raw };
+  const alt = gwFirst ? raw : viaGw;
+  if (alt && alt !== p.url) p.alt = alt;
+  if (w > 0 && h > 0) { p.w = Math.round(w); p.h = Math.round(h); }
+  return p;
+}
+
 async function readerDanbooru(id) {
   const referer = READER_HOSTS.danbooru;
-  const p = await readerJson('https://danbooru.donmai.us/posts/' + encodeURIComponent(id) + '.json',
-    referer, 'Danbooru', 15000);
-  const file = (p && (p.file_url || p.large_file_url || p.preview_file_url)) || '';
+  /* 4 分钟缓存：命中就直接回，不再打上游、更不再起 Chrome（翻回上一张/重新打开都受益） */
+  const hit = dbReaderCache.get(String(id));
+  if (hit && Date.now() - hit.at < DB_READER_CACHE_MS) {
+    const val = Object.assign({}, hit.val);
+    val.note = '本次命中网关进程内缓存（' + Math.round(DB_READER_CACHE_MS / 60000) +
+      ' 分钟内），没有再打上游、也没有再起 Chrome。' + (val.note || '');
+    return val;
+  }
+  const apiUrl = DANBOORU_BASE + '/posts/' + encodeURIComponent(id) + '.json';
+  const got = await cfFetchWithSolver(apiUrl, {
+    what: 'Danbooru', timeout: 15000,
+    headers: { accept: 'application/json', referer: referer },
+    okRe: DANBOORU_JSON_OK_RE, minBody: 200
+  });
+  let p = null;
+  if (got.via === 'chrome') {
+    /* Chrome 的 JSON 查看器把响应包在 <pre> 里 */
+    p = cfJsonFromRenderedHtml(got.text);
+    if (!p) {
+      throw new Error('Danbooru：Chrome 把地址取回来了，但里面不是条目 JSON（' +
+        (cfChallengeHtml(got.text) ? '仍然是 Cloudflare 挑战页' : '页面结构不认识，可能站点改版了') +
+        '，共 ' + String(got.text).length + ' 字节）。' + cfSolverHint('Danbooru', null));
+    }
+  } else {
+    try { p = JSON.parse(got.text); } catch (e) { throw new Error('Danbooru 返回的不是 JSON（可能被挡或改版了）'); }
+  }
+  if (Array.isArray(p)) p = p[0] || null;      /* 正常是对象；万一是数组就取第一条 */
+  if (!p || typeof p !== 'object') throw new Error('Danbooru 这个条目的响应是空的（id 可能不对）');
+  const file = (p.file_url || p.large_file_url || p.preview_file_url) || '';
   if (!file) {
     throw new Error('Danbooru 这个条目没有图片地址（可能是视频或已删除，也可能被设为私有）');
   }
-  const at = file.lastIndexOf('.');
-  const title = 'Danbooru #' + id + (at > 0 ? ' · ' + file.slice(at + 1).toLowerCase() : '');
+  const at = String(file).lastIndexOf('.');
+  const title = 'Danbooru #' + id + (at > 0 ? ' · ' + String(file).slice(at + 1).toLowerCase() : '');
   /* 单图、单章；多图 pool 本阶段不做 */
-  return {
+  const out = {
     title: title,
     referer: referer,
     chapters: [],
-    pages: [readerPage(file, referer, (p && p.image_width) || 0, (p && p.image_height) || 0)]
+    pages: [danbooruPage(file, referer, p.image_width || 0, p.image_height || 0)],
+    note: got.via === 'chrome'
+      ? 'Danbooru 的接口被 Cloudflare 挡着，本次由本机 Chrome 过验证后取回（同一地址 5 分钟内走 CF 缓存）；' +
+        '过验证时顺手在网关内存里缓存了本次的 cookie + UA（15 分钟），因此图片改由网关 ' +
+        '/api/proxy 代取（主地址，用户 IP 不直接暴露给图床），cdn 直连作为备用地址兜底。'
+      : 'Danbooru 本次直连成功，没有撞 Cloudflare（图片主地址仍是 cdn 直连，网关 /api/proxy 作备用）。'
   };
+  dbReaderCache.set(String(id), { at: Date.now(), val: out });
+  return out;
 }
 
 /* ==========================================================================
@@ -2677,35 +3239,80 @@ async function readerCopymanga(id, chapter) {
   const title = String(comic.name || pw).replace(/\s+/g, ' ').trim();
   const author = asArray(comic.author).map(a => (typeof a === 'string' ? a : (a && a.name) || '')).filter(Boolean).join(' / ');
 
-  /* 分组：详情的 groups 键优先，退 'default' */
-  const groups = [];
+  /* 分组：详情的 groups 键优先，退 'default'。
+     实测 huweijurudeqingmeizhuma：groups = { default: {path_word:'default', count:72},
+     tankobon: {path_word:'tankobon', count:2} } —— 也就是说「分卷」是**另一个 group**，
+     旧代码拿到第一个非空分组就 break，单行本那几卷整个丢了。
+     路径优先用 v.path_word（v.name 是展示名，拿它当路径实测回 0 章），退 groups 的键。 */
+  const groupList = [];
   const g = det.groups;
   if (g && typeof g === 'object') {
     Object.keys(g).forEach(k => {
       const v = g[k];
-      const key = (v && typeof v === 'object' && (v.path_word || v.name)) ? (v.path_word || v.name) : k;
-      if (key && groups.indexOf(key) < 0) groups.push(String(key));
+      const pathWord = (v && typeof v === 'object' && (v.path_word || k)) || k;
+      const name = (v && typeof v === 'object' && (v.name || '')) || '';
+      if (pathWord && !groupList.some(x => x.pathWord === String(pathWord))) {
+        groupList.push({ pathWord: String(pathWord), name: String(name || k) });
+      }
     });
   }
-  if (groups.indexOf('default') < 0) groups.push('default');
+  if (!groupList.length) groupList.push({ pathWord: 'default', name: '默認' });
+  groupList.sort((a, b) => (a.pathWord === 'default' ? -1 : b.pathWord === 'default' ? 1 : 0));
 
-  /* 章节列表：逐个分组试，拿到就用 */
-  let list = [], chapErr = '';
-  for (const grp of groups) {
-    try {
-      const j = await copyReaderJson(base, '/api/v3/comic/' + encodeURIComponent(pw) + '/group/' +
-        encodeURIComponent(grp) + '/chapters?limit=100&offset=0&in_mainland=true&request_id=',
-        '拷贝漫画章节列表');
-      const rows = asArray(j && j.results && j.results.list);
-      if (rows.length) {
-        list = rows.map(c => ({
-          id: String(c.uuid || ''),
-          name: String(c.name || '').trim() || ('第 ' + ((parseInt(c.index, 10) || 0) + 1) + ' 话')
-        })).filter(c => c.id);
-        if (list.length) break;
+  /* 章节列表：**每个分组都翻页取全**（旧代码只看第一个非空分组 + 只取 limit=100 的第一页）。
+     实测 haizeiwang：total=398 而旧代码只回 100 章（用户看到的「一百多章只显示几章」就是这个）。
+     上游 limit 封顶 100（写 200/500/1000 实测直接 code 210），所以只能 offset 翻页；
+     翻页会撞 code 210 反破解闸 → 继续走 copyReaderJson 的「轻/重头 × 退避」重试。 */
+  const list = [];
+  const seenId = Object.create(null);
+  const usedGroups = [];
+  let chapErr = '', cut = '', partial = '';
+  for (const grp of groupList) {
+    if (list.length >= COPY_MAX_CHAPTERS) {
+      cut = '已到网关硬上限 ' + COPY_MAX_CHAPTERS + ' 章（上游还有分组没读：' +
+        groupList.filter(x => usedGroups.indexOf(x.pathWord) < 0 && x.pathWord !== grp.pathWord)
+          .map(x => x.name).join('、') + '）';
+      break;
+    }
+    let offset = 0, got = 0, total = 0;
+    for (;;) {
+      let j = null;
+      try {
+        j = await copyReaderJson(base, '/api/v3/comic/' + encodeURIComponent(pw) + '/group/' +
+          encodeURIComponent(grp.pathWord) + '/chapters?limit=' + COPY_CHAPTER_PAGE +
+          '&offset=' + offset + '&in_mainland=true&request_id=', '拷贝漫画章节列表');
+      } catch (e) {
+        /* 这个分组翻到一半失败：保留已拿到的，别把整个作品判成「取不到章节」 */
+        chapErr = '分组「' + grp.name + '」第 ' + (offset + 1) + ' 章起没取到：' + ((e && e.message) || e);
+        if (got) partial = chapErr;
+        break;
       }
-      chapErr = '分组 ' + grp + ' 返回 0 章';
-    } catch (e) { chapErr = (e && e.message) || e; }
+      const res = (j && j.results) || {};
+      const rows = asArray(res.list);
+      total = parseInt(res.total, 10) || total;
+      rows.forEach(c => {
+        const id = String((c && c.uuid) || '');
+        if (!id || seenId[id]) return;
+        seenId[id] = 1;
+        list.push({
+          id: id,
+          name: String((c && c.name) || '').trim() ||
+            ('第 ' + ((parseInt(c && c.index, 10) || 0) + 1) + ' 话')
+        });
+      });
+      got += rows.length;
+      if (!rows.length && !offset) { chapErr = '分组「' + grp.name + '」返回 0 章'; }
+      if (!rows.length || rows.length < COPY_CHAPTER_PAGE) break;      /* 到底了 */
+      if (total && got >= total) break;                               /* 按上游 total 收口 */
+      if (list.length >= COPY_MAX_CHAPTERS) {
+        cut = '已到网关硬上限 ' + COPY_MAX_CHAPTERS + ' 章（上游分组「' + grp.name + '」共 ' +
+          (total || '更多') + ' 章）';
+        break;
+      }
+      offset += COPY_CHAPTER_PAGE;
+    }
+    if (got) usedGroups.push(grp.pathWord);
+    if (cut) break;
   }
   if (!list.length) {
     throw new Error('拷贝漫画取不到章节列表（' + (chapErr || '上游没给章节') + '）—— ' +
@@ -2734,7 +3341,16 @@ async function readerCopymanga(id, chapter) {
     pages: pages
   };
   out.note = '拷贝漫画官方 APP API（节点 ' + base + '，HMAC 签名，' +
-    '章节接口用 in_mainland/request_id 口径、图片接口是 chapter2，页顺序按 words 还原）。';
+    '章节接口用 in_mainland/request_id 口径、图片接口是 chapter2，页顺序按 words 还原）。' +
+    '章节清单已按分组翻页取全（每组每页 ' + COPY_CHAPTER_PAGE + ' 章）';
+  if (groupList.length > 1) {
+    out.note += '：这本上游有 ' + groupList.length + ' 个分组（' +
+      groupList.map(x => x.name + ' ' + (x.pathWord === 'default' ? '' : x.pathWord)).join(' / ') +
+      '），已合并成一个章节列表';
+  }
+  out.note += '。';
+  if (partial) out.note += '注意：' + partial;
+  if (cut) out.note += '注意：' + cut + '，清单可能不全。';
   return out;
 }
 
@@ -2776,20 +3392,54 @@ function jmTemplateInfo(html) {
   return out;
 }
 
-async function readerJmcomic(id) {
+/* 禁漫的章节清单硬上限（理论上够用：实测最长的系列是 41 话这个量级；500 是防疯数，
+   超了会在 note 里说明，不静默截断）。 */
+const JM_MAX_CHAPTERS = 500;
+
+/** 禁漫系列里一条 series 的显示名：name 是「最终话 / 18.2 / 纯数字」这类**后缀**，
+    sort 是序号（1 起）。两者拼成「第 N 话」或「第 N 话（最终话）」。
+    实测：id=1099115 的 series[0].name='' 、series[3].name='18.2'、最后一条 name='最终话'。 */
+function jmChapterLabel(sort, name) {
+  const n = parseInt(sort, 10);
+  const label = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!label) return n > 0 ? ('第 ' + n + ' 话') : '章节';
+  if (/^\d+(\.\d+)?$/.test(label)) return '第 ' + label + ' 话';
+  return (n > 0 ? ('第 ' + n + ' 话（' + label + '）') : label);
+}
+
+async function readerJmcomic(id, chapter) {
   const m = String(id || '').match(/(\d{3,})/);
   const album = m ? m[1] : '';
   if (!album) throw new Error('禁漫的 id 需要是作品数字 id（形如 1474541 或 /album/1474541），收到的是「' + String(id || '') + '」');
+  /* 阅读器给 chapter=<章节 id> 时改看那一话；没给就看 id 这一话本身（保持旧行为）。
+     章节 id 就是 /chapter 的 id（= 图目录名 = 模板里的 aid），所以单章节作品的
+     id 与 chapter 是同一个数。 */
+  const cm = String(chapter || '').match(/(\d{2,})/);
+  const view = cm ? cm[1] : album;
   const host = await jmResolveHost();                       /* 顺便把 state.jmCdn 设成 /setting 的 img_host */
-  const data = await jmApi(host, '/chapter?id=' + encodeURIComponent(album));
+  const data = await jmApi(host, '/chapter?id=' + encodeURIComponent(view));
   const files = asArray(data && data.images).map(String).filter(Boolean);
   if (!files.length) throw new Error('禁漫这一话没有返回任何图片文件名（接口可能改版了）');
-  const title = String((data && (data.name || data.title)) || ('禁漫 #' + album)).replace(/\s+/g, ' ').trim();
+  const title = String((data && (data.name || data.title)) || ('禁漫 #' + view)).replace(/\s+/g, ' ').trim();
+
+  /* 章节清单：**同一份 /chapter 响应里就带着整条 series**（实测 id=1099115：
+     series.length=41，每条 {id,name,sort}），不需要额外请求，也不需要网页版（免得撞 CF）。
+     单章节作品 series 是空数组、series_id=0 → chapters 仍是空数组（保持阅读器原有行为）。 */
+  const seriesRows = asArray(data && data.series).filter(x => x && x.id);
+  let chapters = [];
+  let jmCut = false;
+  if (seriesRows.length > 1) {
+    chapters = seriesRows.slice(0, JM_MAX_CHAPTERS).map(x => ({
+      id: String(x.id),
+      name: jmChapterLabel(x.sort, x.name)
+    }));
+    jmCut = seriesRows.length > JM_MAX_CHAPTERS;
+  }
 
   /* scramble_id 与图片域名都在章节页模板里；这一步**不需要过 Cloudflare**（APP 接口域名上就有） */
-  let tmpl = { scramble: 0, imghost: '', jmid: album }, tmplStatus = 0, tmplErr = '';
+  let tmpl = { scramble: 0, imghost: '', jmid: view }, tmplStatus = 0, tmplErr = '';
   try {
-    const r = await jmFetchTemplate(host, album);
+    const r = await jmFetchTemplate(host, view);
     tmplStatus = r.status;
     tmpl = jmTemplateInfo(r.text().slice(0, JM_TEMPLATE_MAX));
   } catch (e) { tmplErr = (e && e.message) || String(e); }
@@ -2808,7 +3458,7 @@ async function readerJmcomic(id) {
   let base = '', lastErr = '';
   for (const c of cands) {
     try {
-      const r = await outFetch(c + '/media/photos/' + album + '/' + encodeURIComponent(files[0]), { timeout: 9000 });
+      const r = await outFetch(c + '/media/photos/' + view + '/' + encodeURIComponent(files[0]), { timeout: 9000 });
       if (r.status === 200 && /^image\//i.test(r.headers.get('content-type') || '')) { base = c; break; }
       lastErr = c + ' → HTTP ' + r.status + ' ' + (r.headers.get('content-type') || '');
     } catch (e) { lastErr = c + ' → ' + ((e && e.message) || e); }
@@ -2816,26 +3466,33 @@ async function readerJmcomic(id) {
   if (!base) throw new Error('禁漫的图片 CDN 这次都取不到（' + cands.join(' / ') + '）' +
     (lastErr ? '，最后一次：' + lastErr : '') + ' —— 换个出口代理再试，或上游确实挂了');
 
-  const scrambled = parseInt(album, 10) >= tmpl.scramble;
+  const scrambled = parseInt(view, 10) >= tmpl.scramble;
   const pages = files.map(f => {
-    const p = readerPage(base + '/media/photos/' + album + '/' + f, READER_HOSTS.jmcomic, 0, 0);
+    const p = readerPage(base + '/media/photos/' + view + '/' + f, READER_HOSTS.jmcomic, 0, 0);
     if (scrambled) {
       p.scramble = tmpl.scramble;
-      p.bands = jmScrambleBands(album, String(f).replace(/\.[a-z0-9]+$/i, ''));
+      p.bands = jmScrambleBands(view, String(f).replace(/\.[a-z0-9]+$/i, ''));
     }
     return p;
   });
+  let note = '禁漫官方 APP API（' + host + '）：/chapter 给页文件名 + 整条 series，' +
+    '/chapter_view_template 给 scramble_id=' + tmpl.scramble + '（模板里的 imghost=' + (tmpl.imghost || base) + '）。' +
+    (scrambled
+      ? '这本 aid ' + view + ' ≥ scramble_id，图片是**分块打乱**的：前端按站点自己的算法' +
+        '（块数 = md5(aid+page) 末位 ASCII 决定 → 分块上下颠倒）用 canvas 还原后才显示。'
+      : '这本 aid ' + view + ' < scramble_id，站点自己的算法判定**不打乱**，原图直接显示。');
+  if (chapters.length) {
+    note += '这本在禁漫上是**分章节**作品：series 共 ' + seriesRows.length + ' 话，' +
+      '当前是「' + (chapters.find(c => c.id === view) || { name: title }).name + '」；' +
+      '每话各自一个图目录与各自的 scramble 判定，换话由 chapter=<id> 重新取。';
+    if (jmCut) note += '（series 超过网关硬上限 ' + JM_MAX_CHAPTERS + ' 话，只给了前 ' + chapters.length + ' 话）';
+  }
   return {
     title: title,
     referer: READER_HOSTS.jmcomic,
-    chapters: [],
+    chapters: chapters,
     pages: pages,
-    note: '禁漫官方 APP API（' + host + '）：/chapter 给页文件名，/chapter_view_template 给 ' +
-      'scramble_id=' + tmpl.scramble + '（模板里的 imghost=' + (tmpl.imghost || base) + '）。' +
-      (scrambled
-        ? '这本 aid ' + album + ' ≥ scramble_id，图片是**分块打乱**的：前端按站点自己的算法' +
-          '（块数 = md5(aid+page) 末位 ASCII 决定 → 分块上下颠倒）用 canvas 还原后才显示。'
-        : '这本 aid ' + album + ' < scramble_id，站点自己的算法判定**不打乱**，原图直接显示。')
+    note: note
   };
 }
 
@@ -2978,7 +3635,7 @@ async function readerFetch(query) {
   else if (source === 'hitomi') out = await readerHitomi(id);
   else if (source === 'pixiv') out = await readerPixiv(id);
   else if (source === 'copymanga') out = await readerCopymanga(id, query.chapter);
-  else if (source === 'jmcomic') out = await readerJmcomic(id);
+  else if (source === 'jmcomic') out = await readerJmcomic(id, query.chapter);
   else if (source === 'porncomic') out = await readerPorncomic(id);
   else out = await readerDanbooru(id);
   const res = {
@@ -3060,15 +3717,25 @@ const server = http.createServer(async (req, res) => {
           picacgLoggedIn: !!state.picacgToken,
           jmHost: state.jmHost || '', copyApi: state.copyApi || '',
           cfSolver: {
-            available: !cfUnavailableReason(),
+            /* available 只回答「环境上可能可用」（可执行文件在、没被 HS_CF_SOLVER=0 关掉）。
+               实测教训：沙箱/受限环境里 Chrome 根本起不来，它照样报 true ——
+               所以一定连 verified / failing / lastError 一起看，别只看 available。 */
+            available: !cfUnavailableReason() && !cfSolverFailing(),
             reason: cfUnavailableReason(),
             browser: cfChromePath(),
             headful: String(process.env.HS_CF_HEADFUL || '') === '1',
             running: !!(cfState.ws && cfState.proc),
             renders: cfState.renders,
+            verified: cfState.renders > 0,          /* 本进程真的成功过一次才为 true */
+            failing: cfSolverFailing(),             /* 最近一次真实尝试失败、之后还没成功 */
+            lastOkAt: cfState.lastOkAt || 0,
+            lastErrorAt: cfState.lastFailAt || 0,
             cacheSize: cfCache.size,
             cooldownSec: Math.ceil(cfCooldownLeft() / 1000),
-            lastError: cfLastErr
+            lastError: cfLastErr,
+            /* 过验证后缓存的 CF 通行证（只报主机/条数/年龄，**绝不含 cookie 值**）：
+               问「/api/proxy 代取 *.donmai.us 的图片有没有凭证可用」就看这里 */
+            credentials: cfCredSummary()
           }
         });
 
@@ -3198,7 +3865,43 @@ const server = http.createServer(async (req, res) => {
       }
 
       case '/api/proxy': {
-        const r = await proxyFetch(q.url, q.referer);
+        const want = String(q.url || '');
+        const r = await proxyFetch(want, q.referer);
+        /* Danbooru 的接口在当前出口**必被 CF 挡**（实测 403 + cf-mitigated: challenge）。
+           前端 sources.js 的检索链是「直连 → 本地网关 → 公共代理」：浏览器自己直连
+           danbooru 是通的（有 CF 通行证 + CORS），但一旦直连失败退到这里，拿回去的就是
+           一张挑战页、JSON.parse 直接失败，整条链就断了。所以这里只对 **.json 接口**
+           做一次 Chrome 兜底：渲染 JSON 查看器 → 把 JSON 原文抠回来 → 回合法 JSON。
+           图片**不在这里救**：Chrome 渲染一张图只会得到 <img> 外壳、拿不到字节，
+           回 HTML 只会让 <img> 变裂图（图片由 /api/reader 直接给 cdn 直连地址）。 */
+        if (r.status >= 400 && DANBOORU_CF_HOST_RE.test(stripHost(want)) && /\.json(\?|$)/i.test(want)) {
+          try {
+            const got = await cfFetchWithSolver(want, {
+              what: 'Danbooru 接口', timeout: 12000, minBody: 200, okRe: DANBOORU_JSON_OK_RE,
+              pre: { status: r.status, headers: r.headers, text: () => r.buf.toString('utf8') }
+            });
+            let buf;
+            if (got.via === 'chrome') {
+              const j = cfJsonFromRenderedHtml(got.text);
+              if (!j) throw new Error('Chrome 渲染后仍拿不到 JSON（' + String(got.text).length + ' 字节）');
+              buf = Buffer.from(JSON.stringify(j), 'utf8');
+            } else {
+              buf = Buffer.from(got.text, 'utf8');
+            }
+            log('danbooru 接口 /api/proxy 兜底成功：' + want.replace(/^https:\/\/[^/]+/, '') +
+              '（via=' + got.via + '）');
+            res.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'content-length': buf.length,
+              'access-control-allow-origin': '*',
+              'cache-control': 'no-store'
+            });
+            return res.end(buf);
+          } catch (e) {
+            /* 兜底也失败：照原样把上游的挑战页回给浏览器，让前端按它自己的失败链继续换通路 */
+            log('danbooru 接口 /api/proxy 的 CF 兜底失败：' + ((e && e.message) || e));
+          }
+        }
         res.writeHead(r.status, {
           'content-type': r.type,
           'content-length': r.buf.length,
@@ -3225,14 +3928,23 @@ ensureEgress().then(mode => {
     log('  接口：  /api/jm/search  /api/copymanga/search  /api/kemono/search  /api/nhentai/search  /api/ehentai/search  /api/pixiv/search  /api/porncomic/search  /api/porncomic/solve  /api/reader  /api/proxy  /api/diag');
     log('  阅读器：/api/reader?source=' + READER_SOURCES.join('|') + '&id=…');
     log('    能用的 ' + READER_WORKING.length + ' 个源：' + READER_WORKING.join(' / '));
-    log('    · mangadex / nhentai / danbooru / wnacg：各 1 次上游请求；wnacg 可能退回逐页兜底');
+    log('    · mangadex / nhentai / wnacg：各 1 次上游请求；wnacg 可能退回逐页兜底' +
+      '（mangadex 的 feed 会按 limit=' + MD_FEED_PAGE + '/offset 翻页取全，硬上限 ' +
+      MD_MAX_CHAPTERS + ' 话，截断时会在 note 里说明）');
+    log('    · danbooru：接口在 Cloudflare 后面（直连必 403），撞上就交给上面的 Chrome 渲染 ' +
+      'JSON 查看器再抠回来，结果缓存 ' + Math.round(DB_READER_CACHE_MS / 60000) + ' 分钟；' +
+      '过验证时顺手把这次的 cookie + UA 缓存 ' + Math.round(CF_CRED_TTL / 60000) + ' 分钟，' +
+      '图片就由 /api/proxy 代取（主地址，用户 IP 不暴露给图床），cdn 直连作备用；' +
+      '没有凭证时（从没撞过 CF / 凭证过期 / 刚重启）图片主地址照旧是 cdn 直连');
     log('    · ehentai：逐页 N+1，已限速 ' + EH_THROTTLE_MS + 'ms、单次最多 ' + EH_MAX_PAGES +
       ' 页、结果缓存 ' + Math.round(EH_CACHE_MS / 60000) + ' 分钟');
     log('    · hitomi：图集数据取自 CDN，图片要走 a1/a2.gold-usergeneratedcontent.net（先探通一个子域再整本沿用）');
     log('    · pixiv：/ajax/illust/<id>/pages，**不需要登录 cookie**；图片经 /api/proxy 带 Referer 绕防盗链');
-    log('    · copymanga：官方 APP API（comic2 详情 + group/…/chapters + chapter2），code 210 会退避重试');
-    log('    · jmcomic：APP API（/chapter 给页文件名 + /chapter_view_template 给 scramble_id），' +
-      '图片是分块打乱的，前端按站点自己的算法用 canvas 还原（块数 = md5(aid+page) 末位 ASCII 决定）');
+    log('    · copymanga：官方 APP API（comic2 详情 + group/…/chapters 按 offset 翻页取全 + chapter2），' +
+      'code 210 会退避重试；各分组（默认/单行本）合并成一个章节列表，硬上限 ' + COPY_MAX_CHAPTERS + ' 章');
+    log('    · jmcomic：APP API（/chapter 给页文件名与整条 series + /chapter_view_template 给 scramble_id），' +
+      '分章节作品会返回完整 chapters（chapter=<id> 换话），图片是分块打乱的，' +
+      '前端按站点自己的算法用 canvas 还原（块数 = md5(aid+page) 末位 ASCII 决定）');
     log('    · porncomic：条目页 /h/<id>.html 整站前置 CF（走下面的 Chrome 通道），正文图在 ' +
       'file*.acgnngca.com 不经 CF；从第 1 页 HTML 读出图片编号与总页数后按 `<媒体id>_<n>` 拼出整本');
     if (READER_UNAVAILABLE.length) {
@@ -3248,8 +3960,23 @@ ensureEgress().then(mode => {
       : '直连（可用 --proxy http://127.0.0.1:7897 指定，或先设 HTTPS_PROXY）'));
     {
       const why = cfUnavailableReason();
-      log('  CF 求解：' + (why ? ('不可用 —— ' + why) : ('可用，用 ' + cfChromePath() +
-        (String(process.env.HS_CF_HEADFUL || '') === '1' ? '（有头模式）' : '（headless）') + ' 过 Cloudflare（porn-comic）')));
+      const where = '过 Cloudflare（porn-comic，以及 danbooru 的接口与被代理的图片）';
+      if (why) {
+        log('  CF 求解：不可用 —— ' + why);
+      } else if (cfState.renders > 0) {
+        log('  CF 求解：**已真实验证**，用 ' + cfChromePath() +
+          (String(process.env.HS_CF_HEADFUL || '') === '1' ? '（有头模式）' : '（headless）') +
+          where + '，本进程成功过 ' + cfState.renders + ' 次');
+      } else {
+        /* 不为了这句日志去起一次 Chrome（用户明确不要拖慢启动）：只如实说「还没验证过」。
+           真失败过的话把 lastError 也带出来 —— 只有这一条才反映「实际能不能用」。 */
+        log('  CF 求解：可执行文件在（' + cfChromePath() +
+          (String(process.env.HS_CF_HEADFUL || '') === '1' ? '，有头模式' : '，headless') +
+          '）—— **本进程还没真验证过**，只查了文件在不在' +
+          (cfLastErr ? '；最近一次失败：' + cfLastErr : '') +
+          '。沙箱/受限环境里 Chrome 常因命名管道被禁而起不来，真要用到才知道行不行：' +
+          '结果会如实出现在 /api/ping 的 cfSolver.verified / failing / lastError 里');
+      }
     }
     log('  静态根：' + ROOT);
   });

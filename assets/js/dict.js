@@ -1800,7 +1800,7 @@
     { key: 'penis', zh: '阴茎', en: 'penis', ja: 'ペニス', aliases: ['penis', 'cock', 'dick', 'ペニス', '阴茎', '肉棒', 'ちんこ', '鸡巴'] },
     { key: 'nipple', zh: '乳头', en: 'nipples', ja: '乳首', aliases: ['nipple', 'nipples', '乳首', '乳头', 'ちくび', 'puffy nipples'] },
     { key: 'womb', zh: '子宫', en: 'womb', ja: '子宮', aliases: ['womb', 'uterus', 'cervix', '子宮', '子宫', '子宫颈'] },
-    { key: 'skin', zh: '肤色', en: 'skin', ja: '肌', aliases: ['dark skin', 'tanned', '褐色', '肌', '肤色', '黑皮', '晒黑'] },
+    { key: 'skin', zh: '肤色', en: 'skin', ja: '肌', aliases: ['skin', 'dark skin', 'tanned', '褐色', '肌', '肤色', '黑皮', '晒黑'] },
 
     /* —— 性行为方式 —— */
     { key: 'nakadashi', zh: '中出', en: 'creampie', ja: '中出し', aliases: ['nakadashi', 'creampie', '中出', '中出し', '内射', 'cum inside'] },
@@ -1826,10 +1826,19 @@
     { key: 'ntr', zh: '寝取', en: 'netorare', ja: '寝取られ', aliases: ['netorare', 'ntr', '寝取られ', '寝取', '牛头人', 'ntr向'] },
     { key: 'netori', zh: '夺爱', en: 'netori', ja: '寝取り', aliases: ['netori', '寝取り', '夺爱', '横刀夺爱'] },
     { key: 'netorase', zh: '献妻', en: 'netorase', ja: '寝取らせ', aliases: ['netorase', '寝取らせ', '献妻', '主动献妻'] },
-    { key: 'cuckold', zh: '绿帽', en: 'cuckold', ja: '寝取られ男', aliases: ['cuckold', 'cuckolding', '绿帽', '绿帽癖', '戴绿帽'] },
+    { key: 'cuckold', zh: '绿帽', en: 'cuckold', ja: '寝取られ男', aliases: ['cuckold', 'cuckolding', '绿帽', '绿帽癖', '戴绿帽', '寝取られ男'] },
     { key: 'cheating', zh: '出轨', en: 'cheating', ja: '浮気', aliases: ['cheating', 'cheat', 'affair', '浮気', '出轨', '不忠'] },
     { key: 'rape', zh: '强暴', en: 'rape', ja: 'レイプ', aliases: ['rape', 'raped', 'non-consensual', 'レイプ', '强暴', '强奸', '性侵'] },
-    { key: 'gangrape', zh: '轮奸', en: 'gangbang', ja: '輪姦', aliases: ['gangbang', 'gang rape', '輪姦', '轮奸', '轮暴'] },
+    /* 「轮奸」（非自愿、多人强暴）与英文标签 `gangbang` 不是同一概念，2026-09 本轮拆开。
+       依据 HS.TAG_ZH：'gang rape' → 轮奸（独立英文键）、'gangbang' → 轮奸 —— **两个英文键
+       都译作「轮奸」**，TAG_ZH 里没给 gangbang 任何独立的中文 / 日文对应（'group sex' → 群交
+       是 orgy 组的键，不能借）。所以：
+         · 轮奸 → en='gang rape'（用它自己的独立键），不再发 gangbang；
+         · gangbang → 三槽一律保留原词（en/zh/ja 都填 gangbang）＝显式不改写 —— 与 hitozuma
+           组同法（那边是英文站没有对应，这里反过来：中文 / 日文没有独立对应）。
+           中文源仍由 sources.js 的保守化门槛按 TAG_ZH 发「轮奸」，行为不变。 */
+    { key: 'gangrape', zh: '轮奸', en: 'gang rape', ja: '輪姦', aliases: ['gang rape', 'gangrape', '輪姦', '轮奸', '轮暴'] },
+    { key: 'gangbang', zh: 'gangbang', en: 'gangbang', ja: 'gangbang', aliases: ['gangbang'] },
     { key: 'incest', zh: '乱伦', en: 'incest', ja: '近親相姦', aliases: ['incest', '近親相姦', '乱伦', '近亲', '家族'] },
     { key: 'bondage', zh: '束缚', en: 'bondage', ja: '緊縛', aliases: ['bondage', 'shibari', 'kinbaku', '緊縛', '束缚', '捆绑', '绳缚'] },
     { key: 'bdsm', zh: '虐恋', en: 'bdsm', ja: '調教', aliases: ['bdsm', 'sm', 'sadomasochism', '調教', '虐恋', '调教'] },
@@ -1838,8 +1847,20 @@
     { key: 'collar', zh: '项圈', en: 'collar', ja: '首輪', aliases: ['collar', 'choker', '首輪', '项圈', '颈圈'] },
     { key: 'leash', zh: '牵绳', en: 'leash', ja: 'リード', aliases: ['leash', 'リード', '牵绳', '牵引绳'] },
     { key: 'spanking', zh: '打屁股', en: 'spanking', ja: 'スパンキング', aliases: ['spanking', 'spank', 'スパンキング', '打屁股', '掌掴'] },
-    { key: 'domination', zh: '支配', en: 'domination', ja: '支配', aliases: ['domination', 'femdom', 'maledom', '支配', '女攻', '男攻', '主导'] },
-    { key: 'submission', zh: '服从', en: 'submission', ja: '服従', aliases: ['submission', 'sub', 'femsub', 'malesub', '服従', '服从', '顺从'] },
+    { key: 'domination', zh: '支配', en: 'domination', ja: '支配', aliases: ['domination', '支配', '主导'] },
+    /* 「支配」是一般概念；femdom（女攻）与 maledom（男攻）是**相反**的两个具体概念，
+       2026-09 本轮按 TAG_ZH 的独立键各自成组：'femdom' → 女攻、'maledom' → 男攻。
+       ja 槽的证据强度不一样，如实标注：女攻め 有仓库依据（core.js 的 GENRES femdom
+       别名里就写着它）；男攻め 在 TAG_ZH 与仓库里**都查不到**，按「没有可靠对应就填原词、
+       显式不改写」填「男攻」，不凭感觉造 男攻め。 */
+    { key: 'femdom', zh: '女攻', en: 'femdom', ja: '女攻め', aliases: ['femdom', '女攻', '女攻め'] },
+    { key: 'maledom', zh: '男攻', en: 'maledom', ja: '男攻', aliases: ['maledom', '男攻'] },
+    { key: 'submission', zh: '服从', en: 'submission', ja: '服従', aliases: ['submission', 'sub', '服従', '服从', '顺从'] },
+    /* 同上：femsub（女受）/ malesub（男受）也是相反的两个具体概念，TAG_ZH 各有独立键
+       （'femsub' → 女受、'malesub' → 男受），2026-09 本轮各自成组。ja 槽在 TAG_ZH 与仓库里
+       都没有依据（TAG_ZH 只登记中文），按「没有可靠对应就填原词」填中文原词，显式不改写。 */
+    { key: 'femsub', zh: '女受', en: 'femsub', ja: '女受', aliases: ['femsub', '女受'] },
+    { key: 'malesub', zh: '男受', en: 'malesub', ja: '男受', aliases: ['malesub', '男受'] },
     { key: 'hypnosis', zh: '催眠', en: 'hypnosis', ja: '催眠', aliases: ['hypnosis', 'hypnotism', 'mind control', '催眠', '催眠术', '精神控制'] },
     { key: 'mindbreak', zh: '精神崩坏', en: 'mind break', ja: '精神崩壊', aliases: ['mind break', 'mindbreak', '精神崩壊', '精神崩坏', '洗脑'] },
     { key: 'timestop', zh: '时停', en: 'time stop', ja: '時間停止', aliases: ['time stop', 'timestop', '時間停止', '时停', '时间停止'] },
@@ -1877,7 +1898,19 @@
     { key: 'futanari', zh: '扶他', en: 'futanari', ja: 'ふたなり', aliases: ['futanari', 'futa', 'dickgirl', 'ふたなり', '扶他', '双性'] },
     { key: 'trap', zh: '伪娘', en: 'trap', ja: '男の娘', aliases: ['trap', 'otokonoko', 'tomgirl', 'crossdressing', '男の娘', '伪娘', '女装'] },
     { key: 'genderbender', zh: '性转', en: 'gender bender', ja: '性転換', aliases: ['gender bender', 'genderswap', 'gender transformation', '性転換', '性转', '变身'] },
-    { key: 'milf', zh: '熟女', en: 'milf', ja: '人妻', aliases: ['milf', 'mature female', 'mature woman', 'married woman', '人妻', '熟女', '已婚女性'] },
+    /* 「熟女」= 年长 / 成熟女性（milf / mature）；「人妻」= 已婚女性（婚姻状态）——
+       两者不是同一概念（2026-02 从原来的 milf 组拆开：旧组的 en=milf、ja=人妻，
+       于是输入「人妻」在英文站被换成 milf、在中文站被换成「熟女」，用户拿到的
+       是另一批作品）。拆开后各用各的：
+         · 熟女 → en=milf（HS.TAG_ZH 里 'milf': '熟女' 就是它自己的键）、ja=熟女；
+         · 人妻 → 三槽一律保留原词：HS.TAG_ZH 里**没有**「人妻」对应的英文标签键
+           （'housewife'=主妇、'hotwife'=淫妻、'wife sharing'=共享妻子 都不是），
+           按「改写错比不改写更糟」的口径不做跨语言替换。
+       2026-09 本轮把英文标签 `married woman` 挂进本组：TAG_ZH 里同样没有它的键（⇒ 无
+       ownZh，中文源不受门槛影响，仍发「人妻」），而实测 nhentai「married woman」262 条
+       vs「人妻」5342 条 —— 挂进来让输入 `married woman` 也走「人妻」，显著涨召回。 */
+    { key: 'milf', zh: '熟女', en: 'milf', ja: '熟女', aliases: ['milf', 'mature female', 'mature woman', '熟女'] },
+    { key: 'hitozuma', zh: '人妻', en: '人妻', ja: '人妻', aliases: ['人妻', '已婚女性', 'married woman'] },
     { key: 'pregnant', zh: '怀孕', en: 'pregnant', ja: '妊娠', aliases: ['pregnant', 'pregnancy', 'impregnation', '妊娠', '怀孕', '孕妇', '播种'] },
     { key: 'lactation', zh: '泌乳', en: 'lactation', ja: '授乳', aliases: ['lactation', 'breast milk', '授乳', '泌乳', '母乳', '喷乳'] },
     { key: 'tomboy', zh: '假小子', en: 'tomboy', ja: 'ボク女', aliases: ['tomboy', 'tomboyish', 'ボク女', '假小子', '男装女'] },
@@ -1889,7 +1922,12 @@
     { key: 'demon', zh: '恶魔', en: 'demon', ja: '悪魔', aliases: ['demon', 'devil', 'succubus', '悪魔', '恶魔', '魅魔', '恶魔娘'] },
     { key: 'vampire', zh: '吸血鬼', en: 'vampire', ja: '吸血鬼', aliases: ['vampire', '吸血鬼', 'ヴァンパイア'] },
     { key: 'monstergirl', zh: '怪物娘', en: 'monster girl', ja: 'モンスター娘', aliases: ['monster girl', 'モンスター娘', '怪物娘', '魔物娘'] },
-    { key: 'sizedifference', zh: '体型差', en: 'size difference', ja: '体格差', aliases: ['size difference', 'giantess', 'miniguy', '体格差', '体型差', '女巨人', '小人'] },
+    { key: 'sizedifference', zh: '体型差', en: 'size difference', ja: '体格差', aliases: ['size difference', 'miniguy', '体格差', '体型差', '小人'] },
+    /* giantess（女巨人）是「size difference / 体型差」的下位具体题材，2026-09 本轮拆出来：
+       实测 nhentai「giantess」2816 条 vs「size difference」10 条 —— 旧组把前者换成后者
+       等于丢掉 99.6% 的结果。TAG_ZH 里有独立键 'giantess' → 女巨人，ja 槽按维护者 + 实测
+       用「女巨人」（Pixiv 搜「女巨人」首条是对题的「巨大凛」；搜 giantess / 体格差 首条不对题）。 */
+    { key: 'giantess', zh: '女巨人', en: 'giantess', ja: '女巨人', aliases: ['giantess', '女巨人'] },
 
     /* —— 服装 / 职业 —— */
     { key: 'schooluniform', zh: '校服', en: 'school uniform', ja: '制服', aliases: ['school uniform', 'serafuku', 'sailor uniform', '制服', '校服', '水手服'] },

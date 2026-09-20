@@ -136,6 +136,196 @@
       '<cite>—— ' + u.esc(s.who) + '</cite></blockquote>';
     el.hidden = false;
   }
+  /* ---------------- 黑话提示（纯旁路：只产出提示，绝不改写查询词） ----------------
+     词典接口缺失（脚本没加载 / 词典文件缺失）时 DICT 为 null，本功能整体静默关闭，
+     检索链路完全不受影响（C4）。判定结果只变成搜索框里的一个泡泡；点泡泡里的 chip
+     才会走 boot 里既有的 [data-q] 委托写回 #q 并重新检索（C1）。 */
+  const DICT = (HS.dict && typeof HS.dict.lookup === 'function') ? HS.dict : null;
+  let slangEl = null;                                   /* 搜索框内的泡泡（懒创建，不动 index.html 的 DOM） */
+  let slangCtx = { token: 0, q: '', empty: null, hits: [], dismissed: false };
+
+  function slangLookup(q) {
+    try {
+      if (!DICT) return { hits: [], pending: [] };
+      const r = DICT.lookup(q);
+      if (r && Array.isArray(r.hits)) return { hits: r.hits, pending: Array.isArray(r.pending) ? r.pending : [] };
+    } catch (e) { /* 静默降级：词典出问题绝不影响检索 */ }
+    return { hits: [], pending: [] };
+  }
+
+  /** 建泡泡：挂在 .hs-searchbar 里，绝对定位到「已输入文字之后」 */
+  function slangBox() {
+    if (slangEl && slangEl.isConnected) return slangEl;
+    const bar = u.$('.hs-searchbar');
+    if (!bar) return null;
+    const el = u.el('div', {
+      class: 'hs-slang-bubble', role: 'group', 'aria-label': '黑话提示',
+      'data-open': '0', 'data-flip': '0', hidden: true
+    });
+    el.innerHTML = '<span class="hs-slang-lead" aria-hidden="true">理解为</span>' +
+      '<span class="hs-slang-chips"></span>' +
+      '<button class="hs-slang-x" type="button" aria-label="收起黑话提示">×</button>';
+    bar.appendChild(el);
+    slangBind(el);
+    return (slangEl = el);
+  }
+
+  function slangBind(el) {
+    if (el._slangBound) return;
+    el._slangBound = 1;
+    /* 点泡泡外面（输入框本身除外）收起 */
+    document.addEventListener('pointerdown', e => {
+      if (!slangEl || slangEl.hidden) return;
+      if (slangEl.contains(e.target)) return;
+      if (e.target === u.$('#q')) return;
+      slangDismiss();
+    }, true);
+    el.addEventListener('click', e => {
+      if (e.target.closest('.hs-slang-x')) slangDismiss();
+    });
+    /* Esc 收起（并把焦点还给输入框）。
+       注意 #q 是 type="search"：Chromium 的原生行为是 Esc 清空输入框。
+       泡泡开着时先吃掉这一下 —— 否则用户只想收起提示，却把关键词一起弄丢了。 */
+    document.addEventListener('keydown', e => {
+      if (!slangEl || slangEl.hidden) return;
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      slangDismiss();
+      const q = u.$('#q');
+      if (q) q.focus();
+    });
+    const q = u.$('#q');
+    if (!q) return;
+    /* ↓ / → 从输入框进入泡泡（键盘可达；chip 是真按钮，回车/空格即应用） */
+    q.addEventListener('keydown', e => {
+      if (!slangEl || slangEl.hidden) return;
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowRight') return;
+      const first = slangEl.querySelector('.hs-slang-chip[data-q]') || slangEl.querySelector('.hs-slang-x');
+      if (first) { e.preventDefault(); first.focus(); }
+    });
+    /* 手动改词后旧提示即失效，收起，避免泡泡停在旧位置误导 */
+    q.addEventListener('input', () => slangDismiss());
+  }
+
+  function slangClose() {
+    if (!slangEl) return;
+    slangEl.hidden = true;
+    slangEl.setAttribute('data-open', '0');
+  }
+
+  /** 用户主动收起：本轮检索内不再自动弹回来（检索结束时的重画也不许重新打开） */
+  function slangDismiss() {
+    slangCtx.dismissed = true;
+    slangClose();
+  }
+
+  /** 量出输入框里已输入文字的像素宽度（用 canvas 按输入框的实际字体量） */
+  function slangTextWidth(input) {
+    try {
+      const cs = window.getComputedStyle(input);
+      const c = slangTextWidth._c || (slangTextWidth._c = document.createElement('canvas'));
+      const ctx = c.getContext ? c.getContext('2d') : null;
+      if (!ctx) return input.value.length * 9;
+      ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+      return ctx.measureText(input.value).width;
+    } catch (e) { return input.value.length * 9; }
+  }
+
+  /** 泡泡锚点 = 输入框左内边距 + 文字宽度；右侧被清空/搜索按钮挡住时翻到搜索框下方 */
+  function slangPlace() {
+    const el = slangEl, bar = u.$('.hs-searchbar'), input = u.$('#q');
+    if (!el || !bar || !input) return;
+    const barRect = bar.getBoundingClientRect();
+    if (!barRect.width) return;
+    try {
+      const inRect = input.getBoundingClientRect();
+      const cs = window.getComputedStyle(input);
+      const padL = parseFloat(cs.paddingLeft) || 0;
+      const want = (inRect.left - barRect.left) + padL + slangTextWidth(input) + 10;
+      const clear = u.$('#clear-q');
+      const go = u.$('#search-btn');
+      const clearRect = (clear && !clear.hidden) ? clear.getBoundingClientRect() : null;
+      const goRect = go ? go.getBoundingClientRect() : null;
+      const edge = clearRect ? clearRect.left : (goRect ? goRect.left : barRect.right);
+      const limit = (edge - barRect.left) - 8;
+      const w = el.offsetWidth || 220;
+      const inline = want + w <= limit;
+      const maxLeft = Math.max(6, barRect.width - w - 8);
+      el.setAttribute('data-flip', inline ? '0' : '1');
+      el.style.left = Math.round(Math.max(6, Math.min(inline ? want : want, maxLeft))) + 'px';
+      el.style.maxWidth = Math.round(Math.max(120, barRect.width - 12)) + 'px';
+    } catch (e) { el.setAttribute('data-flip', '0'); }
+  }
+
+  /** 画泡泡：show 是已经分好档、截过条的 Hit 列表（最多 2 条，3.9） */
+  function slangPaint(show) {
+    if (!DICT) return;
+    const el = slangBox();
+    if (!el) return;
+    const input = u.$('#q');
+    if (slangCtx.dismissed) { slangClose(); return; }
+    if (!show || !show.length || !input || !input.value.trim()) { slangClose(); return; }
+    const chips = el.querySelector('.hs-slang-chips');
+    if (chips) chips.innerHTML = DICT.chipsHTML(show);
+    let anyActive = false;
+    for (let i = 0; i < show.length; i++) if (DICT.tier(show[i]) === 'active') { anyActive = true; break; }
+    const lead = el.querySelector('.hs-slang-lead');
+    if (lead) lead.textContent = anyActive ? '理解为' : '可能理解为';
+    el.setAttribute('data-tier', anyActive ? 'active' : 'low');
+    el.setAttribute('aria-label', '黑话提示：' + DICT.ariaText(show));
+    el.hidden = false;
+    el.setAttribute('data-open', '1');
+    slangPlace();
+  }
+
+  /** 主动提示档随时出；低置信档只在「无结果」时出（3.9 两档策略） */
+  function slangRefresh(withLow) {
+    if (!DICT) return;
+    const a = DICT.pick(slangCtx.hits, 'active', 2);
+    const l = withLow ? DICT.pick(slangCtx.hits, 'low', Math.max(0, 2 - a.length)) : [];
+    slangPaint(a.concat(l));
+  }
+
+  /** 3.8-2/3：命中锚点但对应 IP 包未加载 → 异步补加载，到齐后重算一次并追加提示。
+      绝不重发检索请求（检索词从未因词典改变过）。 */
+  function slangLoadPending(pending, token) {
+    if (!DICT || !pending || !pending.length) return;
+    Promise.all(pending.map(id => DICT.load(id))).then(() => {
+      if (token !== slangCtx.token) return;         /* 已经是另一次检索了 */
+      slangCtx.hits = slangLookup(slangCtx.q).hits;
+      slangRefresh(slangCtx.empty === true);
+    }).catch(() => { /* 包拉不到就维持原样，静默 */ });
+  }
+
+  /** 黑话 chip 上的 data-q-span（"起,止"）→ [起,止]；缺失/不合法返回 null */
+  function slangSpan(v) {
+    const m = /^(\d+),(\d+)$/.exec(String(v == null ? '' : v));
+    if (!m) return null;
+    const a = Number(m[1]), b = Number(m[2]);
+    return b > a ? [a, b] : null;
+  }
+
+  /**
+   * 黑话 chip 点击后的 #q 文本：**只把被点中的那一段**换成 hintQuery，同一句里别的片段
+   * 原样留着（「牛头人 车万」点其一，不会把另一个也抹掉）。这是一次由用户点击引发的普通
+   * 文本编辑，属 C1 允许的动作 —— 判定本身仍是纯旁路，不点就一个字节都不改。
+   * 片段信息缺失、或与当前输入对不上（用户中途手改过词）→ 退回整串替换（老行为）。
+   */
+  function slangApplyChip(input, btn) {
+    const d = (btn && btn.dataset) || {};
+    const want = d.q || '';
+    if (!input) return want;
+    const span = slangSpan(d.qSpan);
+    const from = d.qFrom || '';
+    if (!span || !from) return want;
+    const raw = input.value || '';
+    /* lookup 拿的是 trim 后的串，Hit.span 也是；补回前导空白才是 raw 里的下标 */
+    const lead = raw.length - raw.replace(/^\s+/, '').length;
+    const s = lead + span[0], e = lead + span[1];
+    if (e > raw.length || raw.slice(s, e) !== from) return want;
+    return raw.slice(0, s) + want + raw.slice(e);
+  }
+
   /* ---------------- 搜索主流程 ---------------- */
   function setBusy(on) {
     const btn = u.$('#search-btn');
@@ -191,9 +381,17 @@
       return;
     }
 
+    /* 黑话判定第一遍：同步（核心层永远就绪）。纯旁路，不改 q、不改 intent（C1） */
+    const slang = slangLookup(q);
+
     searching = true;
     HS.busy = true;
     searchedOnce = true;
+    slangCtx = { token: slangCtx.token + 1, q: q, empty: null, hits: slang.hits, dismissed: false };
+    const mySlangToken = slangCtx.token;            /* 本次检索的提示身份，异步回调靠它认亲 */
+    slangClose();                                   /* 上一轮的提示先收起 */
+    slangRefresh(false);                            /* 主动提示档立刻出泡泡（3.8-1） */
+    slangLoadPending(slang.pending, slangCtx.token);
     setBusy(true);
     u.$('#vpn-banner').hidden = true;
     if (!append) HS.results.skeletons(Math.min(HS.settings.perSource, 12));
@@ -310,6 +508,11 @@
         (items.length > HS.results.pageSize() ? ' · 向下滚动继续加载' : '') +
         (zhN ? ' · <b class="hs-zh-count">' + zhN + ' 个有汉化/中文</b>' : '') +
         ' · 用时 ' + u.fmtMs(ms) + ' · 成功源 ' + okList.length + '/' + results.length;
+      /* 低置信档只在「无结果」时才追加进泡泡（3.9）；有结果时维持主动提示档 */
+      if (slangCtx.token === mySlangToken) {
+        slangCtx.empty = items.length === 0;
+        slangRefresh(slangCtx.empty);
+      }
       if (typeof opts.after === 'function') opts.after(items);
 
       if (items.length && failList.length && !HS.net.hasProxy()) {
@@ -330,6 +533,59 @@
     }
   }
 
+  /* ---------------- 焦点来源：键盘 / 指针 ---------------- */
+  /* 「点击输入不要高光、键盘进入要有描边」这件事纯 CSS 做不到：
+     Chromium 里文本输入框在鼠标点击时同样匹配 :focus-visible（本机实测 true）。
+     这里只维护一个开关类：按下 Tab → html.hs-kb（CSS 里才画 accent 焦点环），
+     指针按下 → 摘掉。除了这个类，没有任何 JS 参与焦点样式。 */
+  function bindFocusModality() {
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Tab') document.documentElement.classList.add('hs-kb');
+    }, true);
+    window.addEventListener('pointerdown', () => {
+      document.documentElement.classList.remove('hs-kb');
+    }, true);
+  }
+
+  /* ---------------- 顶栏自动隐藏（Win11 任务栏式） ---------------- */
+  /* 默认向上滑出视野；指针进到视口顶边 6px 内滑回来；离开延时 620ms 再收起。
+     · 只切 html 上的 class，位移由 CSS 的 transform 做，键盘焦点由 :focus-within 兜底。
+     · 只在「有 hover 能力的精确指针」上启用：触摸设备没有 mousemove，
+       启用就等于把设置按钮藏起来摸不到 —— 不挂 class 时顶栏常驻可见。 */
+  const TOP_PEEK_PX = 6;      /* 顶边感应区高度 */
+  const TOP_HIDE_MS = 620;    /* 指针离开后的收起延时 */
+  function initTopAutoHide() {
+    const top = u.$('.hs-top');
+    if (!top) return;
+    if (!window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    document.documentElement.classList.add('hs-top-auto');
+
+    let timer = null;
+    function reveal() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      document.documentElement.classList.add('hs-top-peek');
+    }
+    function conceal() {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        /* 指针还停在顶栏上、或键盘焦点还在里面，就先不收 */
+        if (top.matches(':hover') || top.matches(':focus-within')) return;
+        document.documentElement.classList.remove('hs-top-peek');
+      }, TOP_HIDE_MS);
+    }
+
+    window.addEventListener('mousemove', e => {
+      if (e.clientY <= TOP_PEEK_PX) reveal(); else conceal();
+    }, { passive: true });
+    document.addEventListener('mouseleave', conceal);   /* 指针离开窗口也算离开 */
+    top.addEventListener('mouseenter', reveal);
+    top.addEventListener('mouseleave', conceal);
+    /* 键盘：显示交给 CSS :focus-within；焦点离开顶栏后再收起 */
+    top.addEventListener('focusin', reveal);
+    top.addEventListener('focusout', conceal);
+  }
+
   /* ---------------- 快捷键 ---------------- */
   function isEditable(t) {
     if (!t) return false;
@@ -337,14 +593,20 @@
     return tag === 'input' || tag === 'textarea' || tag === 'select' || t.isContentEditable === true;
   }
 
+  /** 键盘发起的聚焦：挂上 hs-kb，让搜索框画出键盘焦点环（与 Tab 同一条路径） */
+  function kbFocus(el) {
+    document.documentElement.classList.add('hs-kb');
+    el.focus();
+  }
+
   function bindHotkeys() {
     window.addEventListener('keydown', e => {
       /* Ctrl/Cmd + K 或 / 聚焦搜索框 */
       if ((e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault(); u.$('#q').focus(); u.$('#q').select(); return;
+        e.preventDefault(); kbFocus(u.$('#q')); u.$('#q').select(); return;
       }
       if (e.key === '/' && !isEditable(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault(); u.$('#q').focus(); u.$('#q').select(); return;
+        e.preventDefault(); kbFocus(u.$('#q')); u.$('#q').select(); return;
       }
       /* Esc 收起筛选抽屉 / 折叠思维链 */
       if (e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
@@ -360,10 +622,35 @@
     const input = u.$('#q');
     const clear = u.$('#clear-q');
 
-    u.$('#search-form').addEventListener('submit', e => { e.preventDefault(); doSearch(); });
+    /* 检索的唯一入口：只有「按下搜索键」才走到这里 —— 回车 / 点搜索按钮 /
+       快捷词 chip；筛选控件（语言/类型/标签/信息源…）照旧走各自的防抖。
+       搜索框的 input / composition / 清空一律**不**检索：不请求、不清结果区、
+       不铺骨架屏、不动「正在检索」状态，所以这里没有任何 input/keyup 级别的检索调用。 */
+    function submitSearch() { doSearch(); }
+
+    u.$('#search-form').addEventListener('submit', e => { e.preventDefault(); submitSearch(); });
+
+    /* 输入法拼字期间（中文/日文选词）的回车是「确认候选」，不是搜索键 */
+    let composing = false;
+    let composedAt = 0;
+    input.addEventListener('compositionstart', () => { composing = true; });
+    input.addEventListener('compositionend', () => { composing = false; composedAt = Date.now(); });
+
+    /* 输入只做 UI 记账：切换清空按钮的显隐，不碰检索 */
     input.addEventListener('input', () => { clear.hidden = !input.value; });
     clear.addEventListener('click', () => { input.value = ''; clear.hidden = true; input.focus(); });
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+    input.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      if (composing || e.isComposing || e.keyCode === 229) return;   /* 选词中的回车 */
+      if (Date.now() - composedAt < 120) return;                    /* 刚确认完候选的那次回车 */
+      e.preventDefault();
+      submitSearch();
+    });
+    /* 极简提示：只挂原生 tooltip / 无障碍描述，不新增 UI 组件 */
+    input.title = '输入关键词后按回车（或点「搜索」）才检索';
+    if (!input.getAttribute('aria-description')) {
+      input.setAttribute('aria-description', '输入不触发检索；按回车或点击搜索按钮才检索');
+    }
 
     u.$('#theme-toggle').addEventListener('click', toggleTheme);
     u.$('#vpn-chip').addEventListener('click', () => probeNow(true, true));
@@ -415,11 +702,21 @@
       u.$('#q').focus();
     });
 
-    /* 结果区空态里的动作 */
+    /* 结果区空态里的动作；黑话泡泡里的 chip 也走这条既有委托 —— 只有用户点击才会改写 #q（C1）。
+       黑话 chip 带 data-q-span / data-q-from，走「只替换被点中的那一段」，其余片段保留。 */
     document.addEventListener('click', e => {
       const b = e.target.closest('[data-q]');
-      if (b) { u.$('#q').value = b.dataset.q; doSearch(); }
+      if (!b) return;
+      const q = u.$('#q');
+      const next = slangApplyChip(q, b);
+      if (q) q.value = next;
+      submitSearch();
     });
+
+    /* 黑话泡泡：窗口尺寸变化后重新贴回「已输入文字之后」 */
+    window.addEventListener('resize', u.debounce(() => {
+      if (slangEl && !slangEl.hidden) slangPlace();
+    }, 140));
   }
 
   /* ---------------- 事件订阅 ---------------- */
@@ -453,9 +750,12 @@
     HS.filtersUI.init();
     HS.results.init();
     HS.panic.init();
+    if (HS.fav && HS.fav.init) HS.fav.init();
     HS.settingsUI.init();
     bind();
     bindHotkeys();
+    bindFocusModality();
+    initTopAutoHide();
     wire();
 
     renderWelcome();

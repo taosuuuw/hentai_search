@@ -197,7 +197,7 @@ Say ('出口：' + $ping.egress) 'Gray'
 
 $checks = @(
   @{ name = 'nhentai 在线阅读'; url = '/api/reader?source=nhentai&id=682396' },
-  @{ name = 'mangadex 在线阅读'; url = '/api/reader?source=mangadex&id=164eff7a-e949-4edf-8531-1664d2a8771d' }
+  @{ name = 'mangadex 在线阅读'; url = '/api/reader?source=mangadex&id=a2c1d849-af05-4bbc-b2a7-866ebb10331f' }
 )
 foreach ($c in $checks) {
   $nm = [string]$c.name

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "apothecary",
+  "name": "药屋少女的呢喃",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「壬氏」不会加载本包。",
+  "_seriesNote": "`the apothecary diaries` **不在** NS.SERIES 里，故系列别名用 `to.term` 写成不可点击的说明。若日后加进 NS.SERIES 可改成 series。",
+  "_anchorsExcludedNote": "主角 `猫猫` 刻意**不作锚点**：虽是她本人的名字，但「猫猫」是通用昵称词（原神包里也已按通用词处理）。词条仍保留并标 `ambiguous`，只在 0 结果时出现。",
+  "_coverageNote": "角色层 13 条。`壬氏` 辨识度极高，进主动档；其余官方名 0.72~0.8（兜底档）。`李白` 与唐代诗人同名，已降到 0.7 + ambiguous。",
+  "anchors": [
+    "药屋少女的呢喃", "药屋少女", "the apothecary diaries", "apothecary diaries",
+    "壬氏", "高顺", "玉叶妃", "梨花妃", "里树妃", "楼兰妃", "阿多妃", "小兰", "翠苓",
+    "罗汉", "罗门"
+  ],
+  "entries": [
+    { "from": "药屋少女的呢喃", "to": { "term": "the apothecary diaries" }, "kind": "term", "label": "药屋少女的呢喃（The Apothecary Diaries）", "conf": 0.95, "ambiguous": false, "why": "官方中文全名 → 英文 The Apothecary Diaries" },
+    { "from": "药屋少女", "to": { "term": "the apothecary diaries" }, "kind": "term", "label": "药屋少女的呢喃", "conf": 0.85, "ambiguous": true, "why": "官方中文名的省略写法；但也是常见的轻小说标题格式，故标多义" },
+    { "from": "壬氏", "to": { "character": "jinshi" }, "kind": "character", "label": "壬氏", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → jinshi；本作人气最高的角色之一" },
+    { "from": "猫猫", "to": { "character": "maomao" }, "kind": "character", "label": "猫猫（药屋少女）", "conf": 0.7, "ambiguous": true, "why": "主角官方名 → maomao；但「猫猫」是通用昵称词，不可主动劫持，故只作兜底" },
+    { "from": "高顺", "to": { "character": "gaoshun" }, "kind": "character", "label": "高顺", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → gaoshun" },
+    { "from": "玉叶妃", "to": { "character": "gyokuyou" }, "kind": "character", "label": "玉叶妃", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → gyokuyou" },
+    { "from": "梨花妃", "to": { "character": "rifa" }, "kind": "character", "label": "梨花妃", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → rifa" },
+    { "from": "里树妃", "to": { "character": "lishu" }, "kind": "character", "label": "里树妃", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → lishu" },
+    { "from": "楼兰妃", "to": { "character": "loulan" }, "kind": "character", "label": "楼兰妃", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → loulan" },
+    { "from": "阿多妃", "to": { "character": "aduo" }, "kind": "character", "label": "阿多妃", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → aduo" },
+    { "from": "小兰", "to": { "character": "xiaolan" }, "kind": "character", "label": "小兰", "conf": 0.72, "ambiguous": true, "why": "官方中文名 → xiaolan；但「小兰」也是《名侦探柯南》女主角的常用译名" },
+    { "from": "翠苓", "to": { "character": "suirei" }, "kind": "character", "label": "翠苓", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → suirei" },
+    { "from": "罗汉", "to": { "character": "lakan" }, "kind": "character", "label": "罗汉", "conf": 0.75, "ambiguous": true, "why": "官方中文名 → lakan；但「罗汉」也是佛教通用词" },
+    { "from": "罗门", "to": { "character": "luomen" }, "kind": "character", "label": "罗门", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → luomen" }
+  ]
+}

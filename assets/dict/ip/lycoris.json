@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "id": "lycoris",
+  "name": "莉可丽丝",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 加载触发词。**新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是**回退保底**（清单缺失 / 404 / 坏 / 未就绪时才会用到），通常无需改动。包内这份 anchors 只在包**已加载后**参与资格判定、**不触发加载** —— 所以只写在包内而没进清单的词，在全新会话里单独搜「锦木千束」不会加载本包。",
+  "_coreOverlapNote": "core.js 已有 from='莉可莉丝'（注意字序不同）→ lycoris recoil。本包用的是官方写法 `莉可丽丝`，两者不是子串关系，因此可以安全并存，不会互相降档。",
+  "_coverageNote": "角色层 10 条。两位主角用英文全名与短名双写，均进主动档（本作角色辨识度极高）。",
+  "anchors": [
+    "莉可丽丝", "lycoris recoil", "lycoris", "千束", "泷奈", "锦木千束", "井之上泷奈",
+    "中原瑞希", "胡桃", "春川风希", "乙女樱", "楠木", "吉松", "da 咖啡厅"
+  ],
+  "entries": [
+    { "from": "莉可丽丝", "to": { "series": "lycoris recoil" }, "kind": "series", "label": "莉可丽丝", "conf": 0.9, "ambiguous": false, "why": "官方中文写法（与 core.js 的 `莉可莉丝` 字序不同，互为补充）→ lycoris recoil" },
+    { "from": "锦木千束", "to": { "character": "nishikigi chisato" }, "kind": "character", "label": "锦木千束", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → nishikigi chisato" },
+    { "from": "千束", "to": { "character": "nishikigi chisato" }, "kind": "character", "label": "锦木千束", "conf": 0.85, "ambiguous": false, "why": "「锦木千束」的简称，圈内最常用" },
+    { "from": "井之上泷奈", "to": { "character": "inoue takina" }, "kind": "character", "label": "井之上泷奈", "conf": 0.85, "ambiguous": false, "why": "官方中文名 → inoue takina" },
+    { "from": "泷奈", "to": { "character": "inoue takina" }, "kind": "character", "label": "井之上泷奈", "conf": 0.85, "ambiguous": false, "why": "「井之上泷奈」的简称，圈内最常用" },
+    { "from": "中原瑞希", "to": { "character": "nakahara mizuki" }, "kind": "character", "label": "中原瑞希", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → nakahara mizuki" },
+    { "from": "胡桃", "to": { "character": "kurumi" }, "kind": "character", "label": "胡桃（莉可丽丝）", "conf": 0.72, "ambiguous": true, "why": "官方中文名 → kurumi；但原神的胡桃也写作「胡桃」，是真实的跨作品重名，故必须标多义" },
+    { "from": "春川风希", "to": { "character": "harukawa fuki" }, "kind": "character", "label": "春川风希", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → harukawa fuki" },
+    { "from": "乙女樱", "to": { "character": "otome sakura" }, "kind": "character", "label": "乙女樱", "conf": 0.72, "ambiguous": false, "why": "官方中文名 → otome sakura" },
+    { "from": "楠木", "to": { "character": "kusunoki" }, "kind": "character", "label": "楠木", "conf": 0.7, "ambiguous": false, "why": "官方中文名 → kusunoki" },
+    { "from": "吉松", "to": { "character": "yoshimatsu" }, "kind": "character", "label": "吉松", "conf": 0.68, "ambiguous": false, "why": "官方中文名 → yoshimatsu" }
+  ]
+}

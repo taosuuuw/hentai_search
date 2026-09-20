@@ -1,0 +1,289 @@
+{
+  "schema": 1,
+  "id": "genshin",
+  "name": "原神",
+  "ver": "2026.09.1",
+  "updated": "2026-09-21",
+  "maintainer": "taosuuuw",
+  "_anchorsNote": "锚点 = 让本包有资格参与提示的触发词。dict-hint.js 的懒加载触发词来自 assets/dict/ip/index.json 清单（core.js 的 anchors 表只在清单缺失/未就绪时兜底），包内这份 anchors 只在包已加载后才参与资格判定 —— 因此本包的触发词必须登记进 index.json，否则全新会话里单独搜「椰羊」「卢姥爷」永远不会加载本包。2026-09-21 追加 `ys`（原神拼音缩写，core.js 里是 low 档词条）：登记为锚点是为了让联想泡泡也能给出「ys → 原神」，同时也让二字母缩写能触发本包懒加载。刻意排除为锚点：`雷神`（词条在 core.js 公共层、且为多义；本包内没有这条）、单字名（琴/空/荧/魈/山）与通用词（内鬼/猫猫/女仆/僵尸/奶奶/团长/狐狸/大姐头/茄子/富婆/天狗/高达/黑妹/张三/奸商/小王子）。**2026-09-21 已收紧**：`修女`（无词条）/ `护士长` / `锅巴` / `公子` / `仆人` **已从本包 anchors 删除**（词条保留），删完已重新生成 ip/index.json。理由：锚点是懒加载触发词、中文锚点是包含匹配，这些通用词 / 称谓会让无关查询白拉本包。**仍未删除**：`提款机 / 公爵 / 堂主 / 帝君 / 真君 / 小姨 / 武器大师`。**2026-09-21 第五次修订**（README / DICTIONARY-INDEX 按整库口径记作「四次修订」，同一件事）：把官方名 `希格雯` / `阿蕾奇诺` 加进 anchors（genshin 95 → 97），此前因删除 `护士长` / `仆人` 而失去触发词的这两个角色**恢复可达** —— 全新会话里直接搜官方名即可拉起本包；`护士长` / `仆人` **仍不触发加载**（已从 anchors 删除、词条保留，只在包被别的锚点拉起后照常命中）。理由见 assets/dict/README.md §4(b-2)。 **新增或修改触发词后必须重新生成 assets/dict/ip/index.json**（packages 按 id 字典序、anchors 从各包逐字复制）；core.js 的 anchors 映射表只是回退保底，通常无需改动。",
+  "anchors": [
+    "原神", "genshin", "genshin impact", "ys", "提瓦特", "蒙德", "璃月", "稻妻", "须弥",
+    "枫丹", "纳塔", "至冬", "愚人众", "深渊教团", "尘歌壶", "圣遗物", "深境螺旋", "神之眼", "命之座",
+    "摩拉", "原石", "纠缠之缘", "树脂", "纪行", "椰羊", "小吉祥草王", "草神", "岩神", "风神", "水神",
+    "火神", "派蒙", "应急食品", "旅行者", "卢姥爷", "卢锅巴", "正e人", "刻师傅", "屑狐狸", "夜天后",
+    "叶天帝", "达达鸭", "海哥", "点赞哥", "六星战神", "保底杀手", "小乌龟", "观赏鱼", "大芭芭拉", "打桩机",
+    "降魔大圣", "卖唱的", "巴巴脱丝", "岩王爷", "帝君", "退休老大爷", "小姨", "云先生", "小艾米", "奥兹发射器",
+    "皇女", "大舅哥", "打火姬", "狼崽子", "凯子哥", "凝冰渡海真君", "白色史莱姆", "小温迪", "合成大师",
+    "武器大师", "希娜小姐", "天权星", "堂主", "往生堂堂主", "白鹭公主", "玩具销售员", "提款机", "放火烧山真君",
+    "火花骑士", "炸鱼专家", "稻妻宅女", "散兵", "国崩", "阿帽", "芙芙", "水龙", "龙哥", "公爵", "小提",
+    "大风纪官", "真君", "dio娜", "狼崽", "正E人", "王小美", "希格雯", "阿蕾奇诺"
+  ],
+  "entries": [
+    { "from": "原神", "to": { "series": "genshin" }, "kind": "series", "label": "原神", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 genshin" },
+    { "from": "genshin impact", "to": { "series": "genshin" }, "kind": "series", "label": "原神", "conf": 0.95, "ambiguous": false, "why": "官方英文全名 → 英文检索名 genshin" },
+    { "from": "提瓦特", "to": { "term": "teyvat" }, "kind": "term", "label": "提瓦特（世界名）", "conf": 0.85, "ambiguous": false, "why": "游戏世界名 → Teyvat" },
+    { "from": "神之眼", "to": { "term": "vision" }, "kind": "term", "label": "神之眼", "conf": 0.82, "ambiguous": false, "why": "设定核心道具 → Vision" },
+    { "from": "命之座", "to": { "term": "constellation" }, "kind": "term", "label": "命之座", "conf": 0.82, "ambiguous": false, "why": "角色突破系统 → Constellation" },
+    { "from": "圣遗物", "to": { "term": "artifact" }, "kind": "term", "label": "圣遗物", "conf": 0.85, "ambiguous": false, "why": "装备系统 → Artifact，同人里常指出装题材" },
+    { "from": "深境螺旋", "to": { "term": "spiral abyss" }, "kind": "term", "label": "深境螺旋", "conf": 0.85, "ambiguous": false, "why": "终局玩法 → Spiral Abyss" },
+    { "from": "深渊", "to": { "term": "abyss" }, "kind": "term", "label": "深渊", "conf": 0.7, "ambiguous": true, "why": "既指深境螺旋也指剧情中的深渊；也是通用词" },
+    { "from": "深渊教团", "to": { "term": "abyss order" }, "kind": "term", "label": "深渊教团", "conf": 0.85, "ambiguous": false, "why": "主要敌对组织 → Abyss Order" },
+    { "from": "愚人众", "to": { "term": "fatui" }, "kind": "term", "label": "愚人众", "conf": 0.88, "ambiguous": false, "why": "至冬国组织 → Fatui" },
+    { "from": "尘歌壶", "to": { "term": "serenitea pot" }, "kind": "term", "label": "尘歌壶", "conf": 0.85, "ambiguous": false, "why": "家园系统 → Serenitea Pot" },
+    { "from": "树脂", "to": { "term": "resin" }, "kind": "term", "label": "树脂（体力）", "conf": 0.8, "ambiguous": false, "why": "游戏体力值 → Resin" },
+    { "from": "原石", "to": { "term": "primogem" }, "kind": "term", "label": "原石（抽卡货币）", "conf": 0.85, "ambiguous": false, "why": "抽卡货币 → Primogem" },
+    { "from": "摩拉", "to": { "term": "mora" }, "kind": "term", "label": "摩拉（金币）", "conf": 0.85, "ambiguous": false, "why": "通用货币 → Mora" },
+    { "from": "纠缠之缘", "to": { "term": "intertwined fate" }, "kind": "term", "label": "纠缠之缘（限定抽卡道具）", "conf": 0.82, "ambiguous": false, "why": "限定池抽卡道具，俗称「粉球」" },
+    { "from": "大保底", "to": { "term": "guaranteed pity" }, "kind": "term", "label": "大保底", "conf": 0.82, "ambiguous": false, "why": "抽卡保底机制：歪过之后必中当期" },
+    { "from": "小保底", "to": { "term": "soft pity" }, "kind": "term", "label": "小保底", "conf": 0.82, "ambiguous": false, "why": "抽卡达到保底次数但可能歪" },
+    { "from": "歪了", "to": { "term": "losing 50/50" }, "kind": "term", "label": "歪了（保底抽到常驻）", "conf": 0.78, "ambiguous": false, "why": "小保底没抽到当期角色的俗称" },
+    { "from": "满命", "to": { "term": "c6" }, "kind": "term", "label": "满命（命之座六层）", "conf": 0.8, "ambiguous": false, "why": "命之座叠满六层" },
+    { "from": "精5", "to": { "term": "r5" }, "kind": "term", "label": "精炼五阶", "conf": 0.78, "ambiguous": false, "why": "武器精炼至第五阶" },
+    { "from": "双爆", "to": { "term": "crit" }, "kind": "term", "label": "暴击率 / 暴击伤害", "conf": 0.78, "ambiguous": false, "why": "圣遗物副词条「双爆」的简称" },
+    { "from": "周本", "to": { "term": "weekly boss" }, "kind": "term", "label": "周常 BOSS", "conf": 0.78, "ambiguous": false, "why": "每周可挑战的 BOSS 本" },
+
+    { "from": "椰羊", "to": { "character": "ganyu" }, "kind": "character", "label": "甘雨", "conf": 0.9, "ambiguous": false, "why": "甘雨的角像椰羊，故称椰羊" },
+    { "from": "王小美", "to": { "character": "ganyu" }, "kind": "character", "label": "甘雨", "conf": 0.85, "ambiguous": false, "why": "甘雨的本名梗，故称王小美" },
+    { "from": "冰安柏", "to": { "character": "ganyu" }, "kind": "character", "label": "甘雨", "conf": 0.78, "ambiguous": false, "why": "甘雨与安柏机制相似，故称冰安柏" },
+    { "from": "甘雨", "to": { "character": "ganyu" }, "kind": "character", "label": "甘雨", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 ganyu" },
+
+    { "from": "小吉祥草王", "to": { "character": "nahida" }, "kind": "character", "label": "纳西妲", "conf": 0.9, "ambiguous": false, "why": "纳西妲在剧情中的尊号" },
+    { "from": "草神", "to": { "character": "nahida" }, "kind": "character", "label": "纳西妲", "conf": 0.88, "ambiguous": false, "why": "纳西妲是草元素执政神" },
+    { "from": "羽毛球", "to": { "character": "nahida" }, "kind": "character", "label": "纳西妲", "conf": 0.8, "ambiguous": false, "why": "纳西妲发型的形状梗，故称羽毛球" },
+    { "from": "纳西妲", "to": { "character": "nahida" }, "kind": "character", "label": "纳西妲", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 nahida" },
+
+    { "from": "影", "to": { "character": "raiden shogun" }, "kind": "character", "label": "雷电将军", "conf": 0.65, "ambiguous": true, "why": "雷电将军的真名「影」；单字「影」歧义极大" },
+    { "from": "巴尔", "to": { "character": "raiden shogun" }, "kind": "character", "label": "雷电将军", "conf": 0.68, "ambiguous": true, "why": "雷电将军的魔神名，但也是常见译名" },
+    { "from": "稻妻宅女", "to": { "character": "raiden shogun" }, "kind": "character", "label": "雷电将军", "conf": 0.8, "ambiguous": false, "why": "雷电将军长期不出天守阁的宅家梗" },
+    { "from": "雷电将军", "to": { "character": "raiden shogun" }, "kind": "character", "label": "雷电将军", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 raiden shogun" },
+
+    { "from": "卖唱的", "to": { "character": "venti" }, "kind": "character", "label": "温迪", "conf": 0.85, "ambiguous": false, "why": "温迪是吟游诗人，玩家戏称卖唱的" },
+    { "from": "风神", "to": { "character": "venti" }, "kind": "character", "label": "温迪", "conf": 0.82, "ambiguous": false, "why": "温迪是风元素执政神" },
+    { "from": "巴巴脱丝", "to": { "character": "venti" }, "kind": "character", "label": "温迪", "conf": 0.78, "ambiguous": false, "why": "温迪魔神名 Barbatos 的空耳" },
+    { "from": "温迪", "to": { "character": "venti" }, "kind": "character", "label": "温迪", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 venti" },
+
+    { "from": "岩王爷", "to": { "character": "zhongli" }, "kind": "character", "label": "钟离", "conf": 0.88, "ambiguous": false, "why": "钟离是岩王帝君，故称岩王爷" },
+    { "from": "帝君", "to": { "character": "zhongli" }, "kind": "character", "label": "钟离", "conf": 0.8, "ambiguous": true, "why": "钟离的尊号「岩王帝君」的简称；也见于其它作品" },
+    { "from": "岩神", "to": { "character": "zhongli" }, "kind": "character", "label": "钟离", "conf": 0.85, "ambiguous": false, "why": "钟离是岩元素执政神" },
+    { "from": "退休老大爷", "to": { "character": "zhongli" }, "kind": "character", "label": "钟离", "conf": 0.82, "ambiguous": false, "why": "钟离退休后闲散生活的梗" },
+    { "from": "钟老爷子", "to": { "character": "zhongli" }, "kind": "character", "label": "钟离", "conf": 0.82, "ambiguous": false, "why": "钟离的敬称式外号" },
+    { "from": "钟离", "to": { "character": "zhongli" }, "kind": "character", "label": "钟离", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 zhongli" },
+
+    { "from": "堂主", "to": { "character": "hu tao" }, "kind": "character", "label": "胡桃", "conf": 0.78, "ambiguous": true, "why": "胡桃是往生堂堂主；该词也用于其它语境" },
+    { "from": "往生堂堂主", "to": { "character": "hu tao" }, "kind": "character", "label": "胡桃", "conf": 0.85, "ambiguous": false, "why": "胡桃的职务全称" },
+    { "from": "胡桃", "to": { "character": "hu tao" }, "kind": "character", "label": "胡桃", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 hu tao" },
+
+    { "from": "神里", "to": { "character": "kamisato ayaka" }, "kind": "character", "label": "神里绫华", "conf": 0.8, "ambiguous": true, "why": "神里家的简称；神里绫人与绫华同姓，可能指向任一" },
+    { "from": "小乌龟", "to": { "character": "kamisato ayaka" }, "kind": "character", "label": "神里绫华", "conf": 0.82, "ambiguous": false, "why": "神里绫华的呆萌表情与缩头梗，故称小乌龟" },
+    { "from": "白鹭公主", "to": { "character": "kamisato ayaka" }, "kind": "character", "label": "神里绫华", "conf": 0.82, "ambiguous": false, "why": "神里绫华的称号" },
+    { "from": "神里绫华", "to": { "character": "kamisato ayaka" }, "kind": "character", "label": "神里绫华", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → kamisato ayaka" },
+
+    { "from": "大舅哥", "to": { "character": "kamisato ayato" }, "kind": "character", "label": "神里绫人", "conf": 0.85, "ambiguous": false, "why": "绫人是绫华的哥哥，玩家戏称大舅哥" },
+    { "from": "神里绫人", "to": { "character": "kamisato ayato" }, "kind": "character", "label": "神里绫人", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → kamisato ayato" },
+
+    { "from": "叶天帝", "to": { "character": "kaedehara kazuha" }, "kind": "character", "label": "枫原万叶", "conf": 0.85, "ambiguous": false, "why": "万叶强度极高，被尊称叶天帝" },
+    { "from": "万叶", "to": { "character": "kaedehara kazuha" }, "kind": "character", "label": "枫原万叶", "conf": 0.82, "ambiguous": false, "why": "枫原万叶的简称" },
+    { "from": "枫原万叶", "to": { "character": "kaedehara kazuha" }, "kind": "character", "label": "枫原万叶", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → kaedehara kazuha" },
+
+    { "from": "放火烧山真君", "to": { "character": "klee" }, "kind": "character", "label": "可莉", "conf": 0.85, "ambiguous": false, "why": "可莉到处炸山的梗" },
+    { "from": "火花骑士", "to": { "character": "klee" }, "kind": "character", "label": "可莉", "conf": 0.82, "ambiguous": false, "why": "可莉的西风骑士团称号" },
+    { "from": "炸鱼专家", "to": { "character": "klee" }, "kind": "character", "label": "可莉", "conf": 0.8, "ambiguous": false, "why": "可莉炸鱼被关禁闭的梗" },
+    { "from": "可莉", "to": { "character": "klee" }, "kind": "character", "label": "可莉", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 klee" },
+
+    { "from": "派蒙", "to": { "character": "paimon" }, "kind": "character", "label": "派蒙", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 paimon" },
+    { "from": "应急食品", "to": { "character": "paimon" }, "kind": "character", "label": "派蒙", "conf": 0.9, "ambiguous": false, "why": "旅行者把派蒙称作应急食品，圈内最著名的梗之一" },
+    { "from": "旅行者", "to": { "character": "traveler" }, "kind": "character", "label": "旅行者（主角）", "conf": 0.85, "ambiguous": false, "why": "玩家角色 → 英文标签站用 Traveler" },
+    { "from": "爷", "to": { "character": "traveler" }, "kind": "character", "label": "旅行者（主角）", "conf": 0.6, "ambiguous": true, "why": "剧情里旅行者的自称被玩家玩梗；单字「爷」歧义极大" },
+    { "from": "荧", "to": { "character": "lumine" }, "kind": "character", "label": "荧（女主角）", "conf": 0.78, "ambiguous": false, "why": "女主角官方名 → lumine" },
+    { "from": "空", "to": { "character": "aether" }, "kind": "character", "label": "空（男主角）", "conf": 0.55, "ambiguous": true, "why": "男主角官方名 → aether；单字「空」歧义极大，明日方舟也有同名角色" },
+
+    { "from": "屑狐狸", "to": { "character": "yae miko" }, "kind": "character", "label": "八重神子", "conf": 0.85, "ambiguous": false, "why": "八重神子爱捉弄人的性格梗，故称屑狐狸" },
+    { "from": "神子", "to": { "character": "yae miko" }, "kind": "character", "label": "八重神子", "conf": 0.82, "ambiguous": false, "why": "八重神子的简称" },
+    { "from": "八重神子", "to": { "character": "yae miko" }, "kind": "character", "label": "八重神子", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 yae miko" },
+
+    { "from": "观赏鱼", "to": { "character": "sangonomiya kokomi" }, "kind": "character", "label": "珊瑚宫心海", "conf": 0.85, "ambiguous": false, "why": "心海战力与定位被调侃为观赏鱼" },
+    { "from": "大芭芭拉", "to": { "character": "sangonomiya kokomi" }, "kind": "character", "label": "珊瑚宫心海", "conf": 0.78, "ambiguous": false, "why": "心海与芭芭拉同为水系治疗，故称大芭芭拉" },
+    { "from": "珊瑚宫心海", "to": { "character": "sangonomiya kokomi" }, "kind": "character", "label": "珊瑚宫心海", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → sangonomiya kokomi" },
+
+    { "from": "打桩机", "to": { "character": "xiao" }, "kind": "character", "label": "魈", "conf": 0.8, "ambiguous": false, "why": "魈下落攻击连打的操作被戏称打桩机" },
+    { "from": "降魔大圣", "to": { "character": "xiao" }, "kind": "character", "label": "魈", "conf": 0.85, "ambiguous": false, "why": "魈在璃月的尊号" },
+    { "from": "魈", "to": { "character": "xiao" }, "kind": "character", "label": "魈", "conf": 0.75, "ambiguous": false, "why": "官方中文名 → 英文检索名 xiao" },
+
+    { "from": "夜天后", "to": { "character": "yelan" }, "kind": "character", "label": "夜兰", "conf": 0.85, "ambiguous": false, "why": "夜兰强度极高，被尊称夜天后" },
+    { "from": "夜兰", "to": { "character": "yelan" }, "kind": "character", "label": "夜兰", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 yelan" },
+
+    { "from": "刻师傅", "to": { "character": "keqing" }, "kind": "character", "label": "刻晴", "conf": 0.85, "ambiguous": false, "why": "刻晴早期输出偏低，被调侃为刻师傅" },
+    { "from": "刻晴", "to": { "character": "keqing" }, "kind": "character", "label": "刻晴", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 keqing" },
+
+    { "from": "海哥", "to": { "character": "alhaitham" }, "kind": "character", "label": "艾尔海森", "conf": 0.88, "ambiguous": false, "why": "艾尔海森的敬称「海哥」" },
+    { "from": "艾尔海森", "to": { "character": "alhaitham" }, "kind": "character", "label": "艾尔海森", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 alhaitham" },
+
+    { "from": "散兵", "to": { "character": "wanderer" }, "kind": "character", "label": "流浪者", "conf": 0.9, "ambiguous": false, "why": "流浪者早期作为愚人众执行官「散兵」登场，圈内仍沿用此称" },
+    { "from": "国崩", "to": { "character": "wanderer" }, "kind": "character", "label": "流浪者", "conf": 0.85, "ambiguous": false, "why": "流浪者的另一个名号" },
+    { "from": "阿帽", "to": { "character": "wanderer" }, "kind": "character", "label": "流浪者", "conf": 0.85, "ambiguous": false, "why": "流浪者的帽子造型梗，故称阿帽" },
+    { "from": "流浪者", "to": { "character": "wanderer" }, "kind": "character", "label": "流浪者", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 wanderer" },
+
+    { "from": "芙芙", "to": { "character": "furina" }, "kind": "character", "label": "芙宁娜", "conf": 0.85, "ambiguous": false, "why": "芙宁娜的爱称" },
+    { "from": "芙宁娜", "to": { "character": "furina" }, "kind": "character", "label": "芙宁娜", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 furina" },
+
+    { "from": "水龙", "to": { "character": "neuvillette" }, "kind": "character", "label": "那维莱特", "conf": 0.85, "ambiguous": false, "why": "那维莱特是水龙王，故称水龙" },
+    { "from": "龙哥", "to": { "character": "neuvillette" }, "kind": "character", "label": "那维莱特", "conf": 0.82, "ambiguous": false, "why": "那维莱特的敬称" },
+    { "from": "那维莱特", "to": { "character": "neuvillette" }, "kind": "character", "label": "那维莱特", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 neuvillette" },
+
+    { "from": "仆人", "to": { "character": "arlecchino" }, "kind": "character", "label": "阿蕾奇诺", "conf": 0.78, "ambiguous": true, "why": "阿蕾奇诺是愚人众执行官「仆人」；该词也是通用词" },
+    { "from": "阿蕾奇诺", "to": { "character": "arlecchino" }, "kind": "character", "label": "阿蕾奇诺", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 arlecchino" },
+
+    { "from": "公爵", "to": { "character": "wriothesley" }, "kind": "character", "label": "莱欧斯利", "conf": 0.75, "ambiguous": true, "why": "莱欧斯利的职务「梅洛彼得堡公爵」；该词也用于其它作品" },
+    { "from": "莱欧斯利", "to": { "character": "wriothesley" }, "kind": "character", "label": "莱欧斯利", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 wriothesley" },
+
+    { "from": "小提", "to": { "character": "tighnari" }, "kind": "character", "label": "提纳里", "conf": 0.82, "ambiguous": false, "why": "提纳里的昵称" },
+    { "from": "提纳里", "to": { "character": "tighnari" }, "kind": "character", "label": "提纳里", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 tighnari" },
+
+    { "from": "大风纪官", "to": { "character": "cyno" }, "kind": "character", "label": "赛诺", "conf": 0.82, "ambiguous": false, "why": "赛诺的职务「大风纪官」" },
+    { "from": "赛诺", "to": { "character": "cyno" }, "kind": "character", "label": "赛诺", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 cyno" },
+
+    { "from": "真君", "to": { "character": "xianyun" }, "kind": "character", "label": "闲云", "conf": 0.75, "ambiguous": true, "why": "闲云即「留云借风真君」；「真君」也见于其它仙家角色" },
+    { "from": "闲云", "to": { "character": "xianyun" }, "kind": "character", "label": "闲云", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 xianyun" },
+
+    { "from": "护士长", "to": { "character": "sigewinne" }, "kind": "character", "label": "希格雯", "conf": 0.75, "ambiguous": true, "why": "希格雯的职务；该词也是通用称谓" },
+    { "from": "希格雯", "to": { "character": "sigewinne" }, "kind": "character", "label": "希格雯", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 sigewinne" },
+
+    { "from": "卢姥爷", "to": { "character": "diluc" }, "kind": "character", "label": "迪卢克", "conf": 0.9, "ambiguous": false, "why": "迪卢克是蒙德酒庄老爷，故称卢姥爷" },
+    { "from": "卢锅巴", "to": { "character": "diluc" }, "kind": "character", "label": "迪卢克", "conf": 0.78, "ambiguous": false, "why": "迪卢克输出偏低的戏称" },
+    { "from": "正e人", "to": { "character": "diluc" }, "kind": "character", "label": "迪卢克", "conf": 0.78, "ambiguous": false, "why": "迪卢克（Diluc）名字拼写的谐音梗，也写作「正E人」" },
+    { "from": "迪卢克", "to": { "character": "diluc" }, "kind": "character", "label": "迪卢克", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 diluc" },
+
+    { "from": "凯子哥", "to": { "character": "kaeya" }, "kind": "character", "label": "凯亚", "conf": 0.82, "ambiguous": false, "why": "凯亚的昵称" },
+    { "from": "凝冰渡海真君", "to": { "character": "kaeya" }, "kind": "character", "label": "凯亚", "conf": 0.85, "ambiguous": false, "why": "凯亚用冰开路渡海的梗" },
+    { "from": "凯亚", "to": { "character": "kaeya" }, "kind": "character", "label": "凯亚", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 kaeya" },
+
+    { "from": "点赞哥", "to": { "character": "bennett" }, "kind": "character", "label": "班尼特", "conf": 0.88, "ambiguous": false, "why": "班尼特大招回血画圈像点赞，故称点赞哥" },
+    { "from": "六星战神", "to": { "character": "bennett" }, "kind": "character", "label": "班尼特", "conf": 0.82, "ambiguous": false, "why": "班尼特是四星却强度极高，被称六星战神" },
+    { "from": "倒霉蛋", "to": { "character": "bennett" }, "kind": "character", "label": "班尼特", "conf": 0.72, "ambiguous": true, "why": "班尼特设定里运气极差；该词也是通用说法" },
+    { "from": "班尼特", "to": { "character": "bennett" }, "kind": "character", "label": "班尼特", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 bennett" },
+
+    { "from": "小艾米", "to": { "character": "fischl" }, "kind": "character", "label": "菲谢尔", "conf": 0.85, "ambiguous": false, "why": "菲谢尔的本名梗「艾米」" },
+    { "from": "奥兹发射器", "to": { "character": "fischl" }, "kind": "character", "label": "菲谢尔", "conf": 0.85, "ambiguous": false, "why": "菲谢尔的输出主要靠召唤物奥兹，故称奥兹发射器" },
+    { "from": "菲谢尔", "to": { "character": "fischl" }, "kind": "character", "label": "菲谢尔", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 fischl" },
+
+    { "from": "打火姬", "to": { "character": "amber" }, "kind": "character", "label": "安柏", "conf": 0.85, "ambiguous": false, "why": "安柏是火系弓手，故称打火姬" },
+    { "from": "安柏", "to": { "character": "amber" }, "kind": "character", "label": "安柏", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 amber" },
+
+    { "from": "狼崽子", "to": { "character": "razor" }, "kind": "character", "label": "雷泽", "conf": 0.82, "ambiguous": false, "why": "雷泽由狼群养大，故称狼崽子" },
+    { "from": "狼崽", "to": { "character": "razor" }, "kind": "character", "label": "雷泽", "conf": 0.78, "ambiguous": false, "why": "「狼崽子」的简称" },
+    { "from": "雷泽", "to": { "character": "razor" }, "kind": "character", "label": "雷泽", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 razor" },
+
+    { "from": "白色史莱姆", "to": { "character": "rosaria" }, "kind": "character", "label": "罗莎莉亚", "conf": 0.8, "ambiguous": false, "why": "罗莎莉亚立绘的玩家玩梗称呼" },
+    { "from": "罗莎莉亚", "to": { "character": "rosaria" }, "kind": "character", "label": "罗莎莉亚", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 rosaria" },
+
+    { "from": "小温迪", "to": { "character": "sucrose" }, "kind": "character", "label": "砂糖", "conf": 0.8, "ambiguous": false, "why": "砂糖与温迪同为风系，故称小温迪" },
+    { "from": "合成大师", "to": { "character": "sucrose" }, "kind": "character", "label": "砂糖", "conf": 0.78, "ambiguous": false, "why": "砂糖是炼金术士，故称合成大师" },
+    { "from": "砂糖", "to": { "character": "sucrose" }, "kind": "character", "label": "砂糖", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 sucrose" },
+
+    { "from": "保底杀手", "to": { "character": "qiqi" }, "kind": "character", "label": "七七", "conf": 0.85, "ambiguous": false, "why": "七七常在小保底时出现，被戏称保底杀手" },
+    { "from": "七七", "to": { "character": "qiqi" }, "kind": "character", "label": "七七", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 qiqi" },
+
+    { "from": "dio娜", "to": { "character": "diona" }, "kind": "character", "label": "迪奥娜", "conf": 0.82, "ambiguous": false, "why": "迪奥娜名字与 JOJO 角色 DIO 的谐音梗" },
+    { "from": "迪奥娜", "to": { "character": "diona" }, "kind": "character", "label": "迪奥娜", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 diona" },
+
+    { "from": "武器大师", "to": { "character": "xiangling" }, "kind": "character", "label": "香菱", "conf": 0.72, "ambiguous": true, "why": "香菱的锅巴与长枪被玩梗；该词也用于其它语境" },
+    { "from": "锅巴", "to": { "character": "xiangling" }, "kind": "character", "label": "香菱", "conf": 0.78, "ambiguous": true, "why": "香菱的召唤物锅巴；该词也是一家零食品牌" },
+    { "from": "香菱", "to": { "character": "xiangling" }, "kind": "character", "label": "香菱", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 xiangling" },
+
+    { "from": "公子", "to": { "character": "tartaglia" }, "kind": "character", "label": "达达利亚", "conf": 0.82, "ambiguous": true, "why": "达达利亚是愚人众执行官「公子」；该词也是通用称谓" },
+    { "from": "达达鸭", "to": { "character": "tartaglia" }, "kind": "character", "label": "达达利亚", "conf": 0.85, "ambiguous": false, "why": "达达利亚的谐音昵称" },
+    { "from": "玩具销售员", "to": { "character": "tartaglia" }, "kind": "character", "label": "达达利亚", "conf": 0.78, "ambiguous": false, "why": "达达利亚在剧情中自称玩具销售员的梗" },
+    { "from": "提款机", "to": { "character": "tartaglia" }, "kind": "character", "label": "达达利亚", "conf": 0.75, "ambiguous": true, "why": "达达利亚每周被刷素材，被戏称提款机" },
+    { "from": "达达利亚", "to": { "character": "tartaglia" }, "kind": "character", "label": "达达利亚", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 tartaglia" },
+
+    { "from": "天权星", "to": { "character": "ningguang" }, "kind": "character", "label": "凝光", "conf": 0.82, "ambiguous": false, "why": "凝光的职务「天权星」" },
+    { "from": "凝光", "to": { "character": "ningguang" }, "kind": "character", "label": "凝光", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 ningguang" },
+
+    { "from": "小姨", "to": { "character": "shenhe" }, "kind": "character", "label": "申鹤", "conf": 0.8, "ambiguous": true, "why": "申鹤与重云、行秋的辈分梗；该词也是通用亲属称谓" },
+    { "from": "申鹤", "to": { "character": "shenhe" }, "kind": "character", "label": "申鹤", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 shenhe" },
+
+    { "from": "云先生", "to": { "character": "yun jin" }, "kind": "character", "label": "云堇", "conf": 0.82, "ambiguous": false, "why": "云堇的敬称" },
+    { "from": "云堇", "to": { "character": "yun jin" }, "kind": "character", "label": "云堇", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 yun jin" },
+
+    { "from": "小王子", "to": { "character": "albedo" }, "kind": "character", "label": "阿贝多", "conf": 0.7, "ambiguous": true, "why": "阿贝多的气质梗；该词也指同名文学作品" },
+    { "from": "阿贝多", "to": { "character": "albedo" }, "kind": "character", "label": "阿贝多", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 albedo" },
+
+    { "from": "希娜小姐", "to": { "character": "gorou" }, "kind": "character", "label": "五郎", "conf": 0.78, "ambiguous": false, "why": "五郎女装化名「希娜小姐」的梗" },
+    { "from": "五郎", "to": { "character": "gorou" }, "kind": "character", "label": "五郎", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 gorou" },
+
+    { "from": "占星术士", "to": { "character": "mona" }, "kind": "character", "label": "莫娜", "conf": 0.78, "ambiguous": false, "why": "莫娜的职业「占星术士」" },
+    { "from": "莫娜", "to": { "character": "mona" }, "kind": "character", "label": "莫娜", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 mona" },
+
+    { "from": "琴团长", "to": { "character": "jean" }, "kind": "character", "label": "琴", "conf": 0.82, "ambiguous": false, "why": "琴是西风骑士团代理团长，故称琴团长" },
+    { "from": "琴", "to": { "character": "jean" }, "kind": "character", "label": "琴", "conf": 0.72, "ambiguous": true, "why": "官方中文名 → jean；单字「琴」也是常见字" },
+    { "from": "天狗", "to": { "character": "kujou sara" }, "kind": "character", "label": "九条裟罗", "conf": 0.72, "ambiguous": true, "why": "九条裟罗是天狗族；该词也指日本妖怪" },
+    { "from": "九条", "to": { "character": "kujou sara" }, "kind": "character", "label": "九条裟罗", "conf": 0.75, "ambiguous": true, "why": "九条裟罗的简称；也是日文姓氏与地名" },
+    { "from": "九条裟罗", "to": { "character": "kujou sara" }, "kind": "character", "label": "九条裟罗", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 kujou sara" },
+
+    { "from": "一斗", "to": { "character": "arataki itto" }, "kind": "character", "label": "荒泷一斗", "conf": 0.82, "ambiguous": false, "why": "荒泷一斗的简称" },
+    { "from": "放牛的", "to": { "character": "arataki itto" }, "kind": "character", "label": "荒泷一斗", "conf": 0.75, "ambiguous": true, "why": "一斗养牛与牛头人身的梗；该词也是通用说法" },
+    { "from": "荒泷一斗", "to": { "character": "arataki itto" }, "kind": "character", "label": "荒泷一斗", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → arataki itto" },
+
+    { "from": "茄子", "to": { "character": "kuki shinobu" }, "kind": "character", "label": "久岐忍", "conf": 0.7, "ambiguous": true, "why": "久岐忍的紫色造型梗；该词也是蔬菜名" },
+    { "from": "久岐忍", "to": { "character": "kuki shinobu" }, "kind": "character", "label": "久岐忍", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → kuki shinobu" },
+
+    { "from": "大姐头", "to": { "character": "beidou" }, "kind": "character", "label": "北斗", "conf": 0.68, "ambiguous": true, "why": "北斗是南十字船队船长，故称大姐头；该词是通用称谓" },
+    { "from": "北斗", "to": { "character": "beidou" }, "kind": "character", "label": "北斗", "conf": 0.72, "ambiguous": true, "why": "官方中文名 → beidou；也是北斗七星与北斗卫星" },
+
+    { "from": "家政官", "to": { "character": "thoma" }, "kind": "character", "label": "托马", "conf": 0.75, "ambiguous": false, "why": "托马负责神里家的家务，故称家政官" },
+    { "from": "托马", "to": { "character": "thoma" }, "kind": "character", "label": "托马", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 thoma" },
+
+    { "from": "奸商", "to": { "character": "dori" }, "kind": "character", "label": "多莉", "conf": 0.72, "ambiguous": true, "why": "多莉爱抬价，被叫奸商；该词是通用说法" },
+    { "from": "多莉", "to": { "character": "dori" }, "kind": "character", "label": "多莉", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 dori" },
+
+    { "from": "张三", "to": { "character": "yanfei" }, "kind": "character", "label": "烟绯", "conf": 0.55, "ambiguous": true, "why": "烟绯是法律咨询师，与法考梗「张三」绑定；该词是中文里最泛用的化名" },
+    { "from": "烟绯", "to": { "character": "yanfei" }, "kind": "character", "label": "烟绯", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 yanfei" },
+
+    { "from": "珐露珊", "to": { "character": "faruzan" }, "kind": "character", "label": "珐露珊", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 faruzan" },
+    { "from": "柯莱", "to": { "character": "collei" }, "kind": "character", "label": "柯莱", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 collei" },
+    { "from": "妮露", "to": { "character": "nilou" }, "kind": "character", "label": "妮露", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 nilou" },
+    { "from": "坎蒂丝", "to": { "character": "candace" }, "kind": "character", "label": "坎蒂丝", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 candace" },
+    { "from": "莱依拉", "to": { "character": "layla" }, "kind": "character", "label": "莱依拉", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 layla" },
+    { "from": "迪希雅", "to": { "character": "dehya" }, "kind": "character", "label": "迪希雅", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 dehya" },
+    { "from": "米卡", "to": { "character": "mika" }, "kind": "character", "label": "米卡", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 mika" },
+    { "from": "白术", "to": { "character": "baizhu" }, "kind": "character", "label": "白术", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 baizhu" },
+    { "from": "卡维", "to": { "character": "kaveh" }, "kind": "character", "label": "卡维", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 kaveh" },
+    { "from": "绮良良", "to": { "character": "kirara" }, "kind": "character", "label": "绮良良", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 kirara" },
+    { "from": "林尼", "to": { "character": "lyney" }, "kind": "character", "label": "林尼", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 lyney" },
+    { "from": "琳妮特", "to": { "character": "lynette" }, "kind": "character", "label": "琳妮特", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 lynette" },
+    { "from": "菲米尼", "to": { "character": "freminet" }, "kind": "character", "label": "菲米尼", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 freminet" },
+    { "from": "夏洛蒂", "to": { "character": "charlotte" }, "kind": "character", "label": "夏洛蒂", "conf": 0.75, "ambiguous": true, "why": "官方中文名 → charlotte；也是常见西方人名" },
+    { "from": "娜维娅", "to": { "character": "navia" }, "kind": "character", "label": "娜维娅", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 navia" },
+    { "from": "夏沃蕾", "to": { "character": "chevreuse" }, "kind": "character", "label": "夏沃蕾", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 chevreuse" },
+    { "from": "嘉明", "to": { "character": "gaming" }, "kind": "character", "label": "嘉明", "conf": 0.7, "ambiguous": true, "why": "官方中文名 → gaming；英文名与通用词「gaming」同形，检索时需谨慎" },
+    { "from": "千织", "to": { "character": "chiori" }, "kind": "character", "label": "千织", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 chiori" },
+    { "from": "克洛琳德", "to": { "character": "clorinde" }, "kind": "character", "label": "克洛琳德", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 clorinde" },
+    { "from": "艾梅莉埃", "to": { "character": "emilie" }, "kind": "character", "label": "艾梅莉埃", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 emilie" },
+    { "from": "玛拉妮", "to": { "character": "mualani" }, "kind": "character", "label": "玛拉妮", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 mualani" },
+    { "from": "基尼奇", "to": { "character": "kinich" }, "kind": "character", "label": "基尼奇", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 kinich" },
+    { "from": "希诺宁", "to": { "character": "xilonen" }, "kind": "character", "label": "希诺宁", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 xilonen" },
+    { "from": "恰斯卡", "to": { "character": "chasca" }, "kind": "character", "label": "恰斯卡", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 chasca" },
+    { "from": "茜特菈莉", "to": { "character": "citlali" }, "kind": "character", "label": "茜特菈莉", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 citlali" },
+    { "from": "蓝砚", "to": { "character": "lan yan" }, "kind": "character", "label": "蓝砚", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 lan yan" },
+    { "from": "欧洛伦", "to": { "character": "ororon" }, "kind": "character", "label": "欧洛伦", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 ororon" },
+    { "from": "伊安珊", "to": { "character": "iansan" }, "kind": "character", "label": "伊安珊", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 iansan" },
+    { "from": "卡齐娜", "to": { "character": "kachina" }, "kind": "character", "label": "卡齐娜", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 kachina" },
+    { "from": "梦见月瑞希", "to": { "character": "yumemizuki mizuki" }, "kind": "character", "label": "梦见月瑞希", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → yumemizuki mizuki" },
+    { "from": "瑞希", "to": { "character": "yumemizuki mizuki" }, "kind": "character", "label": "梦见月瑞希", "conf": 0.75, "ambiguous": true, "why": "瑞希的简称；也是常见日文名" },
+    { "from": "瓦蕾莎", "to": { "character": "varesa" }, "kind": "character", "label": "瓦蕾莎", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 varesa" },
+    { "from": "爱可菲", "to": { "character": "escoffier" }, "kind": "character", "label": "爱可菲", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 escoffier" },
+    { "from": "丝柯克", "to": { "character": "skirk" }, "kind": "character", "label": "丝柯克", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 skirk" },
+    { "from": "塔利雅", "to": { "character": "dahlia" }, "kind": "character", "label": "塔利雅", "conf": 0.75, "ambiguous": true, "why": "官方中文名 → dahlia；也是花名" },
+    { "from": "优菈", "to": { "character": "eula" }, "kind": "character", "label": "优菈", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 eula" },
+    { "from": "早柚", "to": { "character": "sayu" }, "kind": "character", "label": "早柚", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 sayu" },
+    { "from": "重云", "to": { "character": "chongyun" }, "kind": "character", "label": "重云", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 chongyun" },
+    { "from": "行秋", "to": { "character": "xingqiu" }, "kind": "character", "label": "行秋", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 xingqiu" },
+    { "from": "水神", "to": { "character": "furina" }, "kind": "character", "label": "芙宁娜", "conf": 0.65, "ambiguous": true, "why": "芙宁娜是水元素执政神；但早期玩家也用「水神」称行秋，存在真实冲突" },
+    { "from": "火神", "to": { "character": "mavuika" }, "kind": "character", "label": "玛薇卡", "conf": 0.7, "ambiguous": true, "why": "玛薇卡是火元素执政神；但玩家也曾用「火神」指班尼特" },
+    { "from": "玛薇卡", "to": { "character": "mavuika" }, "kind": "character", "label": "玛薇卡", "conf": 0.8, "ambiguous": false, "why": "官方中文名 → 英文检索名 mavuika" },
+    { "from": "辛焱", "to": { "character": "xinyan" }, "kind": "character", "label": "辛焱", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → 英文检索名 xinyan" },
+    { "from": "黑妹", "to": { "character": "xinyan" }, "kind": "character", "label": "辛焱", "conf": 0.6, "ambiguous": true, "why": "辛焱的肤色梗外号；该词是通用说法" },
+    { "from": "鹿野院平藏", "to": { "character": "shikanoin heizou" }, "kind": "character", "label": "鹿野院平藏", "conf": 0.78, "ambiguous": false, "why": "官方中文名 → shikanoin heizou" },
+    { "from": "平藏", "to": { "character": "shikanoin heizou" }, "kind": "character", "label": "鹿野院平藏", "conf": 0.78, "ambiguous": false, "why": "鹿野院平藏的简称" }
+  ]
+}

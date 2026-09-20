@@ -5,7 +5,7 @@ window.HS = (function () {
   'use strict';
 
   const NS = {};
-  NS.VERSION = '2.4.0';
+  NS.VERSION = '3.0.0';
   NS.STORAGE_KEY = 'hs.settings.v2';
   NS.FILTER_KEY = 'hs.filters.v2';
 
@@ -424,13 +424,221 @@ window.HS = (function () {
     if (!low) return null;
     const idx = conceptIndex();
     if (idx[low]) return idx[low];
-    /* 中日文短词允许包含匹配（「脚底」也算脚）；英文要求整词相等，免得误命中 */
+    /* 中日文短词允许包含匹配（「脚底」也算脚）；英文要求整词相等，免得误命中。
+       ★残余词守卫★：命中词只占整串的一小截时**不算命中** ——
+       `人妻猎人`(4) 含 `人妻`(2) 差 2 个字，判成概念的话「猎人」就丢了，
+       sources.js 还会把整串改写成 `人妻`（名字就叫《人妻猎人》的作品根本进不了结果集）；
+       `巨乳猎人` 这类则被 matchGenre 抢先判成体裁，同一个坑。
+       容忍边界 = 命中词长度 + 1：多一个字仍算（`脚底` = 脚 + 1，仍是脚这个概念），
+       多两个字起就不算。整词命中走上面的精确表，长度相同 ⇒ 差值 0 ⇒ 行为一字未变。 */
     if (/[\u3400-\u9fff\u3040-\u30ff]/.test(low) && low.length <= 4) {
       for (const k in idx) {
-        if (k.length >= 1 && k.length <= 3 && low.indexOf(k) >= 0) return idx[k];
+        if (k.length >= 1 && k.length <= 3 && low.indexOf(k) >= 0 &&
+          low.length <= k.length + 1) return idx[k];
       }
     }
     return null;
+  };
+
+  /* ======================================================================
+     多段意图（多关键词）：把查询逐段拆开、每段独立判定
+     ----------------------------------------------------------------------
+     动机：`明日方舟 能天使 后入` 这种「系列 + 角色 + 标签」的查询，旧口径只看
+     「**整串**命中谁」——命中系列就整串当成 IP，于是与系列相关的作品被顶到最前，
+     另外两个关键词在排序里几乎不起作用。这里把整串切成若干段、每段独立判定意图，
+     交给 results.js 按「**同时命中的段数**」排序（排序偏好，不是过滤）。
+     ★不推翻既有契约★：classifyQuery 的 kind / label / series / genre / exact /
+     concept 六个字段的取值与旧版逐字节一致（单关键词行为完全不变），
+     segments / multi / primary / tokens 只是**新增**字段，既有调用方不必改。
+     ====================================================================== */
+
+  /* TAG_ZH 的反查表：中文名 → 指向它的英文 / 罗马字标签键。
+     用途：让「中出」这类中文标签词也能命中英文标签站里的 nakadashi / creampie。
+     只读 dict.js 的现有数据，不新增词表。 */
+  let ZH_REV = null;
+  function zhRevIndex() {
+    if (ZH_REV) return ZH_REV;
+    const idx = {};
+    const dict = NS.TAG_ZH || {};
+    for (const k in dict) {
+      const v = String(dict[k] == null ? '' : dict[k]).toLowerCase().trim();
+      if (!v) continue;
+      (idx[v] = idx[v] || []).push(String(k).toLowerCase());
+    }
+    ZH_REV = idx;
+    return idx;
+  }
+
+  /* 系列等价名：'明日方舟' ↔ 'arknights' ↔ 'アークナイツ'（同一作品的不同写法）。
+     两层桥，都不改任何词典数据：
+       ① TAG_ZH 的「英文 / 罗马字键 → 中文值」：arknights→明日方舟、azur lane→碧蓝航线…
+       ② 片假名写法：TAG_ZH 里没有对照（アークナイツ 查不到），但 NS.SERIES 里两种写法
+          都列着 —— 这里显式登记这几对（**不是新词表**，只是「哪两条是同一作品」的关系，
+          登记项全部来自 NS.SERIES 已有的条目）。
+     连成并查集后，同一作品的写法互相等价。只用于**判定某条目是否命中这个系列段**，
+     绝不参与查询串改写（检索串仍由 legacyClassify 的字段决定）。 */
+  const SERIES_SAME = [
+    ['arknights', 'アークナイツ'], ['azur lane', 'アズールレーン'],
+    ['umamusume', 'ウマ娘'], ['love live', 'ラブライブ'],
+    ['starsavior', 'スターセイヴァー']
+  ];
+  let SERIES_GROUP = null;      /* 写法 → 同组写法数组 */
+  function seriesGroups() {
+    if (SERIES_GROUP) return SERIES_GROUP;
+    const parent = {};
+    const add = x => { if (parent[x] === undefined) parent[x] = x; return x; };
+    const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    const union = (a, b) => { a = find(add(a)); b = find(add(b)); if (a !== b) parent[b] = a; };
+    const inSeries = {};
+    NS.SERIES.forEach(x => { inSeries[String(x).toLowerCase()] = 1; });
+    const dict = NS.TAG_ZH || {};
+    Object.keys(dict).forEach(k => {
+      const kk = String(k).toLowerCase().trim();
+      const vv = String(dict[k] == null ? '' : dict[k]).toLowerCase().trim();
+      if (!kk || !vv) return;
+      /* 只在「至少一端确实是系列名」时连，避免把无关的中文标签也拉进来 */
+      if (inSeries[kk] || inSeries[vv]) union(kk, vv);
+    });
+    SERIES_SAME.forEach(p => union(p[0], p[1]));
+    const byRoot = {};
+    Object.keys(parent).forEach(x => { const r = find(x); (byRoot[r] = byRoot[r] || []).push(x); });
+    SERIES_GROUP = {};
+    Object.keys(parent).forEach(x => { SERIES_GROUP[x] = byRoot[find(x)]; });
+    return SERIES_GROUP;
+  }
+
+  const SERIES_ALIAS = {};
+  u.seriesAliases = function (name) {
+    const s = String(name == null ? '' : name).toLowerCase().trim();
+    if (!s) return [];
+    if (SERIES_ALIAS[s]) return SERIES_ALIAS[s];
+    const set = new Set([s]);
+    (seriesGroups()[s] || []).forEach(x => set.add(x));
+    const dict = NS.TAG_ZH || {};
+    const zh = dict[s] ? String(dict[s]).toLowerCase().trim() : '';
+    if (zh) {
+      set.add(zh);
+      (zhRevIndex()[zh] || []).forEach(k => set.add(k));
+    }
+    (zhRevIndex()[s] || []).forEach(k => set.add(k));
+    const inSeries = {};
+    NS.SERIES.forEach(x => { inSeries[String(x).toLowerCase()] = 1; });
+    /* 只保留「确实出现在 NS.SERIES / TAG_ZH 对照里的写法」，不把无关词带进别名集 */
+    const out = Array.from(set).filter(x => x === s || x === zh || inSeries[x]);
+    SERIES_ALIAS[s] = out;
+    return out;
+  };
+
+  /** 段级系列判定：整段**精确等于**系列名（长词优先）。
+      不用子串匹配 —— `loli` 里含 `ol`、`ass` 里含 `as` 这类误判必须挡在段外。 */
+  u.exactSeries = function (text) {
+    const t = String(text == null ? '' : text).toLowerCase().trim();
+    if (!t) return '';
+    for (const s of NS.SERIES_SORTED) if (s === t) return s;
+    return '';
+  };
+
+  /** 段级题材判定：整段精确等于体裁别名（长词优先） */
+  u.exactGenre = function (text) {
+    const t = String(text == null ? '' : text).toLowerCase().trim();
+    if (!t) return null;
+    for (const it of NS.GENRE_FLAT) if (it.a === t) return it.g;
+    return null;
+  };
+
+  /**
+   * 单段意图：一段文本（一个 token，或几个 token 合并成的短语）独立判定。
+   * kind ∈ series | genre | concept | character | plain（title 只出现在「整串当标题」时）。
+   *   series    —— 系列名（明日方舟 / fate…）：条目按系列命中（含跨语言等价名）
+   *   genre     —— 体裁别名，或 TAG_ZH 里的中文标签词（反查成英文键一起匹配）
+   *   concept   —— 跨语言同义词组（脚 / foot / 足…）：按整组写法匹配
+   *   character —— 词典不认识的短词（多半是角色名 / 标签）：按**字面**匹配
+   *   plain     —— 含数字 / 过长 / 带标点的自由词：按字面匹配
+   * via 记录判据来源，供排序与调试区分「词典认得的段」和「只能字面猜的段」。
+   */
+  function classifySegment(text) {
+    const t = String(text == null ? '' : text).toLowerCase().trim();
+    if (!t) return null;
+    const s = u.exactSeries(t);
+    if (s) return { text: t, kind: 'series', series: s, label: '系列 · ' + s, via: 'series', aliases: u.seriesAliases(s) };
+    const g = u.exactGenre(t);
+    if (g) {
+      const aliases = NS.GENRE_FLAT.filter(x => x.g === g).map(x => x.a);
+      return { text: t, kind: 'genre', label: '题材 · ' + g.label, via: 'genre', aliases: aliases };
+    }
+    const c = u.conceptOf(t);
+    if (c) {
+      return {
+        text: t, kind: 'concept', concept: c, via: 'concept',
+        label: '同义 · ' + (c.zh || c.key), aliases: (c.aliases || []).slice()
+      };
+    }
+    const rev = zhRevIndex()[t];
+    if (rev && rev.length) {
+      return { text: t, kind: 'genre', label: '标签 · ' + t, via: 'zhdict', aliases: rev.concat([t]) };
+    }
+    /* 词典不认识的词：短词按「角色 / 标签」猜（与旧口径「词数 ≤2 无数字 → 角色 / 标签」
+       的兜底一致），含数字或过长的当自由词。命中判定一律退回**字面匹配**。 */
+    if (/\d/.test(t) || t.length > 12) return { text: t, kind: 'plain', label: '自由词 · ' + t, via: 'literal', aliases: [t] };
+    return { text: t, kind: 'character', label: '角色 / 标签 · ' + t, via: 'literal', aliases: [t] };
+  }
+
+  /**
+   * 多段解析：把查询切成若干段，每段独立判定意图。
+   * 切法：从左到右**贪心吃最长**的、词典认得的短语（最多 4 个 token 合一段）；
+   *       合并只在「整段精确命中词典」时发生，所以 `fate grand order` / `big breasts`
+   *       这类本来就该当一个概念的查询仍是一段（→ multi 为假，走旧的单关键词口径）。
+   * 返回 { raw, tokens, segments, multi, primary, primarySegment }
+   *   · segments : [{ text, kind, label, via, aliases? }]
+   *   · multi    : 段数 ≥ 2 —— 真·多关键词查询；**只有它为真时**排序才按命中段数加分
+   *   · primary  : 与旧口径主意图对应的段下标（优先系列 → 题材 / 概念 → 第一段）
+   * ★纯解析、无副作用★：不改查询串、不碰任何词典表，sources.js 依旧只读旧字段。
+   */
+  u.parseQuery = function (q) {
+    const raw = String(q == null ? '' : q).trim();
+    const low = raw.toLowerCase();
+    const tokens = low.split(/\s+/).filter(Boolean);
+    const out = { raw: raw, tokens: tokens, segments: [], multi: false, primary: -1, primarySegment: null };
+    if (!tokens.length) return out;
+
+    /* 带括号 / 引号的查询：用户是「整串粘一个作品名」进来（`【汉化】某作品`、`[C99] 社团 作品`），
+       整串当一个标题段 —— 拆段只会把标题切碎，而且这类查询的 kind / 排序必须与旧版一致。
+       注意：词数 ≥4 **不再**整串当标题（旧口径那样做只是因为没有更好的办法）——
+       非括号的 4+ 词查询就是「一串关键词」，正是本改动要覆盖的多关键词场景；
+       kind 仍是 title（检索串不变），只有排序开始按命中段数走。 */
+    if (/[[【(（「『"]/.test(raw)) {
+      const seg = { text: low, kind: 'title', label: '作品名', via: 'whole', aliases: [low] };
+      out.segments = [seg];
+      out.multi = false;
+      out.primary = 0;
+      out.primarySegment = seg;
+      return out;
+    }
+
+    const segs = [];
+    let i = 0;
+    while (i < tokens.length) {
+      let hit = null, span = 1;
+      /* 先试「多 token 合并短语」，只在词典认得（via ≠ literal）时才算命中 */
+      for (let n = Math.min(4, tokens.length - i); n >= 2; n--) {
+        const cand = classifySegment(tokens.slice(i, i + n).join(' '));
+        if (cand && cand.via !== 'literal') { hit = cand; span = n; break; }
+      }
+      if (!hit) hit = classifySegment(tokens[i]);
+      if (hit) segs.push(hit);
+      i += span;
+    }
+
+    out.segments = segs;
+    out.multi = segs.length >= 2;
+    /* primary：旧口径会「抓住」的那一段 —— 优先系列，其次题材 / 概念，再退第一段。
+       （与 classifyQuery 的优先级同序，保证「主意图」指向同一批关键词。） */
+    let pi = segs.findIndex(s => s.kind === 'series');
+    if (pi < 0) pi = segs.findIndex(s => s.kind === 'genre' || s.kind === 'concept');
+    if (pi < 0) pi = segs.length ? 0 : -1;
+    out.primary = pi;
+    out.primarySegment = pi >= 0 ? segs[pi] : null;
+    return out;
   };
 
   /**
@@ -445,8 +653,11 @@ window.HS = (function () {
    *   ④ 命中跨语言同义词组（foot / 脚 / 足…）—— 走「同一概念的多种写法」扩召回
    *   ⑤ 剩下 1–2 个词、无数字 —— 当角色名 / 标签处理（这是标签站最擅长的）
    *   ⑥ 其余按作品名处理
+   * ★以下 legacyClassify 是与旧版**逐字相同**的判定，一个字都没动★
+   * （多关键词的排序修复走「新增的 segments 字段 + results.js」，不在这里改口径，
+   *   否则 sources.js 按 kind 分流的检索策略也会跟着变。）
    */
-  u.classifyQuery = function (q) {
+  function legacyClassify(q) {
     const raw = String(q == null ? '' : q).trim();
     const low = raw.toLowerCase();
     if (!raw) return { kind: 'empty', label: '无关键词', series: '', genre: null, exact: false };
@@ -473,6 +684,22 @@ window.HS = (function () {
     if (/[「」『』]/.test(raw)) return { kind: 'title', label: '作品名', series, genre, exact: true };
     if (tokens.length <= 2 && !/\d/.test(raw)) return { kind: 'character', label: '角色 / 标签', series, genre, exact: false };
     return { kind: 'title', label: '作品名', series, genre, exact: true };
+  }
+
+  /**
+   * 对外入口：旧判定结果 + **新增**多段字段。
+   * 既有字段（kind / label / series / genre / exact / concept）的取值与语义一字未改，
+   * dict-hint.js / suggest.js 等只读既有字段的调用方行为完全不变。
+   */
+  u.classifyQuery = function (q) {
+    const base = legacyClassify(q);
+    const p = u.parseQuery(q);
+    base.tokens = p.tokens;                 // 新增
+    base.segments = p.segments;             // 新增：多段意图
+    base.multi = p.multi;                   // 新增：是否真·多关键词
+    base.primary = p.primary;               // 新增：主段下标
+    base.primarySegment = p.primarySegment; // 新增：主段引用
+    return base;
   };
 
   /** 标题精确度打分：完全同名 > 前缀 > 包含 > 无关 */
