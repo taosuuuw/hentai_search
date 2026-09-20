@@ -113,13 +113,28 @@
     u.$('#results-head').hidden = true;
     const box = u.$('#results-empty');
     box.hidden = false;
-    /* 开始页不再放说明文字：换一句随机「贤者名言」（贤者时间 neta，仿贤人语录体）。
-       每次回到这个空状态都重新抽一句。 */
+    /* 空状态里不再放任何说明文字；随机「贤者名言」挂到页面接近底部的独立一层 */
+    box.innerHTML = '';
+    sageLine(sagePick());
+  }
+
+  /** 取一句随机贤者名言（贤者时间 neta，仿贤人语录体） */
+  function sagePick() {
     const qs = HS.SAGE_QUOTES || [];
-    const s = qs.length ? qs[Math.floor(Math.random() * qs.length)] : null;
-    box.innerHTML =
-      (s ? '<blockquote class="hs-sage"><p>' + u.esc(s.text) + '</p>' +
-        '<cite>—— ' + u.esc(s.who) + '</cite></blockquote>' : '');
+    return qs.length ? qs[Math.floor(Math.random() * qs.length)] : null;
+  }
+
+  /** 贤者名言：固定在页脚上方那一层里；检索一开始就收起来 */
+  function sageLine(s) {
+    let el = u.$('#sage-line');
+    if (!el) {
+      el = u.el('div', { id: 'sage-line', class: 'hs-sageline', hidden: true });
+      document.body.appendChild(el);
+    }
+    if (!s) { el.hidden = true; el.innerHTML = ''; return; }
+    el.innerHTML = '<blockquote class="hs-sage"><p>' + u.esc(s.text) + '</p>' +
+      '<cite>—— ' + u.esc(s.who) + '</cite></blockquote>';
+    el.hidden = false;
   }
   /* ---------------- 搜索主流程 ---------------- */
   function setBusy(on) {
@@ -158,6 +173,7 @@
       HS.filtersUI.openSheet(true);
       return;
     }
+    sageLine(null);      // 一开始检索就把底部那句名言收起来
     if (searching) return;
     opts = opts || {};
     const page = Math.max(1, parseInt(opts.page || 1, 10) || 1);

@@ -135,14 +135,19 @@
       cb.checked = on;
       cb.addEventListener('change', () => {
         const cur = (HS.settings.sources || []).slice();
+        const before = cur.length;
         const i = cur.indexOf(src.id);
         if (cb.checked && i < 0) cur.push(src.id);
         if (!cb.checked && i >= 0) cur.splice(i, 1);
         if (!cur.length) { cb.checked = true; HS.toast('至少保留一个信息源', 'warn'); return; }
+        /* 只改设置：勾选/取消信息源**不刷新已有结果**，新集合对「下一次检索」和
+           「继续加载更多」生效（doSearch 每次都会重新读 HS.sources.enabled()）。
+           因此这里不再调 F.touch() —— 它会 emit filters:change，被 app.js 的
+           防抖监听接走并自动重搜（这就是原来结果区整体重来的原因）。 */
         HS.settings.sources = cur;
         HS.store.save(HS.settings);
         lab.dataset.on = cb.checked ? '1' : '0';
-        F.touch();
+        if (cur.length !== before) HS.toast('信息源已更新，下次检索生效', 'ok', 1800);
         HS.bus.emit('settings:change', { key: 'sources', val: cur });
       });
       const flags = src.flags.map(f => {

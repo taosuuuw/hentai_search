@@ -43,6 +43,14 @@
     item.isAI = u.hitAny(blob, HS.AI_TAGS);
   }
 
+  /* 「严判源」：综合向站点里大量条目**并不是**成人向，但又没有分级字段，
+     判不出来时不能留 null（null = 未知 = 默认筛选会放行），要直接判 false。
+     拷贝漫画（copy20）是典型：正版向 / 全年龄向作品和成人向混在同一个搜索里。 */
+  const STRICT_ADULT_SOURCES = ['copymanga'];
+  /* 严判源自己的成人分类 / 标记词（通用 NS.ADULT_TAGS 之外的补充）。
+     ★只在严判源上生效★ —— 避免改动其它源的既有成人判定。 */
+  const COPY_ADULT_TAGS = ['限制级', '限制級', 'adult comics', '成人內容', '成人内容'];
+
   function mk(o) {
     const title = String(o.title || '').replace(/\s+/g, ' ').trim();
     const credit = u.parseCredit(title);
@@ -66,12 +74,20 @@
     item.cats = inferCats(item);
     inferFlags(item);
     /* 成人向判定：源自己的分级字段（o.adult）> 源本身就是成人站 > 标签/标题成人词；
-       都判不出来就是 null（未知）—— 未知不硬杀，留给跨源合并去验证。 */
+       都判不出来就是 null（未知）—— 未知不硬杀，留给跨源合并去验证。
+       ★严判源（STRICT_ADULT_SOURCES，目前是拷贝漫画这种综合向站点）例外：
+       只有命中**明确成人证据**（源分级字段 / 成人站白名单 / 成人词表）才标 true，
+       判不出来一律标 false —— 默认筛选「滤掉确认的非成人向」就会把它们剔除，
+       而不是以「未知」的名义全部留在结果里。 */
+    const strictAdult = STRICT_ADULT_SOURCES.indexOf(o.source) >= 0;
     if (typeof o.adult === 'boolean') item.adult = o.adult;
     else if (HS.ADULT_SOURCES.indexOf(o.source) >= 0) item.adult = true;
     else {
-      const blob = (item.tags.join(' ') + ' ' + item.title + ' ' + item.artist).toLowerCase();
-      item.adult = u.hitAny(blob, HS.ADULT_TAGS) ? true : null;
+      let blob = item.tags.join(' ') + ' ' + item.title + ' ' + item.artist;
+      if (strictAdult) blob += ' ' + (item.cats || []).join(' ');   // 分类名也算证据（拷贝漫画的成人分类）
+      const hit = u.hitAny(blob, HS.ADULT_TAGS) ||
+        (strictAdult && u.hitAny(blob, COPY_ADULT_TAGS));
+      item.adult = hit ? true : (strictAdult ? false : null);
     }
     item.series = u.matchSeries(item.tags.join(' ') + ' ' + item.title + ' ' + item.artist);
     item.key = u.normTitle(item.title) || (o.source + ':' + item.id);
@@ -80,7 +96,7 @@
     item.zh = zi.zh; item.zhMark = zi.mark; item.zhScan = zi.scan;
     item.baseKey = u.baseTitle(item.title) || item.key;
     if (!item.cover) item.cover = u.placeholder(item.title, item.source + item.id);
-    /* 防盗链封面（pixiv / kemono / EH / hitomi…）有网关时代取，能少一批"封面显示不出来" */
+    /* 防盗链封面（pixiv / EH / hitomi…）有网关时代取，能少一批"封面显示不出来" */
     else item.cover = u.coverViaGateway(item.cover);
     return item;
   }
@@ -253,20 +269,51 @@
   }
 
   /* ======================================================================
-     2. nhentai —— 非官方 JSON API（需 CORS 代理；部分地区需 VPN）
+     2. nhentai —— 非官方 JSON API（网关优先；无网关时直连 + 公共 CORS 代理兜底）
+     这里踩过两个坑（都已修）：
+     ① 通路：本机直连 nhentai.net 的 TLS 会被重置（「基础连接已经关闭：接收时发生错误」，
+        Node 侧是 getaddrinfo ENOENT），公共 CORS 代理又慢又常挂 —— 浏览器直连必失败，
+        所以有网关时由网关带站点 Referer、走出口代理代取，直连链路只作无网关兜底。
+     ② 查询串：v2 的命名空间按标签类型生效（tag:/parody:/character:/artist: …），
+        发 `tag:"用户原词"` 常常一条都命中不了 —— 主词一律改发裸词，详见 nhTerms()。
      ====================================================================== */
   const NH_CAT = { doujinshi: 'doujinshi', comic: 'manga', oneshot: 'manga', cg: 'artistcg', artbook: 'imageset', cosplay: 'cosplay', western: 'western' };
 
-  async function nhentaiSearch(ctx) {
-    const q = ctx.q, f = ctx.f, limit = ctx.limit;
+  /* 上游 v2 的 thumbnail 是**相对路径**（galleries/<media_id>/thumb.webp），
+     直接当封面会解析到页面自己的域上（必然 404）；这里统一补成 t.nhentai.net 绝对地址 */
+  function nhCover(r) {
+    const thumb = String((r && r.thumbnail) || '').trim();
+    if (thumb) return /^https?:\/\//i.test(thumb) ? thumb : ('https://t.nhentai.net/' + thumb.replace(/^\/+/, ''));
+    return r && r.media_id ? 'https://t.nhentai.net/galleries/' + r.media_id + '/cover.jpg' : '';
+  }
+
+  /**
+   * 主词口径：**一律发裸词**（实测数据见下），只有明确的筛选条件才用命名空间。
+   * 实测（本机经网关打 https://nhentai.net/api/v2/search，用响应里的 total 判定，
+   * total 是精确值，不会被每页 25 条截断）：
+   *   · v2 的命名空间是**按标签类型**生效的：parody: / character: / artist: /
+   *     language: / category: / tag: 各管一类。用户原词常常不是 tag 类型 ——
+   *     "fate" 在站上的规范标签是 parody「fate grand order」，所以
+   *     `tag:"fate"` = 0 条、`tag:"fate grand order"` = 0 条（这就是
+   *     「nhentai 基本不返回作品」的第二个原因，2026-09-20 实测）。
+   *   · 裸词是类型无关的，且每一组对比里都 ≥ 命名空间写法：
+   *       fate                 23875  >  parody:"fate"          21466  >  tag:"fate"  0
+   *       full color           83504  >  tag:"full color"       83330
+   *       foot                 15961  >  tag:"foot"             15815
+   *       netorare             43210  >  tag:"netorare"         42702
+   *       scathach skadi         128  >  character:"scathach skadi" 109
+   *       engo                    50  >  artist:"engo"              35
+   *   · 所以主词用裸词；命中率与精度都不吃亏，还免疫「命名空间和标签类型不匹配 → 0 条」。
+   */
+  function nhTerms(q, f, intent) {
     const terms = [];
-    const intent = ctx.intent || u.classifyQuery(q);
-    /* 意图分流：IP / 角色 → 走 tag 精确查；体裁 / 题材 → 用站点通行的题材标签名 */
+    /* IP / 角色 → 规范系列名（与网关类源的 gwTerms 口径一致），体裁 / 题材 → 词表键名 */
     if (q) {
-      if (intent.kind === 'character') terms.push('tag:"' + q + '"');
-      else if (intent.kind === 'genre' && intent.genre) terms.push('tag:"' + intent.genre.key + '"');
+      if (intent.kind === 'character') terms.push(intent.series || q);
+      else if (intent.kind === 'genre' && intent.genre) terms.push(intent.genre.key || q);
       else terms.push(q);
     }
+    /* 以下都是「类型明确」的筛选条件，实测命名空间写法正常，保持原样 */
     if (f.artist) terms.push('artist:"' + f.artist + '"');
     (f.tags || []).forEach(t => terms.push('tag:"' + t + '"'));
     (f.excludeTags || []).forEach(t => terms.push('-tag:"' + t + '"'));
@@ -280,46 +327,110 @@
     if (f.ai === 'exclude') terms.push('-tag:"ai-generated"');
     const nhCat = (f.cats || []).map(c => NH_CAT[c]).find(Boolean);
     if (nhCat) terms.push('category:' + nhCat);
-    if (!terms.length) throw new Error('nhentai 需要至少一个关键词或标签');
+    return terms.join(' ');
+  }
 
-    let url = 'https://nhentai.net/api/v2/search?query=' + encodeURIComponent(terms.join(' ')) +
-      '&page=' + Math.max(1, ctx.page || 1);
-    if (f.order === 'latest') url += '&sort=date';
-    else if (f.order === 'popular') url += '&sort=popular';
+  /** 排序口径（v2 实测接受 sort=date / sort=popular） */
+  function nhSort(f) {
+    return f.order === 'latest' ? 'date' : (f.order === 'popular' ? 'popular' : '');
+  }
 
-    const data = await HS.net.fetchSource(url, { json: true, allowProxy: true, proxyFirst: true });
-    const rows = (data && data.result) || [];
-    if (!rows.length) return [];
+  /** 暴露给验证用：返回「适配器实际会发给上游的串」，网关路径与直连兜底共用同一个 */
+  S.nhQueryFor = function (ctx) {
+    const c = ctx || {};
+    const f = c.f || {};
+    const q = String(c.q == null ? '' : c.q);
+    return { q: nhTerms(q, f, c.intent || u.classifyQuery(q)), sort: nhSort(f) };
+  };
 
-    return rows.slice(0, limit).map(r => {
-      const title = r.english_title || r.japanese_title || ('Gallery #' + r.id);
-      /* nhentai v2 的 tag_ids 是「纯数字 id 数组」，站点没有名字映射可用
-         （v1 的 /api/gallery/* 已 403、/api/v2/tags 已 404），所以这里只接受
-         「看起来像标签名」的值，绝不把数字当标签显示；语言/分类靠标题兜底。 */
-      const raw = r.tag_ids;
-      const vals = Array.isArray(raw) ? [] : (raw && typeof raw === 'object' ? Object.keys(raw).map(k => raw[k]) : []);
-      const tagNames = vals.map(t => String(t)).filter(t => t && !/^\d+$/.test(t));
-      const tl = tagNames.map(t => t.toLowerCase());
-      const langs = ['chinese', 'english', 'japanese', 'korean', 'spanish', 'french', 'german', 'russian']
-        .filter(l => tl.indexOf(l) >= 0);
-      const cats = [];
-      if (tl.indexOf('imageset') >= 0) cats.push('artbook');
-      if (tl.indexOf('cosplay') >= 0) cats.push('cosplay');
-      return mk({
-        source: 'nhentai', sourceName: 'nhentai',
-        id: r.id,
-        title: (r.japanese_title && r.english_title ? title + ' / ' + r.japanese_title : title),
-        url: 'https://nhentai.net/g/' + r.id + '/',
-        cover: r.thumbnail || (r.media_id ? 'https://t.nhentai.net/galleries/' + r.media_id + '/cover.jpg' : ''),
-        pages: r.num_pages || null,
-        langs, lang: langs[0] || '', cats,
-        tags: tagNames.slice(0, 24)
-      });
+  /** v2 上游条目 → 统一卡片模型（网关路径与直连兜底共用一个口径） */
+  function nhParse(r) {
+    const title = r.english_title || r.pretty_title || r.japanese_title || ('Gallery #' + r.id);
+    /* nhentai v2 的 tag_ids 是「纯数字 id 数组」，站点没有名字映射可用
+       （v1 的 /api/gallery/* 已 403、/api/v2/tags 已 404），所以这里只接受
+       「看起来像标签名」的值，绝不把数字当标签显示；语言/分类靠标题兜底。 */
+    const raw = r.tag_ids;
+    const vals = Array.isArray(raw) ? [] : (raw && typeof raw === 'object' ? Object.keys(raw).map(k => raw[k]) : []);
+    const tagNames = vals.map(t => String(t)).filter(t => t && !/^\d+$/.test(t));
+    const tl = tagNames.map(t => t.toLowerCase());
+    const langs = ['chinese', 'english', 'japanese', 'korean', 'spanish', 'french', 'german', 'russian']
+      .filter(l => tl.indexOf(l) >= 0);
+    const cats = [];
+    if (tl.indexOf('imageset') >= 0) cats.push('artbook');
+    if (tl.indexOf('cosplay') >= 0) cats.push('cosplay');
+    return mk({
+      source: 'nhentai', sourceName: 'nhentai',
+      id: r.id,
+      title: (r.japanese_title && r.english_title ? title + ' / ' + r.japanese_title : title),
+      url: 'https://nhentai.net/g/' + r.id + '/',
+      cover: nhCover(r),
+      pages: r.num_pages || null,
+      langs, lang: langs[0] || '', cats,
+      tags: tagNames.slice(0, 24)
     });
+  }
+
+  async function nhentaiSearch(ctx) {
+    const q = ctx.q, f = ctx.f, limit = ctx.limit;
+    const intent = ctx.intent || u.classifyQuery(q);
+    const query = nhTerms(q, f, intent);            /* 两条路共用同一个查询串（同口径） */
+    if (!query) throw new Error('nhentai 需要至少一个关键词或标签');
+
+    const page = Math.max(1, ctx.page || 1);            /* 「继续加载」靠它翻页 */
+    const sort = nhSort(f);
+
+    /* ---- 路线 1（优先）：本地网关代取 ----
+       网关有出口代理 + 站点 Referer，是这台机器上唯一稳定的通路 */
+    let gwErr = null, gwAnswered = false;
+    if (gwReady()) {
+      try {
+        const res = await HS.net.gateway.get('/api/nhentai/search',
+          { q: query, page: page, sort: sort }, 30000);
+        if (res && res.ok === false) throw new Error(res.error || '网关返回失败');
+        gwAnswered = true;
+        const items = gwItems(res, 'nhentai', 'nhentai', 'nhentai（经网关）');
+        if (items.length) return items.slice(0, limit);
+      } catch (e) { gwErr = e; gwAnswered = false; }
+    }
+
+    /* ---- 路线 2（兜底）：浏览器直连 + 公共 CORS 代理 ----
+       无网关的用户仍然走这条（本机实测成功率很低，但保留了这条路） */
+    let directErr = null, directAnswered = false;
+    try {
+      let url = 'https://nhentai.net/api/v2/search?query=' + encodeURIComponent(query) + '&page=' + page;
+      if (sort) url += '&sort=' + sort;
+      const data = await HS.net.fetchSource(url, { json: true, allowProxy: true, proxyFirst: true });
+      directAnswered = true;
+      const rows = (data && data.result) || [];
+      if (rows.length) return rows.slice(0, limit).map(nhParse);
+    } catch (e) { directErr = e; }
+
+    /* 任意一条路正常应答过 → 0 条就是「没搜到」，不是异常 */
+    if (gwAnswered || directAnswered) return [];
+    /* 两条路都失败 → 说清是哪两条路 */
+    throw new Error('nhentai 直连不通（' + ((directErr && directErr.message) || directErr) + '），且网关' +
+      (gwErr ? '失败（' + ((gwErr && gwErr.message) || gwErr) + '）' : '未启用') + GW_HINT);
   }
 
   /* ======================================================================
      3. E-Hentai —— HTML 解析（需代理；部分网络需 VPN）
+     ----------------------------------------------------------------------
+     实测取证（2026-09，出口 = 本机代理 127.0.0.1:7897 / 出口 IP 54.255.249.22）：
+       · 搜索侧**一律返回空集**，且与查询词、UA、请求头、cookie、GET/POST 全无关：
+         ?f_search=chinese → 5443B/0 条；?f_search=a → 5392B/0 条；
+         /tag/chinese → 5444B/0 条；页面结构正常（搜索框回显了词），就是不返回条目。
+       · 非搜索入口同一个出口完全正常：/ → 25 条、/popular → 64 条、
+         /toplist.php → 40 条、/g/<gid>/<token>/ → 正常、api.php gdata → 正常。
+       · 用本机 Chrome 打开同一个搜索 URL 也是 No hits found —— 与浏览器/Node 无关。
+       · 换手机/桌面/iPhone UA、加全套浏览器头、先取首页 cookie 再搜、改成 POST：
+         结果一模一样（首页实测连 set-cookie 都不发）。
+     结论：本机出口 IP 被 E-Hentai 的搜索侧限制，**cookie 救不了**（cookie 与出口 IP 是两回事）。
+     因此这条源改成「网关优先、直连兜底」：
+       · 网关 /api/ehentai/search 带完整请求头（+ 可选 --ehentai-cookie）去打搜索；
+         真有结果就是真结果；为 0 条时网关会**如实**说明原因，并退到实测可用的
+         /torrents.php?search=<词> 兜底（同样给得出 gid+token，可直接在线阅读），
+         条目标注 via:'torrents' / searchZero:true，绝不冒充搜索结果。
+       · 网关不在时退回原来的浏览器直连（现状：基本必然 0 条，但保留这条路）。
      ====================================================================== */
   const EH_CAT = {
     doujinshi: 'doujinshi', manga: 'comic', 'artist cg': 'cg', 'game cg': 'cg',
@@ -327,8 +438,9 @@
     cosplay: 'cosplay', 'asian porn': 'hanman'
   };
 
-  async function ehentaiSearch(ctx) {
-    const q = ctx.q, f = ctx.f, limit = ctx.limit;
+  /** 关键词/标签 → E-Hentai 的检索语法（网关与直连两条路共用同一口径） */
+  function ehTerms(ctx) {
+    const q = ctx.q, f = ctx.f || {};
     const terms = [];
     const intent = ctx.intent || u.classifyQuery(q);
     /* 意图分流：IP / 角色 与 体裁 / 题材 → 走 E-Hentai 的精确标签语法 "…"$ */
@@ -348,42 +460,88 @@
     if (f.gore === 'exclude') terms.push('-"guro"$');
     if (f.ai === 'only') terms.push('"ai-generated"$');
     if (f.ai === 'exclude') terms.push('-"ai-generated"$');
+    return terms;
+  }
+
+  async function ehentaiSearch(ctx) {
+    const f = ctx.f || {}, limit = ctx.limit;
+    const terms = ehTerms(ctx);
     if (!terms.length) throw new Error('E-Hentai 需要至少一个关键词或标签');
+    const query = terms.join(' ');
+    const page = Math.max(1, ctx.page || 1);
 
-    const url = 'https://e-hentai.org/?f_search=' + encodeURIComponent(terms.join(' ')) +
-      '&f_apply=Apply+Filter' + ((ctx.page || 1) > 1 ? '&page=' + (ctx.page - 1) : '');
-    const html = await HS.net.fetchSource(url, { allowProxy: true, proxyFirst: true });
-    if (/temporarily banned|Your IP address has been/i.test(html)) throw new Error('E-Hentai 拒绝了当前出口 IP');
+    /* ---- 路线 1（优先）：本地网关代取 ----
+       网关有出口代理 + 完整请求头，也是唯一能给出「搜索为什么是空的」和
+       /torrents.php 兜底的那条路（浏览器直连连这两个都做不到） */
+    let gwErr = null, gwAnswered = false, gwZero = false, gwNote = '';
+    if (gwReady()) {
+      try {
+        const res = await HS.net.gateway.get('/api/ehentai/search',
+          { q: ctx.q || '', terms: query, page: page, limit: limit }, 60000);
+        if (res && res.ok === false) throw new Error(res.error || '网关返回失败');
+        gwAnswered = true;
+        gwZero = !!res.searchZero;
+        gwNote = String(res.note || '');
+        const items = gwItems(res, 'ehentai', 'E-Hentai',
+          res.via === 'torrents' ? 'E-Hentai 种子检索兜底' : 'E-Hentai（经网关）');
+        if (items.length) return items.slice(0, limit);
+      } catch (e) { gwErr = e; gwAnswered = false; }
+    }
 
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const rows = u.$$('#gdt tr, table.itg tr', doc).filter(tr => u.$('a[href*="/g/"]', tr));
-    if (!rows.length) return [];
+    /* ---- 路线 2（兜底）：浏览器直连 / 公共 CORS 代理 ----
+       现状：本机出口下这条必然是 0 条（见上面的取证记录），但无网关的用户仍需要它 */
+    let directErr = null, directAnswered = false;
+    try {
+      const url = 'https://e-hentai.org/?f_search=' + encodeURIComponent(query) +
+        '&f_apply=Apply+Filter' + (page > 1 ? '&page=' + (page - 1) : '');
+      const html = await HS.net.fetchSource(url, { allowProxy: true, proxyFirst: true });
+      directAnswered = true;
+      if (/temporarily banned|Your IP address has been/i.test(html)) throw new Error('E-Hentai 拒绝了当前出口 IP');
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const rows = u.$$('#gdt tr, table.itg tr', doc).filter(tr => u.$('a[href*="/g/"]', tr));
+      if (rows.length) return rows.slice(0, limit).map(tr => ehRowItem(tr, f));
 
-    return rows.slice(0, limit).map(tr => {
-      const a = u.$('a[href*="/g/"]', tr);
-      const img = u.$('img', tr);
-      const glink = u.$('.glink', tr);
-      const title = (glink ? glink.textContent : (img ? img.getAttribute('alt') : '')) || '';
-      const tagEls = u.$$('.gt, .gtl, .gtw', tr);
-      const tags = tagEls.map(e => e.textContent.trim()).filter(Boolean);
-      const cnEl = u.$('.cn', tr);
-      const catText = (cnEl ? cnEl.textContent : '').trim().toLowerCase();
-      const pagesM = String(tr.textContent || '').match(/(\d+)\s*pages?/i);
-      const ratingM = String(tr.textContent || '').match(/(\d+(?:\.\d+)?)\s*\/\s*5/);
-      const cover = img ? (img.getAttribute('data-src') || img.getAttribute('src') || '') : '';
-      const langs = tags.filter(t => /^(chinese|english|japanese|korean|spanish|french|german|russian|translated|rewrite|speechless)$/i.test(t));
-      const cats = EH_CAT[catText] ? [EH_CAT[catText]] : [];
-      const href = a.getAttribute('href') || '';
-      const idm = href.match(/\/g\/(\d+)\//);
-      return mk({
-        source: 'ehentai', sourceName: 'E-Hentai',
-        id: idm ? idm[1] : href,
-        title, url: href, cover,
-        artist: f.artist || '',
-        pages: pagesM ? parseInt(pagesM[1], 10) : null,
-        langs, lang: langs[0] || '', cats,
-        tags: tags.concat(catText ? [catText] : []).concat(ratingM ? ['★' + ratingM[1]] : [])
-      });
+      /* 直连答了但 0 条：跟网关一样如实报「搜索侧是空集」 */
+      gwZero = /No hits found/i.test(html) || gwZero;
+    } catch (e) { directErr = e; }
+
+    if (gwZero || (gwAnswered && directAnswered === false)) {
+      throw new Error(gwNote || ('E-Hentai 的搜索接口在当前出口 IP 下返回空集'
+        + '（实测：本机出口用浏览器打开同一个搜索 URL 也是 No hits found；'
+        + '首页 /popular /torrents.php 正常）。换一个非机房的出口 IP 后重启网关即可恢复。'));
+    }
+    if (gwAnswered || directAnswered) return [];
+    throw new Error('E-Hentai 两条路都没通（直连：' + ((directErr && directErr.message) || directErr) +
+      '；网关' + (gwErr ? '失败：' + ((gwErr && gwErr.message) || gwErr) : '未启用') + '）');
+  }
+
+  /** 直连路线：搜索结果表的一行 → 卡片（原逻辑原样保留） */
+  function ehRowItem(tr, f) {
+    const a = u.$('a[href*="/g/"]', tr);
+    const img = u.$('img', tr);
+    const glink = u.$('.glink', tr);
+    const title = (glink ? glink.textContent : (img ? img.getAttribute('alt') : '')) || '';
+    const tagEls = u.$$('.gt, .gtl, .gtw', tr);
+    const tags = tagEls.map(e => e.textContent.trim()).filter(Boolean);
+    const cnEl = u.$('.cn', tr);
+    const catText = (cnEl ? cnEl.textContent : '').trim().toLowerCase();
+    const pagesM = String(tr.textContent || '').match(/(\d+)\s*pages?/i);
+    const ratingM = String(tr.textContent || '').match(/(\d+(?:\.\d+)?)\s*\/\s*5/);
+    const cover = img ? (img.getAttribute('data-src') || img.getAttribute('src') || '') : '';
+    const langs = tags.filter(t => /^(chinese|english|japanese|korean|spanish|french|german|russian|translated|rewrite|speechless)$/i.test(t));
+    const cats = EH_CAT[catText] ? [EH_CAT[catText]] : [];
+    const href = a.getAttribute('href') || '';
+    /* E-Hentai 的在线阅读需要 gid **和 token**：纯 gid 反查不到 token（实测 /g/{gid}/ → 404、
+       gdata 接口要 key、高级搜索表单也没有 gid 字段），所以这里把 token 一起编进 id。 */
+    const idm = href.match(/\/g\/(\d+)\/([0-9a-f]+)/);
+    return mk({
+      source: 'ehentai', sourceName: 'E-Hentai',
+      id: idm ? (idm[1] + '-' + idm[2]) : href,
+      title, url: href, cover,
+      artist: (f && f.artist) || '',
+      pages: pagesM ? parseInt(pagesM[1], 10) : null,
+      langs, lang: langs[0] || '', cats,
+      tags: tags.concat(catText ? [catText] : []).concat(ratingM ? ['★' + ratingM[1]] : [])
     });
   }
 
@@ -448,19 +606,6 @@
     }, 35000);
     const items = gwItems(res, 'copymanga', '拷贝漫画', '官方 API');
     if (!items.length) throw new Error('拷贝漫画返回 0 条');
-    return items.slice(0, ctx.limit);
-  }
-
-  /** Kemono（kemono.cr）：Patreon / Fanbox / Pixiv 等创作者内容的公开存档站 */
-  async function kemonoSearch(ctx) {
-    const terms = gwTerms(ctx);
-    if (!gwReady()) throw new Error('Kemono 不返回跨域头，需要本地网关代取' + GW_HINT);
-    if (!terms) throw new Error('Kemono 需要关键词或画师');
-    const res = await HS.net.gateway.get('/api/kemono/search', {
-      q: terms, page: Math.max(1, ctx.page || 1)
-    }, 35000);
-    const items = gwItems(res, 'kemono', 'Kemono', 'Kemono 存档站');
-    if (!items.length) throw new Error('Kemono 返回 0 条');
     return items.slice(0, ctx.limit);
   }
 
@@ -998,14 +1143,13 @@
     {
       id: 'copymanga', name: '拷贝漫画', homepage: 'https://www.copy20.com',
       desc: '中文正版向站点 · 官方 API 需要 HMAC 签名，经本地网关检索（api.copy2000.online 等节点自动发现）',
-      flags: ['中文', '需本地网关'], proxy: false, vpn: false, weight: 1.2,
+      /* weight 被 results.js 消费两处：① relevance() 里 weight*10 当相关度底分（排序）；
+         ② R.combine 跨源去重时挑「谁的版本当主体」（weight 高者替换）。
+         它是综合向站点，和成人向检索的相关性最弱 → 权重压到全表最低（0.5）。
+         ★光靠 weight 只能「分数低」，保证不了「一定排最后」→ 另有 last:true，
+         results.js 的 applyView() 会把标了 last 的源稳定分区到所有其它源之后。 */
+      flags: ['中文', '需本地网关'], proxy: false, vpn: false, weight: 0.5, last: true,
       search: copymangaSearch
-    },
-    {
-      id: 'kemono', name: 'Kemono', homepage: 'https://kemono.cr',
-      desc: 'Patreon / Fanbox / Pixiv 等创作者内容的公开存档站 · 官方 JSON API（每页 50 条）· 无跨域头，经本地网关取',
-      flags: ['创作者向', '需本地网关'], proxy: true, vpn: true, weight: 1.0,
-      search: kemonoSearch
     },
     {
       id: 'porncomic', name: 'porn-comic', homepage: 'https://porn-comic.com',
@@ -1027,14 +1171,16 @@
     },
     {
       id: 'nhentai', name: 'nhentai', homepage: 'https://nhentai.net',
-      desc: 'JSON API · 需 CORS 代理 · 部分地区需 VPN',
-      flags: ['需代理', '可能需 VPN'], proxy: true, vpn: true, weight: 1.1,
+      desc: '非官方 JSON API（优先经本地网关代取；无网关时回退直连 / 公共 CORS 代理，成功率低）· 单章作品，可直接在线阅读',
+      flags: ['需本地网关', '直连常被墙'], proxy: true, vpn: true, weight: 1.1,
       search: nhentaiSearch
     },
     {
       id: 'ehentai', name: 'E-Hentai', homepage: 'https://e-hentai.org',
-      desc: 'HTML 解析 · 需代理 · 标签体系最完善',
-      flags: ['需代理', '可能需 VPN'], proxy: true, vpn: true, weight: 1.05,
+      desc: 'HTML 解析 · 需代理 · 标签体系最完善。实测本机出口 IP 下搜索侧一律返回空集（浏览器同 URL 也是 ' +
+        'No hits found，与 UA/请求头/cookie 无关）；有本地网关时会如实说明原因，并退到可用的 /torrents.php ' +
+        '种子检索兜底（条目带 gid+token，但其中被原站删除的图集会提示读不了 — 实测确实有这种）',
+      flags: ['需代理', '搜索受限', '需本地网关'], proxy: true, vpn: true, weight: 1.05,
       search: ehentaiSearch
     },
     {
@@ -1097,7 +1243,7 @@
   const TAG_LANG = {
     mangadex: 'en', nhentai: 'en', ehentai: 'en', danbooru: 'en', porncomic: 'en', hitomi: 'en',
     pixiv: 'ja',
-    jm: 'zh', copymanga: 'zh', wnacg: 'zh', kemono: 'zh'
+    jm: 'zh', copymanga: 'zh', wnacg: 'zh'
   };
 
   /** 给某个源挑该概念最合适的写法；不是同义概念查询就原样返回 */

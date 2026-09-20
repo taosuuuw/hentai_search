@@ -29,6 +29,8 @@
   R._rendered = 0;
   R._dom = {};          // layoutId → 已铺开的 DOM 节点（继续加载时复用，避免重建闪烁）
   R._dirty = false;     // 累积结果里有条目被合并过 → 不能走「纯追加」快路
+  R.order = [];         // 已经铺开的那批的展示顺序（条目 key 序列）
+  R.appendMode = false; // 本次渲染是不是「追加」：true = 老顺序原样保留，新条目只能接在末尾
 
   const STACK_MAX = 5;        // 一个堆叠最多平铺几张
 
@@ -36,6 +38,25 @@
   function weightOf(id) {
     const s = HS.sources.byId[id];
     return s ? s.weight : 0.5;
+  }
+
+  /**
+   * 源优先级（**硬性分区，不是打分**）：注册表里标了 `last` 的源 —— 目前只有拷贝漫画
+   * （综合向站点，和成人向检索的相关性最弱）—— 一律排在其它所有源之后。
+   * 为什么不用 weight：weight 只进 relevance() 的底分，是一条软性偏置，别的源只要标题 /
+   * 标签命中得好就照样能把它顶下去，保证不了「一定在最后」。这里用**稳定分区**实现：
+   * 组内相对顺序完全不动（同一源内部仍按现有相关性排），只是把末位源整体挪到末尾。
+   * ★不要把它塞进 buildLayout / sameish★ —— 同系列堆叠是另一套逻辑，本改动不碰。
+   */
+  function isLastSource(it) {
+    const s = (it && HS.sources && HS.sources.byId) ? HS.sources.byId[it.source] : null;
+    return !!(s && s.last);
+  }
+  /** 稳定分区：非末位源在前、末位源在后；两段各自的相对顺序原样保留 */
+  function sinkLastSources(list) {
+    const head = [], tail = [];
+    (list || []).forEach(it => { (isLastSource(it) ? tail : head).push(it); });
+    return tail.length ? head.concat(tail) : head;
   }
 
   /**
@@ -175,7 +196,32 @@
     return out;
   }
 
-  /* ---------------- 过滤 + 排序 ---------------- */
+  /* ---------------- 过滤 + 排序 ----------------
+     展示顺序由 R.order 兜住（已经铺开的那批条目的 key 序列）：
+       · 全新检索 / 用户主动改筛选或排序 → 整体重排，R.order 一起刷新；
+       · 继续加载（追加）→ 老顺序**原样不动**，新出现的条目（key 不在 R.order 里）
+         内部按当前相关度规则排好后**接到末尾**。
+     这样「继续加载 / 流式返回」的新作品只会出现在最下面，不会把用户已经看过的那批顶走。 */
+  function keyOf(it) { return it.key || it.id; }
+
+  /** 追加：老顺序原样保留，新 key 按 ranked 的顺序接在末尾 */
+  function appendOrder(ranked) {
+    const pool = {};
+    ranked.forEach(it => { pool[keyOf(it)] = it; });
+    const seen = {}, out = [];
+    (R.order || []).forEach(k => {
+      const it = pool[k];
+      if (!it || seen[k]) return;
+      seen[k] = 1; out.push(it);
+    });
+    ranked.forEach(it => {
+      const k = keyOf(it);
+      if (seen[k]) return;
+      seen[k] = 1; out.push(it);
+    });
+    return out;
+  }
+
   function applyView() {
     let list = R.items.slice();
     if (R.sourceFilter) list = list.filter(i => i.source === R.sourceFilter);
@@ -186,9 +232,17 @@
       source: (a, b) => (a.sourceName || '').localeCompare(b.sourceName || '') || b._score - a._score,
       title: (a, b) => (a.title || '').localeCompare(b.title || '')
     }[R.sort] || ((a, b) => b._score - a._score);
-    if (R.sort !== 'rank') return list.sort(by);
     /* 默认排序：先保证「相似结果内中文版在前」，再按分数 */
-    return preferZh(list.slice().sort((a, b) => b._score - a._score));
+    const ranked = R.sort === 'rank'
+      ? preferZh(list.slice().sort((a, b) => b._score - a._score))
+      : list.sort(by);
+    const ordered = R.appendMode ? appendOrder(ranked) : ranked;
+    /* 最后一道：末位源（copymanga，注册表里 last:true）硬性压到所有其它源之后。
+       放在 appendOrder 之后 → 「继续加载」时新一批的 copymanga 也只会接在最末尾；
+       稳定分区保证非 copymanga 的老顺序（R.order 里的既有名次）一条都不动。 */
+    const out = sinkLastSources(ordered);
+    R.order = out.map(keyOf);
+    return out;
   }
 
   /* ---------------- 同系列堆叠布局 ----------------
@@ -354,6 +408,172 @@
     return sa.length >= 6 || (/[\u3400-\u9fff]/.test(sa) && sa.length >= 4);
   }
 
+  /* ---------------- 追加时的重复剔除：已铺开的是中文版，新来的只是同一本的其它语言版本 ----------------
+     用户诉求：继续加载（追加）时，如果**已经铺开**的某条是中文版，而新来的这条只是同一本的
+     非中文版本（日文原版 / 英文版，标题也常常不是中文），就不要再铺一张重复的卡。
+     设计原则（用户明确要求）：
+       ★宁可漏杀，不可误杀★：只在「追加」场景生效（R.appendMode 为真），全新检索 / 第一页的
+       结果一条都不动；而且**只丢新来的那一条**，已经铺开的 DOM 与 R.order 完全不动。
+     判据（下面是两条证据，任一成立才把新来的那条丢掉）：
+       A 封面图床指纹一致 —— 同一张封面 = 同一本（换标题 / 换源再传）。只认能从封面 URL
+         **可靠抠出「作品级 id」**的形态（COVER_WORK_PATTERNS）；抠不出来就不判，交给 B。
+         实测：语言版本在多数源上是**不同图床 id**（e-hentai / hitomi / 紳士 / 拷贝…），
+         这几条路本来也抠不出可比指纹，所以这条证据只在少数源上可能命中。
+       B 词条级标题指纹一致（u.baseTitle：语言 / 汉化组 / DL 版标记都剥掉，但**保留卷号**）
+         —— 等价于「同一个标题、同一个卷，只差语言标记」；再要求画师不冲突、系列不冲突。
+         另外容忍 nhentai 的 `english_title / japanese_title` 拼接标题（只对 nhentai 生效）。
+     ★不要拿 sameish / titleStem 当击杀判据★：sameish 认为「同系列不同卷」也是同一本
+     （titleShape / cjkShape / 同画师都算命中），titleStem 干脆把卷号剥掉了 —— 用它们杀人会把
+     「第 2 卷」误杀成「第 1 卷」。这里是「同一个卷号、同一条标题，只差语言」，比它们严得多。 */
+
+  /** 纯「文件类别」词：这种标题指纹本身没有区分度，不能当击杀依据 */
+  const DUP_GENERIC_LIST = ['oneshot', 'doujinshi', 'manga', 'comic', 'artbook', 'anthology',
+    'collection', 'untitled', 'unnamed', 'no title', 'gallery', 'image set', 'imageset'];
+  const DUP_GENERIC = {};
+  DUP_GENERIC_LIST.concat(TITLE_STOP).forEach(x => {
+    const k = u.baseTitle ? u.baseTitle(x) : u.normTitle(x);
+    if (k) DUP_GENERIC[k] = 1;
+  });
+  function dupKeyOk(k) {
+    if (!k || DUP_GENERIC[k]) return false;
+    if (/[\u3400-\u9fff]/.test(k)) return k.length >= 3;   // 中日文信息密度高，3 字起
+    return k.length >= 5;                                  // 拉丁标题 5 字符起（「title」这种太泛的靠 DUP_GENERIC 挡）
+  }
+
+  /** 封面地址先剥掉网关代理壳（/api/proxy?url=…&referer=…） */
+  function unwrapCover(url) {
+    let s = String(url || '').trim();
+    if (!s || s.indexOf('data:') === 0) return '';
+    if (s.indexOf('url=') >= 0) {
+      const m = s.match(/[?&]url=([^&]+)/);
+      if (!m) return '';
+      try { s = decodeURIComponent(m[1]); } catch (e) { return ''; }
+    }
+    return s;
+  }
+
+  /* 能从封面 URL 可靠认出「作品级 id」的图床形态（认不出来一律返回 '' = 这条证据不成立）。
+     ★只认「一条作品 = 一个 id」的形态★：像 `/…/<id>/cover.jpg` 这种把**父级 id** 当指纹的做法
+     很危险 —— 有些源在那个位置放的是画师 / 用户 id，两本不同的书会撞在一起（宁可漏杀）。
+     前缀（nh / md / jm）避免不同站点之间的数字 id 互撞；md5 用 h: 前缀，因为「同一张图」本来就
+     该跨源算同一本。 */
+  const COVER_WORK_PATTERNS = [
+    /* nhentai：t.nhentai.net/galleries/<media_id>/…（media_id 就是画廊 id） */
+    { re: /^https?:\/\/[^/]*nhentai\.net\/galleries\/(\d+)(?:[/?#]|$)/i, tag: 'nh' },
+    /* MangaDex：uploads.mangadex.org/covers/<manga uuid>/… */
+    { re: /^https?:\/\/[^/]*mangadex\.org\/covers\/([0-9a-f-]{36})(?:[/?#]|$)/i, tag: 'md' },
+    /* 禁漫：<jmCdn>/media/albums/<album id>…（_3x4 之类尺寸尾巴不影响 id） */
+    { re: /^https?:\/\/[^/]*\/media\/albums\/(\d+)(?:[_.?#/]|$)/i, tag: 'jm' },
+    /* Danbooru：cdn.donmai.us/(…/)<md5>… */
+    { re: /^https?:\/\/cdn\.donmai\.us\/(?:[^/?#]+\/)*([0-9a-f]{32})(?:[.?/#]|$)/i, tag: 'h' }
+  ];
+  /** 封面 → 作品级指纹；认不出来返回 ''（= 不判，宁可漏杀） */
+  function coverWorkKey(it) {
+    const s = unwrapCover(it && it.cover);
+    if (!s) return '';
+    for (let i = 0; i < COVER_WORK_PATTERNS.length; i++) {
+      const m = s.match(COVER_WORK_PATTERNS[i].re);
+      if (m) return COVER_WORK_PATTERNS[i].tag + ':' + m[1].toLowerCase();
+    }
+    /* 通用兜底：文件名本身就是一条 id（md5 / uuid）—— 同一张图换源再传也算同一本 */
+    const base = (s.split(/[?#]/)[0].split('/').filter(Boolean).pop() || '')
+      .replace(/\.[a-z0-9]{2,5}$/i, '')
+      .replace(/^\d{2,4}x\d{2,4}(?:[_-]\d+)*/, '');
+    if (/^[0-9a-f]{32}$/i.test(base)) return 'h:' + base.toLowerCase();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(base)) {
+      return 'u:' + base.toLowerCase();
+    }
+    return '';
+  }
+
+  /* 语言标记 → 「有没有中文可读」。u.zhInfo 只认 'zh'，而 nhentai 的 langs 是
+     'chinese' / 'english' 这种全词（实测 mk() 里 langs 就是这么来的），这里补上这一档。 */
+  const ZH_LANG_RE = /^(?:zh|zh-cn|zh-tw|zh-hans|zh-hant|chinese|中文|漢化|汉化|中国翻译|中國翻譯|中文版|官中|简体|繁體|繁体|簡體)$/i;
+  const ZH_IN_TITLE_RE = /汉化|漢化|中国翻译|中國翻譯|中文版|官中|繁体中文|繁體中文|简体中文|簡體中文|\[\s*(?:chinese|zh|中文)\s*\]|【\s*中文\s*】/i;
+  /** 这条是不是「有中文可读」的那一条（比 item.zh 更宽一点） */
+  function isZhItem(it) {
+    if (!it) return false;
+    if (it.zh) return true;
+    const langs = (it.langs || []).concat(it.lang ? [it.lang] : []);
+    if (langs.some(l => ZH_LANG_RE.test(String(l).trim()))) return true;
+    return ZH_IN_TITLE_RE.test(String(it.title || ''));
+  }
+
+  /** 词条级标题指纹（保留卷号；只把语言 / 汉化组 / DL 版这类标记剥掉） */
+  function titleSigs(it) {
+    const t = String((it && it.title) || '');
+    if (!t) return [];
+    const out = [];
+    const add = s => {
+      const k = String((u.baseTitle ? u.baseTitle(s) : u.normTitle(s)) || '');
+      if (dupKeyOk(k)) out.push(k);
+    };
+    add(t);
+    /* nhentai 的标题是 `english_title / japanese_title` 拼起来的（sources.js 的 nhParse）：
+       前一段才是书名，后一段只是同一本的另一语言标题。只对 nhentai 生效 —— 别的源里 ' / '
+       没有这个含义，不能拆。 */
+    if (String(it.source) === 'nhentai' && t.indexOf(' / ') > 0) {
+      const segs = t.split(' / ');
+      if (segs.length === 2) add(segs[0]);
+    }
+    return u.uniq(out);
+  }
+
+  /** 画师冲突：两边都写了画师 token 且一个都不共享 → 当成两本不同的书（不判重复） */
+  function artistConflict(a, b) {
+    const ta = artistTokens(a && a.artist), tb = artistTokens(b && b.artist);
+    if (!ta.length || !tb.length) return false;              // 有一边没写画师 → 不算冲突
+    return !sameArtist(a && a.artist, b && b.artist);
+  }
+
+  /**
+   * 这一对（ea = 已经铺开的、nb = 新来的）算不算「同一本的中文版 vs 语言变体」重复？
+   * 方向是**单向**的：ea 有中文、nb 没有。反过来一律不判 —— 用户明确要求
+   * 「两本都是中文」「同系列不同本」「不同作者」都不能被误杀。
+   */
+  function zhLangDup(ea, nb) {
+    if (!ea || !nb) return false;
+    if (keyOf(ea) === keyOf(nb)) return false;               // 同 key 早就被 combine 合并成一条
+    if (!isZhItem(ea) || isZhItem(nb)) return false;         // 只处理「已铺开的是中文、新来的不是」
+    /* A 封面作品级指纹一致（最硬的一条；这条路不看画师 —— 同一张封面几乎不可能是两本不同的书） */
+    const fa = coverWorkKey(ea), fb = coverWorkKey(nb);
+    if (fa && fb && fa === fb) return true;
+    /* B 词条级标题指纹一致 + 系列 / 画师不冲突 */
+    const ka = titleSigs(ea), kb = titleSigs(nb);
+    if (!ka.length || !kb.length) return false;
+    if (!ka.some(k => kb.indexOf(k) >= 0)) return false;
+    if (ea.series && nb.series && ea.series !== nb.series) return false;
+    return !artistConflict(ea, nb);
+  }
+
+  /**
+   * 追加场景的剔除：known = 已经铺开的条目（上一页 + 本页先前收到的），
+   * incoming = 这一批新来的。返回「该留下的那几条」（顺序不变）。
+   *   · R.appendMode 为假（全新检索 / 第一页）→ 原样返回，第一页结果与既有规则完全一致；
+   *   · 批内先留下的条目也会进 known → 同一批里再来的重复同样被丢掉（先到的那条说了算）；
+   *   · 只从 incoming 里剔，**绝不回头删已经铺开的条目**（老顺序不动、新 key 接末尾）。
+   */
+  function dropZhLangDup(incoming, known) {
+    const list = incoming || [];
+    if (!R.appendMode || !list.length) return list;
+    const pool = (known || []).slice();
+    const out = [];
+    list.forEach(nb => {
+      if (pool.some(ea => zhLangDup(ea, nb))) {
+        R._zhDupDropped = (R._zhDupDropped || 0) + 1;
+        return;
+      }
+      out.push(nb);
+      pool.push(nb);
+    });
+    return out;
+  }
+  /* 供自测与调试：追加去重（dropZhLangDup）与它的信号 */
+  R.zhDupFilter = dropZhLangDup;
+  R.zhDupSignals = {
+    isZhItem: isZhItem, coverWorkKey: coverWorkKey, titleSigs: titleSigs, pair: zhLangDup
+  };
+
   function buildLayout(list) {
     if (R.seriesOnly) {
       return list.filter(i => i.series === R.seriesOnly).map(i => ({ type: 'single', item: i }));
@@ -406,7 +626,7 @@
     if (R.seriesOnly) {
       const chip = u.el('button', { class: 'hs-tag hs-tag-series', type: 'button', 'data-on': '1' },
         '系列：' + u.esc(R.seriesOnly) + ' <small>✕</small>');
-      chip.addEventListener('click', () => { R.seriesOnly = null; renderHead(); renderGrid(); });
+      chip.addEventListener('click', () => { R.seriesOnly = null; R.appendMode = false; renderHead(); renderGrid(); });
       host.appendChild(chip);
     }
 
@@ -417,6 +637,7 @@
       b.addEventListener('click', () => {
         R.sourceFilter = (R.sourceFilter === id) ? null : id;
         R.page = 1;
+        R.appendMode = false;      // 用户主动改筛选 = 整体重排，不是追加
         renderHead(); renderGrid();
       });
       return b;
@@ -430,7 +651,7 @@
         class: 'hs-tag hs-tag-zh', type: 'button', 'data-on': R.zhOnly ? '1' : '0',
         title: '只看有汉化 / 中文的版本'
       }, '汉化/中文 <small>' + zhN + '</small>');
-      zb.addEventListener('click', () => { R.zhOnly = !R.zhOnly; R.page = 1; renderHead(); renderGrid(); });
+      zb.addEventListener('click', () => { R.zhOnly = !R.zhOnly; R.page = 1; R.appendMode = false; renderHead(); renderGrid(); });
       host.appendChild(zb);
     }
 
@@ -441,6 +662,87 @@
   }
 
   /* ---------------- 卡片 ---------------- */
+  /* ---------------- 封面加载：失败必须可恢复 ----------------
+     小卡片的 <img> 是**长生命周期**节点（继续加载时按 layoutId 复用，不重建），
+     放大器却是每次打开都新建一个 <img> 重新请求同一个 URL —— 这就是两者唯一的结构差异。
+     所以封面**不能**「一失败就把 src 一次性换成占位图并摘掉监听」：只要这一发请求失败过
+     （网关代理 502/444、图床限流、浏览器把 lazy 图的 load/error 事件延后……），
+     那张小卡片此后就永远只剩占位图（= 用户说的"没有封面"），而点开放大器又看得到真封面。
+     规则：
+       ① 原图地址记在 img.dataset.cover 上，任何时候都能回到它；
+       ② error 后先按退避重试原图（最多 COVER_TRIES 次），全失败才落到占位图；
+       ③ restoreCover() 在重绘 / 打开放大器时把占位图换回原图（自愈）。
+     ★不要退回「一次性降级」★ —— 那正是「小卡片没有封面、放大后正常」的成因。 */
+  const COVER_TRIES = 2;
+  const COVER_BACKOFF = 700;          // ms：第 1 次重试等 700，第 2 次 1400
+
+  function wireCover(img, it, force) {
+    const want = (it && it.cover) ? String(it.cover) : '';
+    const key = (it && (it.key || it.id)) || '';
+    img.__tries = 0;
+    img.__ok = 0;
+    img.dataset.cover = want;
+    if (!img.__coverBound) {
+      img.__coverBound = 1;
+      img.addEventListener('error', function onerr() {
+        const w = img.dataset.cover || '';
+        if (!w) return;
+        const n = img.__tries || 0;
+        if (n < COVER_TRIES) {
+          img.__tries = n + 1;
+          const url = bust(w, 'hsretry=' + (n + 1));
+          window.setTimeout(() => {
+            if ((img.dataset.cover || '') === w) img.src = url;
+          }, COVER_BACKOFF * (n + 1));
+          return;
+        }
+        const ph = u.placeholder(it && it.title, key);
+        if (img.getAttribute('src') !== ph) img.src = ph;   // 真的拿不到才用占位图（同值重设不再触发 error）
+      });
+      img.addEventListener('load', () => { img.__tries = 0; img.__ok = 1; });
+    }
+    if (!want) { img.src = u.placeholder(it && it.title, key); return; }
+    /* force=true：即使 src 已经指着原图也**强制重取一次**（浏览器对同一个失败过的 URL
+       直接重设同值往往不会重新请求，得带一个一次性的查询尾巴） */
+    img.src = force ? bust(want, 'hsrepaint=' + Date.now()) : want;
+  }
+
+  /** 给 URL 加一个查询尾巴（原来有 query 就用 & 拼） */
+  function bust(url, tag) {
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + tag;
+  }
+
+  /** 把某张卡片的封面从占位图 / 旧地址换回原图（it.cover）。
+      重绘（paintList）和打开放大器（openCard）各走一次 —— 所以「点开过的那张卡片」
+      一定会和放大器显示同一张封面。已经指着原图且确认取到了的直接跳过，不产生额外请求。 */
+  function restoreCover(card) {
+    if (!card || !card.__item) return;
+    const img = u.$('.hs-card-img img', card);
+    if (!img) return;
+    const want = card.__item.cover ? String(card.__item.cover) : '';
+    if (!want || want.indexOf('data:') === 0) return;
+    const cur = img.getAttribute('src') || '';
+    if (cur === want) return;                             // 已经指着原图（加载中 / 已加载）
+    if (cur && cur.indexOf('data:') !== 0) return;         // 重试地址之类，不去打断
+    wireCover(img, card.__item);
+  }
+
+  /**
+   * 放大器把小卡片的封面**真取回来了**（同一个 URL）→ 顺手把这给小卡片也救回来。
+   * 这条路径专门兜住「请求失败但 error 事件没来」的情况（浏览器会把 lazy 图的
+   * load / error 事件延后 —— 控制台会打 "Load events are deferred"）：
+   * 这时 src 还指着原图、也没有占位图，光看 src 判断不出它到底有没有取到，
+   * 所以只在用户点开卡片（= 我们已经确认这张封面能被取到）时强制重取一次。
+   * 有 img.__ok 标记时（正常浏览器 load 会来）直接跳过，不会多请求。 */
+  function healCardCover(card) {
+    if (!card || !card.__item) return;
+    const img = u.$('.hs-card-img img', card);
+    const want = card.__item.cover ? String(card.__item.cover) : '';
+    if (!img || !want || want.indexOf('data:') === 0) return;
+    if (img.__ok && img.dataset.cover === want) return;         // 已经确认取到原图
+    wireCover(img, card.__item, true);
+  }
+
   function catLabel(it) {
     if (!it.cats || !it.cats.length) return '';
     const c = HS.CATS.find(x => x.code === it.cats[0]);
@@ -497,11 +799,7 @@
     const img = u.el('img', {
       alt: it.title, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer'
     });
-    img.addEventListener('error', function onerr() {
-      img.removeEventListener('error', onerr);
-      img.src = u.placeholder(it.title, it.key || it.id);
-    });
-    img.src = it.cover || u.placeholder(it.title, it.key || it.id);
+    wireCover(img, it);         // 封面：失败可重试、可自愈（见 wireCover 的注释）
 
     const imgBox = u.el('div', { class: 'hs-card-img' });
     imgBox.appendChild(img);
@@ -537,10 +835,29 @@
     card.appendChild(body);
 
     const actions = u.el('div', { class: 'hs-card-actions' });
-    const open = u.el('a', {
-      class: 'hs-btn hs-btn-primary', href: it.url, target: '_blank', rel: 'noopener noreferrer'
-    }, '打开原站');
-    if (!it.url) { open.removeAttribute('target'); }
+    /* 打开原站 / 在线阅读：阅读器支持的来源（HS.reader.supports）就地变成「在线阅读」，
+       点它**直接开阅读器**（不再跳原站）；不支持的来源保持原样（仍是跳原站的 <a>，功能不丢）。
+       两条路径都显式 stopPropagation：#results-grid 的单击委托是「点卡片 = 放大」，
+       虽然 .hs-card-actions 里的元素本来就已被放过，这里仍拦住，别让栈摊开 / 卡片点击也吃到。
+       ★放大卡片里那个 [data-cm-read]「在线阅读」按钮不归这里管，保持原样。★ */
+    const toReader = !!(HS.reader && HS.reader.supports && HS.reader.supports(it.source));
+    let open;
+    if (toReader) {
+      const rdLabel = '在线阅读' + (it.title ? '：' + String(it.title).slice(0, 60) : '');
+      open = u.el('button', {
+        class: 'hs-btn hs-btn-primary', type: 'button',
+        title: rdLabel, 'aria-label': rdLabel
+      }, '在线阅读');
+      open.addEventListener('click', ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        if (HS.reader && HS.reader.open) HS.reader.open(it);
+      });
+    } else {
+      open = u.el('a', {
+        class: 'hs-btn hs-btn-primary', href: it.url, target: '_blank', rel: 'noopener noreferrer'
+      }, '打开原站');
+      if (!it.url) { open.removeAttribute('target'); }
+    }
     actions.appendChild(open);
 
     const cp = u.el('button', { class: 'hs-btn hs-btn-ico', type: 'button', title: '复制链接' }, HS.icon.copy);
@@ -624,6 +941,7 @@
     tag.addEventListener('click', ev => {
       ev.preventDefault(); ev.stopPropagation();
       R.seriesOnly = group.key;
+      R.appendMode = false;                    // 只看该系列 = 整体重排
       renderHead(); renderGrid();
       u.$('#results-grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
@@ -714,6 +1032,12 @@
       if (grid.children[i] !== els[i]) grid.insertBefore(els[i], grid.children[i] || null);
     }
     while (grid.children.length > els.length) grid.removeChild(grid.lastChild);
+    /* 封面自愈：复用老卡片时 <img> 不重建，但要把已经掉到占位图的封面换回原图。
+       只对「当前指着占位图」的重设 src，指着原图的一律不动（不产生额外请求）。 */
+    els.forEach(el => {
+      if (el.classList.contains('hs-card')) restoreCover(el);
+      else u.$$('.hs-card', el).forEach(restoreCover);
+    });
     R._nodes = els;
     R._rendered = els.length;
     /* 入场动画跑完就把标记摘掉，之后再移动节点也不会重播 */
@@ -799,6 +1123,10 @@
   /* 供自测与调试：堆叠判定与布局 */
   R.sameish = sameish;
   R.buildLayout = buildLayout;
+  /* 供自测与调试：展示顺序（含末位源分区） */
+  R.applyView = applyView;
+  R.sinkLastSources = sinkLastSources;
+  R.isLastSource = isLastSource;
 
   /* ---------------- 工具 ---------------- */
 
@@ -830,6 +1158,8 @@
     R.intent = u.classifyQuery(R.q);
     R.page = Math.max(1, parseInt(page || 1, 10) || 1);
     R._partial = [];
+    /* 追加阶段：老顺序保留 + 新条目接末尾；全新检索：整体重排 */
+    R.appendMode = R.page > 1;
     if (R.page === 1) {
       R._pages = [];
       R.items = [];
@@ -839,6 +1169,8 @@
       R.loadingMore = false;
       R._shown = 0;
       R._dryRounds = 0;
+      R._zhDupDropped = 0;      // 全新检索从零开始数「追加去重丢了几条」（仅用于自测 / 调试）
+      R.order = [];
     }
     R.streaming = true;
     u.$('#results-head').hidden = false;
@@ -854,7 +1186,15 @@
   R.streamPush = function (res) {
     if (!R.streaming) return;
     const before = R.items.length;
-    R._partial.push(res);
+    /* 追加（page > 1）时同样先剔掉与「已经铺开的条目」重复的语言变体：
+       known = 上一页的池子 + 本页已经收到的那些源（后到的重复项才丢，先到的说了算）。
+       只替换这一条的 items，不动别的字段（ok / error / src 都要留着给下面数成功源）。 */
+    let push = res;
+    if (R.appendMode && res && res.ok && res.items && res.items.length) {
+      const kept = dropZhLangDup(res.items, flatten(R._pages).concat(flatten(R._partial)));
+      if (kept.length !== res.items.length) push = Object.assign({}, res, { items: kept });
+    }
+    R._partial.push(push);
     rebuild();
     const okSrc = R._partial.filter(r => r.ok && r.items && r.items.length).length;
     u.$('#results-meta').innerHTML = '已收到 <em>' + R.items.length + '</em> 条 · 完成源 ' +
@@ -887,10 +1227,14 @@
     R.raw = results;
     const page = Math.max(1, parseInt(meta.page || R.page, 10) || 1);
     R.page = page;
+    R.appendMode = page > 1;      // 追加：老顺序不动，新条目接末尾
     const fresh = flatten(results);
     const hadBefore = R.items.length;
     if (page > 1) {
-      R._pages = R._pages.concat([{ ok: true, items: fresh, src: { id: '__page' } }]);
+      /* 追加：先剔掉「与已经铺开的中文版重复的语言变体」，再进池子（第一页 / 全新检索不受影响）。
+         拿 fresh（源实际返回的条数）判「这一批是不是太少」，口径与原来一致。 */
+      const kept = dropZhLangDup(fresh, flatten(R._pages));
+      R._pages = R._pages.concat([{ ok: true, items: kept, src: { id: '__page' } }]);
       if (fresh.length < Math.max(4, pageSize() * 0.15)) R.exhausted = true;
     } else {
       R._pages = [{ ok: true, items: fresh, src: { id: '__page' } }];
@@ -991,8 +1335,9 @@
   R.reset = function () {
     R.items = []; R.raw = []; R._pages = []; R._partial = [];
     R.sourceFilter = null; R.seriesOnly = null; R.zhOnly = false;
-    R.page = 1; R.exhausted = false; R.loadingMore = false; R._dryRounds = 0;
+    R.page = 1; R.exhausted = false; R.loadingMore = false; R._dryRounds = 0; R._zhDupDropped = 0;
     R._layout = []; R._shown = 0; R._nodes = []; R._rendered = 0; R._dirty = false; R._dom = {};
+    R.order = []; R.appendMode = false;
     u.$('#results-grid').innerHTML = '';
     u.$('#results-head').hidden = true;
     u.$('#results-empty').hidden = true;
@@ -1002,6 +1347,9 @@
 
   /* ---------------- 点击卡片：放大查看作品基本信息 ---------------- */
   let cm = null;   // 放大视图弹窗
+  let cmTimer = 0;     // 关闭（反向）动画的定时器
+  let cmGen = 0;       // 代次：动画期间又开了新的 → 老的收尾回调作废，别把新开的收掉
+  let cmClosing = false; // 正在播关闭动画
 
   /** 这张卡片此刻是否需要糊：开关打开就是所有作品一律糊（R18G / AI 只做筛选，不做区别对待） */
   function cardBlurred() {
@@ -1026,7 +1374,8 @@
           '<div class="hs-cm-tags hs-card-tags" data-cm-tags></div>' +
           '<dl class="hs-cm-meta" data-cm-meta></dl>' +
           '<div class="hs-cm-actions">' +
-            '<a class="hs-btn hs-btn-primary" data-cm-open target="_blank" rel="noopener noreferrer">打开原站</a>' +
+            '<button class="hs-btn hs-btn-primary" type="button" data-cm-read hidden>在线阅读</button>' +
+            '<a class="hs-btn hs-btn-ghost" data-cm-open target="_blank" rel="noopener noreferrer">打开原站</a>' +
             '<button class="hs-btn hs-btn-ghost" type="button" data-cm-copy>复制链接</button>' +
             '<button class="hs-btn hs-btn-ghost" type="button" data-cm-artist hidden>按画师筛选</button>' +
             '<button class="hs-btn hs-btn-ghost" type="button" data-cm-series hidden>只看该系列</button>' +
@@ -1046,6 +1395,23 @@
         HS.toast('链接已复制', 'ok', 1500);
       } catch (err) { HS.toast('复制失败，请手动复制', 'warn'); }
     });
+    /* 在线阅读：按钮和封面两条路径都进阅读器 */
+    const readBtn = u.$('[data-cm-read]', cm);
+    readBtn.addEventListener('click', () => {
+      if (!cm.__item) return;
+      if (HS.reader) HS.reader.open(cm.__item);
+    });
+    const cmImg = u.$('.hs-cm-img', cm);
+    if (cmImg) {
+      cmImg.addEventListener('click', e => {
+        if (!cmImg.hasAttribute('data-rd')) return;           // 只有支持阅读器的来源才可点
+        if (e.target.closest('a, button')) return;
+        if (cm.__item && HS.reader) HS.reader.open(cm.__item);
+      });
+    }
+    /* 放大器的封面真取到了 → 顺手确认被点的那张小卡片也能显示同一张封面（见 healCardCover） */
+    const cmImgEl = u.$('.hs-cm-img img', cm);
+    if (cmImgEl) cmImgEl.addEventListener('load', () => { if (cm.__card) healCardCover(cm.__card); });
     u.$('[data-cm-artist]', cm).addEventListener('click', () => {
       const it = cm.__item;
       if (!it || !it.artist) return;
@@ -1057,17 +1423,70 @@
       if (!it || !it.series) return;
       closeCard();
       R.seriesOnly = it.series;
+      R.appendMode = false;                      // 只看该系列 = 整体重排
       renderHead(); renderGrid();
       u.$('#results-grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
 
-  function closeCard() {
+  /** 立即落位：撤掉放大器、清干净内联样式、把小卡片恢复可见（幽灵态的反向过程） */
+  function settleClose() {
+    window.clearTimeout(cmTimer); cmTimer = 0;
+    cmClosing = false;
     if (!cm) return;
+    const box = u.$('.hs-cm-card', cm);
+    if (box) {
+      box.style.animation = '';
+      box.style.transition = 'none';
+      box.style.transform = 'none';
+      box.style.opacity = '1';
+      box.style.willChange = '';
+    }
     cm.hidden = true;
     if (cm.__card) { cm.__card.classList.remove('hs-card-ghost'); cm.__card = null; }
+  }
+
+  /**
+   * 关闭放大器：**反向动画** —— 从当前放大态缩回它原来那张小卡片的位置 / 尺寸 / 倾斜角，
+   * 动画播完再撤掉放大器、把小卡片显示出来（就是打开动画 hs-cm-in 的倒放）。
+   *   · 与打开共用 --cm-* 自定义属性和关键帧机制，线性缓动，时长贴近打开（.32s ≈ .34s）
+   *   · 关掉动效（hs-nomotion / prefers-reduced-motion）/ 没记录到卡片时直接落位
+   *   · 阅读器退出也会走这里（assets/js/reader.js）：本函数**同步返回**，
+   *     阅读器不会被卡片动画卡住；它自己随后立刻 hidden，动画在已经露出来的页面上播完
+   */
+  function closeCard() {
+    if (!cm) return;
+    const gen = ++cmGen;
+    window.clearTimeout(cmTimer); cmTimer = 0;
+    if (cmClosing) { settleClose(); return; }        // 已经在下落 → 再按一次直接落位
+    const card = cm.__card;
     const box = u.$('.hs-cm-card', cm);
-    if (box) { box.style.transition = 'none'; box.style.transform = 'none'; box.style.opacity = '1'; }
+    const still = document.documentElement.classList.contains('hs-nomotion') ||
+      (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    if (!box || !card || still || !window.requestAnimationFrame || cm.hidden) { settleClose(); return; }
+
+    /* 反向 FLIP：终点 = 那张小卡片**此刻**的矩形与倾斜角（期间可能滚动 / 重排过）。
+       先摘掉入场动画、量到不含变换的静止矩形（left/top 是内联的），再把反向关键帧挂上。 */
+    box.style.animation = 'none';
+    box.style.transform = 'none';
+    void box.offsetWidth;
+    const cr = card.getBoundingClientRect();
+    const cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
+    const rot = cardRotation(card);
+    const cw0 = card.offsetWidth || cr.width;
+    const mr = box.getBoundingClientRect();
+    const mx = mr.left + mr.width / 2, my = mr.top + mr.height / 2;
+    const s = Math.max(0.08, Math.min(1, cw0 / (box.offsetWidth || cw0)));
+    box.style.setProperty('--cm-x', (cx - mx).toFixed(1) + 'px');
+    box.style.setProperty('--cm-y', (cy - my).toFixed(1) + 'px');
+    box.style.setProperty('--cm-r', rot + 'deg');
+    box.style.setProperty('--cm-s', s.toFixed(4));
+    box.style.willChange = 'transform, opacity';
+    void box.offsetWidth;                            // 强制重排，保证反向动画每次都能重播
+    box.style.animation = 'hs-cm-out .32s linear both';
+    cmClosing = true;
+    /* 动画期间小卡片保持隐身；播完（或期间又开了新的 → gen 变了）才落位 */
+    cmTimer = window.setTimeout(() => { if (gen === cmGen) settleClose(); }, 340);
   }
   R.closeCard = closeCard;
 
@@ -1105,26 +1524,26 @@
     if (still || !card || !window.requestAnimationFrame) { box.style.willChange = ''; return; }
 
     /* 起点：卡片中心 + 卡片自己的倾斜角 + 等比缩放。
-       等比（不是 x/y 各缩一次，那会把卡片压扁），所以看起来就是"卡片顺着原位原地长大"；
-       堆叠摊开时卡片是 rotate 过的，这里用同一个角度，倾斜的卡片也倾斜地放大。
-       时长与缓动按"手机打开 App"那种手感：0.34s + 先快后缓，只动 transform / opacity 走合成层。 */
+       动画是**线性**的（用户指定），并且**全程保持卡片自己的倾斜角、结束也不回正** ——
+       斜着摊开的那张卡片就是沿着自己的倾斜轴放大成一张同样斜着的大卡片。
+       尺寸 = 卡片本身的 2 倍（"放大到原来的一倍"），视口太窄就夹住并重新夹紧左/上边界。 */
     const cr = card.getBoundingClientRect();
     const cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
     const rot = cardRotation(card);
-    const cw = card.offsetWidth || cr.width;
-    const s = Math.max(0.08, Math.min(1, cw / w));
+    const cw0 = card.offsetWidth || cr.width;
+    const s = Math.max(0.08, Math.min(1, cw0 / (box.offsetWidth || cw0)));
     const mr = box.getBoundingClientRect();
     const mx = mr.left + mr.width / 2, my = mr.top + mr.height / 2;
+    box.style.setProperty('--cm-x', (cx - mx).toFixed(1) + 'px');
+    box.style.setProperty('--cm-y', (cy - my).toFixed(1) + 'px');
+    box.style.setProperty('--cm-r', rot + 'deg');
+    box.style.setProperty('--cm-s', s.toFixed(4));
     box.style.willChange = 'transform, opacity';
-    box.style.transform = 'translate(' + (cx - mx).toFixed(1) + 'px,' + (cy - my).toFixed(1) +
-      'px) rotate(' + rot + 'deg) scale(' + s.toFixed(4) + ')';
-    box.style.opacity = '0.4';
-    requestAnimationFrame(() => {
-      box.style.transition = 'transform .34s cubic-bezier(.32,.72,0,1), opacity .22s ease-out';
-      box.style.transform = 'none';
-      box.style.opacity = '1';
-      window.setTimeout(() => { box.style.willChange = ''; }, 460);
-    });
+    box.style.animation = 'none';
+    void box.offsetWidth;                       // 强制重排，保证动画每次都能重播
+    /* 动画用 both 填充并**保留不撤**：100% 帧本身就等于最终静止状态（含倾斜角），
+       撤掉动画会让合成层丢掉、重栅格化一次 —— 用户看到的"抖一抖"就是那一下。 */
+    box.style.animation = 'hs-cm-in .34s linear both';
   }
 
   /** 卡片当前的旋转角（堆叠摊开时卡片带 rotate）——放大时要顺着同样的倾斜 */
@@ -1142,11 +1561,18 @@
 
   function openCard(it, card) {
     if (!cm) buildCardModal();
+    /* 上一次的关闭动画还没播完就又被点开：作废它，别让它事后把放大器收掉 */
+    cmGen++; window.clearTimeout(cmTimer); cmTimer = 0; cmClosing = false;
     cm.__item = it;
+    /* 兜底清理：不管上一轮从哪条路径退出的，先把所有还在隐身的卡片恢复出来
+       —— 幽灵态只可能属于当前这张被点开的卡片 */
+    u.$$('#results-grid .hs-card-ghost').forEach(c => { if (c !== card) c.classList.remove('hs-card-ghost'); });
     /* 被点的那张卡片先隐身：视觉上就是「这张卡片自己长大」，而且放大视图里封面不再模糊 */
     if (cm.__card && cm.__card !== card) cm.__card.classList.remove('hs-card-ghost');
     cm.__card = card || null;
     if (card) card.classList.add('hs-card-ghost');
+    /* 顺手把小卡片的封面救回原图：放大器的封面就是它马上要显示的那张，同一个 URL */
+    restoreCover(card);
 
     const img = u.$('.hs-cm-img img', cm);
     img.src = it.cover || u.placeholder(it.title, it.key || it.id);
@@ -1194,14 +1620,32 @@
     u.$('[data-cm-copy]', cm).hidden = !it.url;
     u.$('[data-cm-artist]', cm).hidden = !it.artist;
     u.$('[data-cm-series]', cm).hidden = !it.series;
+    /* 「在线阅读」只在阅读器支持的来源上出现；封面同步变成可点入口 */
+    const canRead = !!(HS.reader && HS.reader.supports(it.source));
+    u.$('[data-cm-read]', cm).hidden = !canRead;
+    const cmImg = u.$('.hs-cm-img', cm);
+    if (cmImg) {
+      if (canRead) { cmImg.setAttribute('data-rd', '1'); cmImg.title = '在线阅读'; }
+      else { cmImg.removeAttribute('data-rd'); cmImg.removeAttribute('title'); }
+    }
 
+    /* 尺寸 = 卡片本身的 2 倍（"放大到原来的一倍"），**在显示之前就定好**：
+       显示后再改宽度会引发一次整层重排+重画，那一下就是用户看到的"放大时顿挫"。 */
+    const box0 = u.$('.hs-cm-card', cm);
+    if (box0 && card) {
+      const cw0 = card.offsetWidth || card.getBoundingClientRect().width;
+      const want = Math.max(240, Math.min(Math.round(cw0 * 2), Math.max(280, window.innerWidth - 16)));
+      if (want && Math.abs(box0.offsetWidth - want) > 2) box0.style.width = want + 'px';
+    }
     cm.hidden = false;
     animateFrom(card);
   }
 
   R.init = function () {
     u.$('#results-sort').addEventListener('change', e => {
-      R.sort = e.target.value; R.page = 1; R._shown = 0; renderGrid();
+      R.sort = e.target.value; R.page = 1; R._shown = 0;
+      R.appendMode = false;      // 用户主动改排序 = 整体重排，不是追加
+      renderGrid();
     });
     window.addEventListener('resize', u.debounce(applyFanDirection, 160));
 
@@ -1239,9 +1683,11 @@
       openCard(card.__item, card);
     });
 
-    /* 放大视图开着时，Esc 只关它（不要顺带关掉筛选面板 / 思维链） */
+    /* 放大视图开着时，Esc 只关它（不要顺带关掉筛选面板 / 思维链）；
+       阅读器开着时连它也不关 —— 交给阅读器自己处理 */
     window.addEventListener('keydown', e => {
       if (e.key === 'Escape' && cm && !cm.hidden) {
+        if (HS.reader && HS.reader.isOpen()) return;
         e.stopImmediatePropagation();
         closeCard();
       }

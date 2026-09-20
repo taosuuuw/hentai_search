@@ -120,20 +120,164 @@ kbd {
   isolation: isolate;
 }
 
-/* 背景装饰 */
+/* 背景装饰：
+   同一层 .hs-bg 承载两套主题背景，用 ::before / ::after 两个装饰层分别做
+   「深色星点」与「浅色流光」——两层都 position:fixed + pointer-events:none + z-index:-1，
+   始终落在所有内容（.hs-app 的 z-index:1）之下；纯 CSS，不引外部图片/字体/JS。
+   深色（默认 / html[data-theme="dark"]）：夜空底色 + 极弱静态色调；::before / ::after 只铺星点，
+       动画【只允许】作用于星点的透明度 / 亮度（点点星光闪烁）——没有任何 background-position
+       或整层的位移动画，也没有大面积移动高光/光晕。
+   浅色（html[data-theme="light"]）：暖粉 / 蜜桃 / 淡紫光晕 → ::before 缓慢漂移，::after 做呼吸微光；
+       两层都用「4 段色标摊平到 100% 才归零 + filter: blur() + inset:-10% 把取样边缘推出屏幕」把边界藏掉，
+       观感是一层雾，看不到光斑边界；内容区面板仍是高不透明度白面，对比度不受影响。 */
 .hs-bg {
   position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  /* 暗色底：只留夜空 + 两团「极弱且完全静态」的色调（alpha ≤ .055，色标一路摊到 82% 才归零）。
+     原来的品牌色径向光晕（粉 .18 / 紫 .17 / 青 .10）与底部青光已全部删除，
+     并且这里刻意不放任何 animation —— 暗色下不再存在大面积高光/光晕在动。 */
   background:
-    radial-gradient(52rem 30rem at 12% -8%, rgba(255,77,141,.18), transparent 62%),
-    radial-gradient(46rem 28rem at 92% 4%, rgba(139,92,246,.17), transparent 60%),
-    radial-gradient(40rem 26rem at 50% 108%, rgba(34,211,238,.10), transparent 60%),
-    linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+    radial-gradient(64rem 44rem at 14% -14%, rgba(255,77,141,.055) 0%, rgba(255,77,141,.022) 44%, rgba(255,77,141,0) 82%),
+    radial-gradient(60rem 42rem at 90% 0%, rgba(139,92,246,.05) 0%, rgba(139,92,246,.02) 44%, rgba(139,92,246,0) 82%),
+    /* 夜空：偏冷的深蓝 → 近黑，星点才显得出来 */
+    linear-gradient(180deg, #0b0d1b 0%, #07070e 62%, var(--bg-2) 100%);
 }
+/* 星点层「甲」：细密小星（两层 tile 交错，避免看出网格）
+   每颗星 = 一个 radial-gradient 色标（中心高光 → 8%~10% 处衰减 → transparent）。
+   尺寸 ≥ 4px、中心 50%，所以 tile 平铺时边缘不会出现"半颗星"。 */
+.hs-bg::before,
+.hs-bg::after {
+  content: ""; position: fixed; inset: 0;
+  z-index: -1; pointer-events: none;
+  will-change: filter, opacity, transform;
+}
+.hs-bg::before {
+  background-image:
+    radial-gradient(1.4px 1.4px at 22px 34px, rgba(255,255,255,.92), rgba(255,255,255,.28) 45%, transparent 62%),
+    radial-gradient(1.1px 1.1px at 128px 92px, rgba(255,255,255,.78), rgba(255,255,255,.2) 45%, transparent 62%),
+    radial-gradient(1.7px 1.7px at 246px 48px, rgba(226,236,255,.88), rgba(226,236,255,.24) 45%, transparent 62%),
+    radial-gradient(1px 1px at 72px 176px, rgba(255,255,255,.66), rgba(255,255,255,.16) 45%, transparent 62%),
+    radial-gradient(1.5px 1.5px at 198px 214px, rgba(255,236,244,.82), rgba(255,236,244,.2) 45%, transparent 62%),
+    radial-gradient(1.2px 1.2px at 302px 148px, rgba(255,255,255,.74), rgba(255,255,255,.18) 45%, transparent 62%),
+    radial-gradient(1px 1px at 34px 268px, rgba(230,240,255,.6), rgba(230,240,255,.16) 45%, transparent 62%),
+    radial-gradient(1.6px 1.6px at 164px 306px, rgba(255,255,255,.8), rgba(255,255,255,.2) 45%, transparent 62%),
+    radial-gradient(1.1px 1.1px at 276px 262px, rgba(255,244,250,.72), rgba(255,244,250,.18) 45%, transparent 62%),
+    radial-gradient(1.3px 1.3px at 316px 22px, rgba(255,255,255,.68), rgba(255,255,255,.18) 45%, transparent 62%);
+  /* 335px 是小于 340px 的质数，纵横向都几乎不重复；两套 tile 交错叠加等于把星点打散 */
+  background-size: 335px 335px;
+  background-repeat: repeat;
+  background-position: 0 0;
+  opacity: .6;
+  /* 暗色星点只做「透明度 + 亮度」呼吸；-3.6s 负延迟与乙层错开相位，避免整屏星点齐刷刷亮灭 */
+  animation: hs-star-a 7.5s ease-in-out infinite;
+  animation-delay: -3.6s;
+}
+/* 星点层「乙」：大而稀疏的亮星，节奏与甲层错开（这就是"不同星点不同 animation-delay"） */
+.hs-bg::after {
+  background-image:
+    radial-gradient(2.2px 2.2px at 96px 128px, rgba(255,255,255,.95), rgba(255,255,255,.22) 42%, transparent 60%),
+    radial-gradient(1.8px 1.8px at 392px 66px, rgba(214,228,255,.85), rgba(214,228,255,.2) 42%, transparent 60%),
+    radial-gradient(2.6px 2.6px at 236px 372px, rgba(255,238,248,.82), rgba(255,238,248,.18) 42%, transparent 60%),
+    radial-gradient(1.9px 1.9px at 512px 268px, rgba(255,255,255,.8), rgba(255,255,255,.18) 42%, transparent 60%),
+    radial-gradient(2.1px 2.1px at 168px 486px, rgba(228,238,255,.78), rgba(228,238,255,.18) 42%, transparent 60%),
+    radial-gradient(1.7px 1.7px at 436px 452px, rgba(255,255,255,.7), rgba(255,255,255,.16) 42%, transparent 60%),
+    radial-gradient(2.3px 2.3px at 566px 156px, rgba(255,246,252,.74), rgba(255,246,252,.16) 42%, transparent 60%),
+    radial-gradient(1.6px 1.6px at 296px 28px, rgba(255,255,255,.64), rgba(255,255,255,.14) 42%, transparent 60%);
+  background-size: 620px 620px;
+  background-repeat: repeat;
+  background-position: 0 0;
+  opacity: .5;
+  animation: hs-star-b 11s ease-in-out infinite;
+  animation-delay: -5.6s;
+}
+/* 闪烁：两层星点【只】在透明度 / 亮度上呼吸（峰值 ≤ .86 / ≤ .78，谷值 .34 / .26 ——
+   明暗差比原来更大，所以"点点星光闪烁"更可感知），并且彻底删掉了原来的 background-position
+   漂移动画（±14/16px）：暗色下不允许任何大面积位移，星点是原地闪，不是整片光在飘。
+   两层周期 7.5s / 11s + 负延迟错相，保证屏幕不同区域的星点不会同步亮灭。 */
+@keyframes hs-star-a {
+  0%, 100% {
+    opacity: .34;
+    filter: brightness(.82);
+  }
+  50% {
+    opacity: .86;
+    filter: brightness(1.22);
+  }
+}
+@keyframes hs-star-b {
+  0%, 100% {
+    opacity: .26;
+    filter: brightness(.78);
+  }
+  50% {
+    opacity: .78;
+    filter: brightness(1.28);
+  }
+}
+
+/* ---------- 浅色主题：暖粉 / 蜜桃 / 淡紫光晕 + 缓慢漂移（「心潮荡漾」） ----------
+   防硬边的三条做法（亮色专用，暗色完全不受影响）：
+   ① 每个 radial-gradient 都写满 4 段色标（峰值 → 中段 → 尾段 → 0）：最后一站才归零，
+      所以在渐变椭圆的边界处 alpha 恰好是 0，"实心圆 + 突然透明"的两段式硬边根本不存在；
+   ② alpha 整体压低（峰值 ≤ .26，原来是 .5）；
+   ③ ::before / ::after 加 filter: blur(...) 把可能残留的色阶 / 台阶直接糊掉；同时 inset:-10%
+      让伪元素比视口大一圈 —— blur 的取样边界与底图自身的边缘都被推到屏幕之外。
+   这里刻意【不用 scale() 动画】（整体放大会把边缘顶进视口），漂移一律走 transform 的小幅平移。 */
 html[data-theme="light"] .hs-bg {
   background:
-    radial-gradient(52rem 30rem at 12% -8%, rgba(255,77,141,.16), transparent 62%),
-    radial-gradient(46rem 28rem at 92% 4%, rgba(139,92,246,.14), transparent 60%),
-    linear-gradient(180deg, #fbfbfd 0%, var(--bg) 100%);
+    radial-gradient(56rem 38rem at 16% -12%, rgba(255,178,205,.20) 0%, rgba(255,178,205,.11) 38%, rgba(255,178,205,.035) 70%, rgba(255,178,205,0) 100%),
+    radial-gradient(50rem 36rem at 88% 2%, rgba(200,178,255,.18) 0%, rgba(200,178,255,.10) 38%, rgba(200,178,255,.03) 70%, rgba(200,178,255,0) 100%),
+    linear-gradient(180deg, #fdfbff 0%, #f7f5fb 100%);
+}
+/* 光晕层：三团低饱和光斑（暖粉 / 蜜桃橙 / 淡紫），缓慢漂移。
+   背景尺寸保持 100% × 100%（渐变铺满伪元素，at X% 的定位就是元素内的实际位置），
+   椭圆半径用 rem 写死、远大于视口：配上 4 段色标，屏幕里永远只看到"中间段"的极淡颜色，
+   看不到任何一处边界（真正的椭圆外缘在视口外，或者落在 alpha 已经为 0 的地方）。
+   inset:-10% 一举两得：blur 的取样边界在屏幕外（贴边不会出现 40~50px 的羽化带），
+   小幅平移时也不会把伪元素自己的边缘带进屏幕。峰值 alpha ≤ .26 → 内容区深色文字对比度不受影响。 */
+html[data-theme="light"] .hs-bg::before {
+  display: block; inset: -10%;
+  background-image:
+    radial-gradient(56rem 38rem at 16% 12%, rgba(255,143,182,.26) 0%, rgba(255,143,182,.17) 36%, rgba(255,143,182,.055) 68%, rgba(255,143,182,0) 100%),
+    radial-gradient(50rem 34rem at 84% 18%, rgba(255,193,142,.22) 0%, rgba(255,193,142,.14) 36%, rgba(255,193,142,.045) 68%, rgba(255,193,142,0) 100%),
+    radial-gradient(52rem 36rem at 48% 92%, rgba(190,162,255,.23) 0%, rgba(190,162,255,.15) 36%, rgba(190,162,255,.045) 68%, rgba(190,162,255,0) 100%);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 0% 0%;
+  opacity: 1;
+  filter: blur(48px);
+  animation: hs-glow-a 72s ease-in-out infinite;
+}
+/* 呼吸微光层：一层更薄的白桃色雾，压在最上面做"心跳"般的明暗起伏。
+   同样 4 段色标 + 100% 才归零，没有任何可辨认的边界；只做极小的位移与透明度呼吸。 */
+html[data-theme="light"] .hs-bg::after {
+  display: block; inset: -10%;
+  background-image:
+    radial-gradient(72rem 50rem at 50% 44%, rgba(255,232,220,.44) 0%, rgba(255,232,220,.28) 34%, rgba(255,232,220,.09) 68%, rgba(255,232,220,0) 100%);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 50% 50%;
+  opacity: .5;
+  filter: blur(36px);
+  animation: hs-glow-b 26s ease-in-out infinite;
+}
+/* 亮色光晕：只做很慢、很小幅度的漂移 + 明暗呼吸，且【只用 transform】，不动 background-position
+   （background-position 会逐帧重绘整层底图，再叠加 blur 就是每帧一次全屏滤镜；transform 走合成器，便宜得多）。
+   这里刻意不再用 scale()：整体放大会把光斑边缘一起"顶"进视口，越放大越容易看出边界；
+   配合 inset:-10% 的余量，几个百分点的平移永远不会露出伪元素自己的边缘。 */
+@keyframes hs-glow-a {
+  0%, 100% {
+    transform: translate3d(0, 0, 0);
+    opacity: .84;
+  }
+  50% {
+    /* 元素本身是 120% 视口大小，-3% 只相当于视口宽度 ~3.6% 的位移；72s 一个来回，几乎看不出动 */
+    transform: translate3d(-3%, -2%, 0);
+    opacity: 1;
+  }
+}
+@keyframes hs-glow-b {
+  0%, 100% { opacity: .36; transform: translate3d(0, 0, 0); }
+  50%      { opacity: .58; transform: translate3d(.9%, -.7%, 0); }
 }
 
 /* ---------- 顶栏 ---------- */
@@ -263,16 +407,18 @@ html[data-theme="light"] .hs-bg {
 }
 html[data-theme="light"] .hs-searchbar::after { mix-blend-mode: soft-light; opacity: .9; }
 .hs-searchbar > * { position: relative; z-index: 1; }
-/* 焦点必须一眼可见：透明化之后全靠「提亮 + accent 描边 + 焦点环」撑住可辨识度 */
+/* 焦点必须一眼可见：透明化之后全靠「提亮 + accent 描边 + 焦点环」撑住可辨识度。
+   只保留**外圈**反馈（外描边 + accent 外发光 + 提亮），不再画搜索框内部的那道内描边 —— 
+   去掉的就是原来那条 inset 0 0 0 1px color-mix(accent 28%)。 */
 .hs-searchbar:focus-within {
   background: var(--glass-fill-hi);
   border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
   box-shadow:
     inset 0 1px 0 var(--glass-inner),
     inset 0 -1px 0 var(--glass-rim-bot),
-    inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
     var(--glass-drop),
-    var(--ring);
+    0 0 0 1.5px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 6px 20px -8px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 .hs-searchbar:focus-within::after { opacity: 1; }
 .hs-sb-ico {
@@ -604,8 +750,8 @@ html[data-theme="dark"] .hs-srccard { background: rgba(0,0,0,.24); }
 /* 入场动画只挂在「新出现的卡片」上：继续加载 / 重新排序时复用的老卡片不会再播一遍
    （否则每次重排全网格都闪一下，用户看到的就是"整个页面闪烁"） */
 .hs-card-new { animation: hs-card-in .34s cubic-bezier(.2,.8,.3,1) backwards; animation-delay: calc(var(--in-i, 0) * 22ms); }
-/* 被点开的那张卡片先隐身：看起来就是它自己长大成放大视图 */
-.hs-card-ghost { visibility: hidden; }
+/* 被点开的那张卡片先淡出：看起来就是它自己长大成放大视图（布局不动，只透明） */
+.hs-card-ghost { opacity: 0; pointer-events: none; transition: opacity .1s linear; }
 @keyframes hs-card-in { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: none; } }
 .hs-card:hover { transform: translateY(-4px); border-color: var(--border-strong); box-shadow: var(--shadow); }
 .hs-card-img {
@@ -725,14 +871,21 @@ html[data-theme="dark"] .hs-skel { background: rgba(255,255,255,.055); }
 .hs-empty b { display: block; font-size: 16px; color: var(--fg-2); margin-bottom: 6px; }
 .hs-empty .hs-empty-actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
-/* 页脚 */
+/* 页脚：合规声明压成「底部小字」——小字号 + 低对比 + 紧凑行距，位置仍在文档最底部 */
 .hs-foot {
   max-width: 1240px; margin: 0 auto; width: 100%;
-  padding: 18px clamp(14px, 4vw, 34px) 30px;
+  padding: 12px clamp(14px, 4vw, 34px) 22px;
   border-top: 1px solid var(--border);
-  display: flex; gap: 8px; flex-wrap: wrap;
-  font-size: 11.5px; color: var(--fg-3);
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline;
+  font-size: 11.5px; line-height: 1.5; color: var(--fg-3);
 }
+.hs-foot > span { overflow-wrap: anywhere; }
+/* 「设置」：跟着小字一起变小，但仍是可点、可聚焦的按钮（不隐藏、不缩到点不着） */
+.hs-foot .hs-linkbtn {
+  font-size: 11.5px; line-height: 1.5; color: var(--fg-3);
+  text-underline-offset: 2px; padding: 0;
+}
+.hs-foot .hs-linkbtn:hover { color: var(--fg-2); }
 
 /* ---------- 遮蔽遮罩：瞬时生效（关键路径无过渡、无动画） ---------- */
 html.hs-panic #hs-app {
@@ -1215,6 +1368,42 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
 /* 命中的检索策略（作品名 / IP 角色 / 体裁题材） */
 .hs-intent { color: var(--accent); font-weight: 650; }
 
+/* 放大器入场：**线性**放缩（用户指定的手感），起点数值由 JS 写进自定义属性。
+   全程保持卡片自己的倾斜角、**结束也不回正** —— 斜着摊开的卡片就放大成一张同样斜着的大卡片；
+   轴心是卡片中心（transform-origin: center），所以看着就是"这张卡片原地长大"。 */
+@keyframes hs-cm-in {
+  0% {
+    transform: translate(var(--cm-x, 0px), var(--cm-y, 0px)) rotate(var(--cm-r, 0deg)) scale(var(--cm-s, 1));
+    opacity: .45;
+  }
+  100% {
+    transform: rotate(var(--cm-r, 0deg)) scale(1);
+    opacity: 1;
+  }
+}
+/* 放大器退场：就是 hs-cm-in 的**倒放**（同一套 --cm-* 数值，JS 在关闭那一刻按
+   被点卡片**当前**的矩形/倾斜角重算）。终点 = 那张小卡片的位置 / 尺寸 / 倾斜角，
+   动画播完 JS 才撤掉放大器并把小卡片显示出来 —— 所以关闭看起来是"缩回原位"，
+   而不是"啪一下消失"。仍是**线性**缓动，时长 0.32s ≈ 打开的 0.34s。 */
+@keyframes hs-cm-out {
+  0% {
+    transform: rotate(var(--cm-r, 0deg)) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--cm-x, 0px), var(--cm-y, 0px)) rotate(var(--cm-r, 0deg)) scale(var(--cm-s, 1));
+    opacity: .45;
+  }
+}
+
+/* 开始页的「贤者名言」：悬在页脚上方（离底边留出一段空隙，不要太贴底），检索一开始就隐藏 */
+.hs-sageline {
+  position: fixed; left: 0; right: 0; bottom: 136px; z-index: 4;
+  pointer-events: none; padding: 0 16px;
+}
+.hs-sageline[hidden] { display: none; }
+@media (max-height: 560px) { .hs-sageline { position: static; margin: 18px auto 6px; } }
+
 /* ---------- 开始页的随机「贤者名言」（贤者时间 neta，仿贤人语录体） ---------- */
 .hs-sage {
   max-width: 560px; margin: 2px auto 10px; padding: 4px 10px;
@@ -1239,20 +1428,25 @@ html.hs-nomotion .hs-sage { animation: none; }
   overflow: auto; display: block;
   background: var(--panel-solid); border: 1px solid var(--border-strong);
   border-radius: var(--radius); box-shadow: var(--shadow);
-  animation: hs-pop .2s cubic-bezier(.2,.8,.3,1);
+  /* 入场完全交给 JS 的 FLIP 关键帧（hs-cm-in）：这里**不能**再挂 hs-pop，
+     否则内联动画一撤、类上的动画就会重新触发一次 —— 那就是"放大到最大后抖一抖"的成因。 */
+  backface-visibility: hidden;
 }
 .hs-cm-close {
   position: absolute; top: 9px; right: 9px; z-index: 6;
   background: rgba(8,8,14,.62); backdrop-filter: blur(6px);
 }
+/* 封面用**和卡片完全相同的 5:7 裁切**（卡片也是 aspect-ratio 5/7 + object-fit: cover），
+   这样放大后只是"同一张封面变大了"，比例不会变；高度按 5:7 反推宽度，视口矮也不会顶破。 */
 .hs-cm-img {
-  position: relative; background: var(--panel-2);
-  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  height: min(52vh, 560px); width: auto; aspect-ratio: 5 / 7;
+  max-width: 100%; margin: 0 auto;
+  position: relative; background: var(--panel-2); overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
 }
-/* 封面保持 5:7 等比，靠高度自适应（不裁切、不拉扁） */
 .hs-cm-img img {
-  height: 42vh; max-height: 400px; width: auto; max-width: 100%;
-  display: block; object-fit: contain; transition: filter .24s ease;
+  width: 100%; height: 100%;
+  display: block; object-fit: cover; transition: filter .24s ease;
 }
 .hs-cm-img .hs-card-badges { top: 9px; left: 9px; max-width: calc(100% - 50px); }
 .hs-cm-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
@@ -1312,10 +1506,38 @@ html[data-theme="dark"] .hs-csrow { background: rgba(0,0,0,.24); }
 }
 
 /* 动效降级：类开关 + 系统偏好，两套都要把动效真正关掉（不只是 0.001ms）
-   hs-sweep / hs-line-glow 都是无限循环动画，降级成 0.001ms 仍会反复触发，这里直接停掉 */
+   hs-sweep / hs-line-glow 都是无限循环动画，降级成 0.001ms 仍会反复触发，这里直接停掉
+   同上：背景星点的闪烁（hs-star-a / hs-star-b）与浅色光晕的流动（hs-glow-a / hs-glow-b）
+   也必须真正停住 —— 只保留静态星点 / 静态光晕，否则 0.001ms 的循环等于高频闪烁。 */
 html.hs-nomotion .hs-sb-go[data-busy="1"] .hs-sb-ring { display: none; }
 html.hs-nomotion .hs-sb-go:hover { transform: none; }
 html.hs-nomotion .hs-searchbar::after { opacity: .85; }
+/* 星点：停在静态位置与中间亮度上，闪烁完全消失 */
+html.hs-nomotion .hs-bg::before {
+  animation: none;
+  opacity: .6;
+  filter: none;
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+}
+html.hs-nomotion .hs-bg::after {
+  animation: none;
+  opacity: .5;
+  filter: none;
+  background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+}
+/* 浅色光晕：停在静态光斑上（不再漂移、不再呼吸）。
+   filter 必须跟着一起保留 blur —— 降级只应该停住"动"，不该把好不容易糊掉的边界放回来。 */
+html[data-theme="light"].hs-nomotion .hs-bg::before {
+  animation: none; opacity: .92;
+  filter: blur(48px);
+  transform: none;
+  background-position: 0% 0%;
+}
+html[data-theme="light"].hs-nomotion .hs-bg::after {
+  animation: none; opacity: .48;
+  filter: blur(36px);
+  transform: none;
+}
 /* 细线上的微光：降级时彻底停住，并落回一段静态柔光 */
 html.hs-nomotion .hs-sheet-grab::before {
   animation: none;
@@ -1327,10 +1549,334 @@ html.hs-nomotion .hs-sheet-grab::before {
   .hs-sb-go[data-busy="1"] .hs-sb-ring { display: none; }
   .hs-sb-go:hover { transform: none; }
   .hs-searchbar::after { opacity: .85; }
+  /* 背景星点：停止闪烁，保留静态星点 */
+  .hs-bg::before {
+    animation: none; opacity: .6; filter: none;
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+  }
+  .hs-bg::after {
+    animation: none; opacity: .5; filter: none;
+    background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+  }
+  /* 浅色光晕：停止漂移与呼吸，但保留 blur（静态版依旧是"雾"，边缘不可见） */
+  html[data-theme="light"] .hs-bg::before {
+    animation: none; opacity: .92; transform: none; background-position: 0% 0%;
+    filter: blur(48px);
+  }
+  html[data-theme="light"] .hs-bg::after {
+    animation: none; opacity: .48; transform: none;
+    filter: blur(36px);
+  }
   .hs-sheet-grab::before {
     animation: none;
     opacity: 1;
     background-position: 50% 0;
   }
+}
+
+/* ==========================================================================
+   v2.5 —— 阶段一 在线阅读器（.hs-reader / .hs-rd*）
+   · 深色底全屏层：z-index 340（高于放大卡片 .hs-cm 的 260，低于遮蔽层 .hs-panic-overlay 的 9999）
+   · 只在这里追加，不动上面任何既有规则
+   ========================================================================== */
+html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
+
+.hs-rd {
+  position: fixed; inset: 0; z-index: 340;
+  overflow: auto; overscroll-behavior: contain;
+  /* 阅读器自己的几何量：只在这里定值，纵向 / 横向（.hs-rd[data-dir]）两套规则共用 */
+  --hs-rd-img-max: 96vh;    /* 纵向：单页图片最高一屏 */
+  --hs-rd-pad-b: 46px;      /* 底部信息条（fixed）占掉的高度 */
+  --hs-rd-zoom: 1;          /* 图片缩放倍数（50%–300%）；由 reader.js 写在覆盖层的行内样式上 */
+  background:
+    radial-gradient(90rem 50rem at 50% -12%, rgba(255,77,141,.10), transparent 62%),
+    radial-gradient(70rem 44rem at 90% 108%, rgba(139,92,246,.10), transparent 60%),
+    #06060a;
+  color: var(--fg);
+}
+
+/* ---------- 顶栏（吸顶，暗色玻璃） ---------- */
+.hs-rd-bar {
+  position: sticky; top: 0; z-index: 4;
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: rgba(8,8,13,.74);
+  backdrop-filter: blur(16px) saturate(1.25);
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  border-bottom: 1px solid var(--border);
+}
+.hs-rd-head { flex: 1; min-width: 0; }
+.hs-rd-title {
+  font-size: 14px; font-weight: 700; line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hs-rd-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; }
+.hs-rd-src { color: var(--fg-3); }
+.hs-rd-link { display: inline-flex; align-items: center; gap: 4px; color: var(--accent-2); font-weight: 600; }
+.hs-rd-link:hover { color: var(--accent); }
+.hs-rd-link svg { width: 12px; height: 12px; }
+.hs-rd-close { flex: none; }
+.hs-rd-tools { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* 章节目录：原生 select + 右侧箭头（避免弹出层被阅读器裁掉） */
+.hs-rd-chap { position: relative; display: inline-flex; align-items: center; max-width: min(46vw, 300px); }
+.hs-rd-sel {
+  appearance: none; -webkit-appearance: none;
+  height: 32px; padding: 0 28px 0 11px;
+  border-radius: 999px; font-size: 12px; cursor: pointer;
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border-strong); color: var(--fg);
+  text-overflow: ellipsis;
+}
+.hs-rd-caret {
+  position: absolute; right: 7px; pointer-events: none;
+  width: 14px; height: 14px; color: var(--fg-2);
+}
+.hs-rd-caret svg { width: 14px; height: 14px; display: block; }
+.hs-rd-sel option { background: var(--panel-solid); color: var(--fg); }
+
+/* 自动连读开关 / 阅读方向切换（同一种小胶囊按钮） */
+.hs-rd-auto, .hs-rd-dir {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 650; color: var(--fg-2);
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+  transition: color .14s, border-color .14s, background .14s;
+}
+.hs-rd-auto svg, .hs-rd-dir svg { width: 14px; height: 14px; display: block; }
+.hs-rd-auto:hover, .hs-rd-dir:hover { color: var(--fg); border-color: var(--border-strong); }
+.hs-rd-auto.is-on {
+  color: #fff;
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+}
+
+/* 图片缩放控件：- / 100% / + ；倍数本身只驱动 --hs-rd-zoom，不改页码几何 */
+.hs-rd-zoom {
+  display: inline-flex; align-items: center;
+  height: 32px; border-radius: 999px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.hs-rd-zbtn {
+  width: 28px; height: 30px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; line-height: 1; color: var(--fg-2);
+  background: none; border: 0; cursor: pointer;
+}
+.hs-rd-zbtn:hover:not(:disabled) { color: var(--fg); background: rgba(255,255,255,.06); }
+.hs-rd-zbtn:disabled { opacity: .35; cursor: default; }
+.hs-rd-zval {
+  min-width: 48px; height: 30px; padding: 0 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px; font-weight: 650; color: var(--fg);
+  background: none; border: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+.hs-rd-zval:hover { background: rgba(255,255,255,.06); }
+
+/* ---------- 图片列 ---------- */
+.hs-rd-col {
+  display: block;
+  padding: 0 14px;
+}
+/* 页与页之间只靠这一条下边距，8px 是连续纵向阅读的舒适值（窄屏 6px） */
+.hs-rd-pg { display: block; margin: 0 auto 8px; max-width: 1000px; }
+.hs-rd-img {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  /* 占位盒：宽高比由 JS 写成 --hs-rd-ar（没有 w/h 时留 auto），
+     并且最多只到图片本身上限 —— 载入后不会比图片高出一截留下空白 */
+  min-height: 180px; border-radius: var(--radius-sm);
+  aspect-ratio: var(--hs-rd-ar, auto);
+  max-height: var(--hs-rd-img-max);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+/* 图片是 --hs-rd-zoom 唯一的作用对象：盒子让出多大，图片就按倍数铺多大。
+   纵向：上限 96vh 乘倍数（图片完整可见、增高靠页面滚动）；横向：见下面的覆盖规则。
+   注意这里算的是**尺寸**不是 transform: scale()，所以布局盒跟着变、页码 / 章末几何不受影响。 */
+.hs-rd-img img {
+  display: block; width: auto; height: auto;
+  max-width: calc(100% * var(--hs-rd-zoom, 1));
+  max-height: calc(var(--hs-rd-img-max) * var(--hs-rd-zoom, 1));
+  margin: 0 auto;
+}
+/* 图片载入后彻底收掉占位盒的高度：盒子只剩图片本身，页间距就是那条 margin */
+.hs-rd-pg.is-ok .hs-rd-img {
+  min-height: 0; aspect-ratio: auto; max-height: none;
+  background: rgba(255,255,255,.02); border-color: transparent;
+}
+.hs-rd-retry {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 16px; border-radius: 999px; font-size: 13px; font-weight: 650;
+  color: var(--fg); background: var(--panel-solid); border: 1px solid var(--border-strong);
+}
+.hs-rd-retry i { font-style: normal; color: var(--accent); }
+.hs-rd-retry:hover { border-color: var(--accent); }
+
+/* 章节分隔条（自动连读时插在中间）—— 只是分隔线，别让它把章与章之间撑开一大段 */
+.hs-rd-sep {
+  display: flex; align-items: center; gap: 10px;
+  max-width: 1000px; margin: 14px auto;
+  font-size: 12px; color: var(--fg-3);
+}
+.hs-rd-sep::before, .hs-rd-sep::after {
+  content: ""; flex: 1; height: 1px; background: var(--border-strong);
+}
+.hs-rd-sep-in { margin: 14px auto; }
+
+/* ---------- 章末条 ---------- */
+.hs-rd-foot {
+  max-width: 1000px; margin: 6px auto 0; padding: 4px 14px 18px;
+  display: grid; gap: 10px; justify-items: center; text-align: center;
+}
+.hs-rd-foot .hs-rd-sep { width: 100%; margin: 0; }
+.hs-rd-foot-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.hs-rd-foot-hint { font-size: 11.5px; color: var(--fg-3); }
+
+/* ---------- 底部信息条 ---------- */
+.hs-rd-status {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px;
+  font-size: 11.5px; color: var(--fg-2);
+  background: linear-gradient(to top, rgba(6,6,10,.94), rgba(6,6,10,.55));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+}
+.hs-rd-prog { font-family: var(--mono); letter-spacing: .01em; }
+.hs-rd-tip { color: var(--fg-3); }
+.hs-rd-col, .hs-rd-foot { padding-bottom: var(--hs-rd-pad-b); }
+
+/* ---------- 取数据 / 出错 ---------- */
+.hs-rd-loading {
+  position: fixed; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font-size: 13px; color: var(--fg-2);
+  background: rgba(6,6,10,.66);
+}
+.hs-rd-spin {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--border-strong); border-top-color: var(--accent);
+  animation: hs-rd-spin .7s linear infinite;
+}
+@keyframes hs-rd-spin { to { transform: rotate(360deg); } }
+.hs-rd-error {
+  max-width: 560px; margin: 12vh auto 0; padding: 18px;
+  display: grid; gap: 8px; text-align: center;
+  color: var(--fg-2); font-size: 13px;
+}
+.hs-rd-error b { font-size: 15px; color: var(--fg); }
+.hs-rd-error-tip { font-size: 11.5px; color: var(--fg-3); }
+
+/* ---------- 放大卡片里的「在线阅读」入口 ---------- */
+.hs-cm-img[data-rd] { cursor: pointer; }
+.hs-cm-img[data-rd]::after {
+  content: "在线阅读";
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  padding: 5px 12px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 650; color: #fff;
+  background: rgba(8,8,14,.62);
+  border: 1px solid var(--border-strong);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0; transition: opacity .16s ease; pointer-events: none;
+}
+.hs-cm-img[data-rd]:hover::after { opacity: 1; }
+.hs-btn[data-cm-read] { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* ---------- 横向阅读：直接切页，不滑动（.hs-rd[data-dir="h"]） ----------
+   内容区**没有横向滚动**：一屏只显示当前页（.hs-rd-pg.is-cur，其余页 display:none），
+   切页 = 直接换图（瞬时，没有 scroll-snap、没有平滑滚动、没有滑动动画）。
+   每页占满内容区一屏，图片 contain 居中适配；放大后改由这一页内部滚动 / 拖动看图。
+   纵向那套规则一律不动，这里全部用 [data-dir="h"] 限定作用域。 */
+.hs-rd[data-dir="h"] { display: flex; flex-direction: column; overflow: hidden; }
+.hs-rd[data-dir="h"] .hs-rd-bar { flex: none; }
+.hs-rd[data-dir="h"] .hs-rd-scroll {
+  flex: 1 1 0; min-height: 0; position: relative;
+  padding: 0;
+  overflow: hidden;                  /* 横向不滚：内容不滑动，切页由 JS 直接换 */
+  overscroll-behavior: contain;
+}
+.hs-rd[data-dir="h"] .hs-rd-col {
+  display: block; height: 100%; padding: 0;
+}
+/* 只显示当前页：其余页连布局都不参与，所以「一次一页」是硬性的，不可能滑出第二页 */
+.hs-rd[data-dir="h"] .hs-rd-col > .hs-rd-pg { display: none; }
+.hs-rd[data-dir="h"] .hs-rd-col > .hs-rd-pg.is-cur { display: block; }
+.hs-rd[data-dir="h"] .hs-rd-pg {
+  width: 100%; height: 100%;
+  max-width: none; margin: 0;
+  /* 放大后在**当前页内部**可以滚 / 拖（看图，不是翻页滑动）。
+     scrollbar-gutter 让滚动条出现 / 消失不影响页宽，图片尺寸因此不会跟着抖 */
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+/* 自动连读插进来的章节分隔条：一次一页模式下就是当前页的标题条 */
+.hs-rd[data-dir="h"] .hs-rd-col > .hs-rd-sep {
+  width: 100%; max-width: none; margin: 0;
+  height: 100%; padding: 24px;
+  align-items: center; justify-content: center;
+}
+.hs-rd[data-dir="h"] .hs-rd-img {
+  width: 100%; height: 100%;
+  min-height: 0; max-height: none; aspect-ratio: auto;
+  border: 0; border-radius: 0; background: transparent;
+  padding: 10px 12px var(--hs-rd-pad-b);
+}
+/* 缩放：图片宽度就是「当前页宽度 × 倍数」，100% 时正好一屏（contain 适配）。
+   max-height 放到当前页高度 × 倍数，纵向也留出可滚动量 */
+.hs-rd[data-dir="h"] .hs-rd-img img {
+  width: calc(100% * var(--hs-rd-zoom, 1));
+  max-width: none;
+  height: auto;
+  max-height: calc(100% * var(--hs-rd-zoom, 1));
+  object-fit: contain;
+}
+/* 章末条浮层露出来时给图片让出空间，保证这一页仍然完整可见 */
+.hs-rd[data-dir="h"].is-chapend .hs-rd-img { padding-bottom: 130px; }
+/* 左右模式的两个不可见点击热区：铺满整个视口，左半 = 上一页、右半 = 下一页。
+   pointer-events: none —— 判页在 JS 的 pointer 事件里做（拖动能平移图片、不会误翻页） */
+.hs-rd-hot {
+  position: fixed; inset: 0; z-index: 2;
+  display: flex; pointer-events: none;
+}
+.hs-rd[data-dir="v"] .hs-rd-hot { display: none; }
+.hs-rd-hot-l, .hs-rd-hot-r { flex: 1 1 50%; }
+/* 章末条：fixed 浮在底部（不跟着页面滚动跑掉），只在最后一页显示（hidden 由 JS 控制） */
+.hs-rd[data-dir="h"] .hs-rd-foot {
+  position: fixed; left: 0; right: 0; bottom: var(--hs-rd-pad-b); z-index: 3;
+  max-width: none; margin: 0; padding: 9px 14px 11px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 10px; justify-items: center; text-align: center;
+  background: linear-gradient(to top, rgba(6,6,10,.92), rgba(6,6,10,.6));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+}
+.hs-rd[data-dir="h"] .hs-rd-foot .hs-rd-sep { display: none; }
+
+/* 窄屏收紧 */
+@media (max-width: 620px) {
+  .hs-rd-bar { padding: 7px 9px; gap: 8px; }
+  .hs-rd-title { font-size: 13px; }
+  .hs-rd-col { padding: 0 8px; }
+  .hs-rd-pg { margin-bottom: 6px; }
+  .hs-rd-img { min-height: 140px; border-radius: var(--radius-xs); }
+  .hs-rd-zoom { height: 30px; }
+  .hs-rd-zbtn { width: 26px; height: 28px; }
+  .hs-rd-zval { min-width: 44px; height: 28px; }
+  .hs-rd[data-dir="h"] .hs-rd-img { padding: 6px 8px var(--hs-rd-pad-b); border-radius: 0; }
+  .hs-rd-status { padding: 7px 9px; font-size: 11px; }
+  .hs-rd-tip { display: none; }
+}
+@media (max-height: 520px) {
+  .hs-rd-img img { max-height: calc(88vh * var(--hs-rd-zoom, 1)); }
 }
 

@@ -1,22 +1,40 @@
 # hentai搜索 · 绅士聚合搜索
 
-纯前端（HTML/CSS/JS，零依赖、零构建）的成人向同人志**元数据聚合搜索界面**，
-外加一个**零依赖的本地网关**（`tools/gateway.js`，只用 Node 内置模块）用来打通需要签名 / 需要绕开跨域的站点。
+纯前端（HTML/CSS/JS，零依赖、零构建）的成人向同人志**元数据聚合搜索界面**，外加一个**零依赖的本地网关**
+（`tools/gateway.js`，只用 Node 内置模块）用来打通需要签名 / 需要绕开跨域的站点；
+**2.0 起支持在站内直接在线阅读**（`assets/js/reader.js` + 网关 `/api/reader`），不用再跳到原站看图。
 
 ```yaml
-# 仓库元信息（由维护者在 1.9 分支补充）
+# 仓库元信息（由维护者在 2.0 分支补充）
 project:    hentai搜索 · 绅士聚合搜索
 owner:      taosuuuw
 repository: https://github.com/taosuuuw/hentai_search
-branch:     1.9
+branch:     2.0
 entry:      index.html          # 唯一入口；scripts 传统顺序加载，非 ES Module
-runtime:    浏览器静态页面 + 可选 Node 本地网关（tools/gateway.js，零依赖）
+runtime:    浏览器静态页面 + 本地 Node 网关（tools/gateway.js，零依赖）
 build:      无。零依赖、零构建
+tooling:    DeepSeek Harness（本项目的编码由它完成）
 license:    未声明
 ```
 
 > ⚠️ 本项目不托管、不缓存、不代理任何图片或作品文件，只是把公开第三方站点的检索结果聚合到一个界面里。
 > 请确认你已成年，且访问此类内容在你所在地区合法。版权归原作者所有，请支持正版。
+
+---
+
+### 🛠 编程工具：DeepSeek Harness
+
+**本项目的开发使用了 DeepSeek Harness 进行编程。**
+DeepSeek Harness 是本次开发所使用的 AI 编程代理（agent）运行环境：它能直接读写仓库源码、
+运行命令、核对接口实现并撰写文档，开发者负责提出需求、判断取舍与最终验收。
+
+| 项 | 说明 |
+| --- | --- |
+| 用途 | 参与全仓库的编码与文档工作 |
+| 本仓库中可核对的产出 | 版本 1.0 / 1.9 / 2.0 的 README 与其全部批注；`.gitignore`；以及各次提交与分支（`1.0`、`1.9`、`2.0`）的整理 |
+| 说明 | 凡本文档中标为【已核对】的批注，都是在源码中逐行定位后给出的结论；标为【待实测】的则是明确标注**未经验证**的部分 |
+
+> 各版本、各文件未必出自同一工具或同一人之手；如需精确到文件的署名，请以 `git log` 为准。
 
 ---
 
@@ -34,7 +52,7 @@ license:    未声明
 
 批注只做四件事：**说清设计意图、给出可复核的证据、标出未验证部分、揪出文档漂移**。
 批注不改写原正文；正文与批注冲突时，以标注了 `文件:行号` 的一侧为准。
-`【已核对】` 的行号基于 1.9 版本源码，会随代码演进漂移，复核时请以函数名 / 常量名为准。
+`【已核对】` 的行号基于 2.0 版本源码，会随代码演进漂移，复核时请以函数名 / 常量名为准。
 批注块整块以 `>` 引用呈现，纯文本检索用 `批注` 关键字即可定位全部批注。
 
 > <details>
@@ -68,6 +86,26 @@ node tools/gateway.js --port 9000
 node tools/gateway.js --proxy http://127.0.0.1:7897      # 手动指定出口代理
 node tools/gateway.js --no-proxy                         # 强制直连
 ```
+
+**或者直接双击项目根目录的 `start-engine.cmd`**（2.0 新增，省去手敲命令）：
+
+```bat
+start-engine.cmd                    :: 停掉旧引擎 → 起新引擎 → 等就绪 → 自检 /api/reader → 打开浏览器
+start-engine.cmd -Status            :: 只看状态（在不在跑、是不是新版本）
+start-engine.cmd -Stop              :: 只停引擎，不启动
+start-engine.cmd -Port 8899         :: 换端口
+start-engine.cmd -NoBrowser         :: 启动后不自动开浏览器
+start-engine.cmd -Foreground        :: 不新开窗口，日志留在当前窗口（Ctrl+C 停止）
+start-engine.cmd -KeepOpen          :: 引擎就绪后不自动关掉启动器窗口
+```
+
+启动器只终结**占用该端口的 node 进程**（其它进程一律不碰），随后用当前代码起新引擎，并真的打一遍接口自检：
+`/api/ping` 判断是不是新版本、`/api/reader` 能不能取到 nhentai 与 MangaDex 的页。
+引擎正常时启动器 3 秒后自动关闭并留下引擎窗口；出错时窗口会停住，方便你把报错复制出来。
+
+> 启动脚本以 **ASCII-only** 编写是刻意的：cmd.exe 解码非 ASCII 字节时可能在解析阶段就崩掉，
+> 于是窗口一闪而过（`pause` 都来不及执行）——旧版启动器正是栽在这里。
+> 另外 `tools/start-gateway.ps1` 的头部注释里提到的 `start-gateway.cmd` 是过时名字，实际入口是 `start-engine.cmd`。
 
 > 旧的 `--picacg-email / --picacg-password` 参数在网关里还在（`/api/picacg/*` 没删），
 > 但**前端已经移除了哔咔信息源**，所以现在传了也没有入口会用到。
@@ -333,6 +371,39 @@ venera 走 `dio` + `rhttp` 原生 socket，原生环境压根没有同源策略�
 >
 > </details>
 
+### 11｜在线阅读器（2.0 新增）
+
+搜索结果里点开卡片的等比放大视图，即可**直接在站内阅读**，不必再跳回原站翻页。
+
+**支持的源（10 个）**：MangaDex / nhentai / Danbooru / 紳士漫畫（wnacg）/ E-Hentai / Hitomi /
+Pixiv / 拷贝漫画 / 禁漫天堂 / porn-comic。页地址由网关统一转成 `/api/proxy?...` 并带上正确的
+`Referer`，所以浏览器不会撞 `i.pximg.net` / 图床的防盗链。
+
+| 能力 | 说明 |
+| --- | --- |
+| 两种阅读方向 | **上下连续滚动**（默认）/ **左右单页**，工具栏按钮切换；滚轮、`←/→`、点左 / 右半屏都能翻页 |
+| 章节 | 多章作品（MangaDex / 拷贝漫画）有章节下拉；单章作品（nhentai / Danbooru / 紳士 / E-Hentai / Hitomi / Pixiv / 禁漫 / porn-comic）自动隐藏下拉 |
+| 自动连读 | 滚到章末自动接上下一章（插入一条章节分隔标题），并提前**预取下一章** |
+| 缩放 | 50%–300%，步进 20%（`Ctrl`/`⌘` + `+` / `-` / `0`）；方向、缩放、自动连读都会记住 |
+| 键盘 | `Esc` 关闭 · `←/→` 翻页 · `Home/End` 首末页 · `Ctrl +/−` 缩放 |
+| 断图自愈 | 同一页带备用地址（目前只有 MangaDex 有 `alt`）时，加载失败会自动换另一个图床域名重试一次 |
+
+- **禁漫的图片是分块打乱的**：网关从章节页模板里读到 `scramble_id`，并按站点自己的算法算好分块；
+  前端 `reader.js` 用 canvas 还原。**拿不到 `scramble_id` 就按原图显示**——宁可不动，也不乱动。
+- **porn-comic 的正文图不经 Cloudflare**（只有条目页需要过），所以阅读比检索顺利。
+- `Esc` 只关阅读器，不会顺带关掉放大卡片或筛选面板；退出后页面滚动位置会被还原（不会被顶回顶部）。
+
+> <details>
+> <summary>📌 批注：在线阅读器（5 条）</summary>
+>
+> 【已核对】网关侧白名单 `READER_HOSTS` 恰好这 10 个源（tools/gateway.js:1385 起），且 `READER_UNAVAILABLE` 为空数组 —— 即文档列的 10 个源都已实现，没有「挂着但不可用」的项。
+> 【已核对】返回结构是统一的 `{ ok, source, id, title, referer, chapters[], pages[] }`，`chapters` 为空数组就代表单章作品；网关的注释明确写着「新增的源只需在网关侧产出正确的 pages，前端一行都不用改」，这是本模块最值得保持的扩展点。
+> 【已核对】缩放范围 50%–300%、步进 20% 与 `Ctrl +/−/0` 均与 assets/js/reader.js:55 的注释和使用说明一致；方向 / 缩放 / 自动连读三项都写进 `HS.settings` 持久化。
+> 【风险】阅读功能**强依赖本地网关**：页面脚本只通过 `HS.net.gateway.url('/api/reader', …)` 取值，无网关时阅读器会明确报「需要本机网关」而不是静默空白。所以「能搜不能读」首先要查网关是否在跑、以及是否成功接上了系统代理。
+> 【待实测】10 个源的逐源阅读效果本轮未做端到端验证：nhentai / E-Hentai / 紳士漫畫 / Hitomi 在本机 DNS 被屏蔽、必须经代理，MangaDex 的多章自动连读与拷贝漫画的 `words` 页序还原都需要在真实网络下开一次才能确认。此处只核对了代码路径与结构，不代表已经读到图。
+>
+> </details>
+
 ---
 
 ## 快捷键
@@ -355,6 +426,16 @@ venera 走 `dio` + `rhttp` 原生 socket，原生环境压根没有同源策略�
 >
 > </details>
 
+> <details>
+> <summary>📌 批注：目录结构与 2.0 新增文件（4 条）</summary>
+>
+> 【已核对】2.0 的三处新增已就位：assets/js/reader.js（944 行，由 index.html 以传统 `<script>` 加载）、tools/start-gateway.ps1（243 行启动器）、start-engine.cmd（38 行入口）。
+> 【已核对】`assets/js/dict.js` 仍为纯数据模块（1917 行：`HS.TAG_ZH` 1711 条 + `HS.CONCEPTS` 121 组），由 core.js 的上层逻辑消费，自身不含逻辑。
+> 【风险·文档漂移】本表与「信息源」两处仍写 `dict.js` 是「401 条标签中文对照」，**实测为 1711 条**；同时 sources.js 的源数量在此写「11 个」、代码注册 12 个 + 自定义源 1 个、正文表格列 13 行 —— 这两处数字建议一并统一（见「信息源」批注）。
+> 【已核对】「传统 `<script>` 顺序加载、非 ES Module」仍是 `file://` 可直接运行的前提；但**在线阅读器例外**：它必须经网关取页，所以 `file://` 下能搜、不能读。
+>
+> </details>
+
 ## 目录结构
 
 ```
@@ -367,11 +448,14 @@ assets/js/net.js            超时请求 / 多级代理链 / 网关客户端与�
 assets/js/sources.js        11 个信息源适配器 + 并行聚合器（按意图分流 / 同义词按源换写法 / 动态分配每源条数 / 全局时间上限）
 assets/js/filters.js        向上拉出的筛选面板、类型、语言、标签、信息源、结果数量、网关检测
 assets/js/chain.js          思维链：折叠+模糊、点击展开、打字机、逐源进度
-assets/js/results.js        去重 / 按意图重排 / 汉化优先 / 同系列堆叠（严格判定）/ 卡片标签与 R18G·AI 角标 / 单页无限滚动
+assets/js/results.js        去重 / 按意图重排 / 汉化优先 / 同系列堆叠（严格判定）/ 卡片标签与 R18G·AI 角标 / 单页无限滚动 / 打开阅读器
+assets/js/reader.js         在线阅读器：章节下拉 / 自动连读与预取 / 上下连续与左右单页 / 缩放 50–300% / 禁漫 canvas 还原（944 行）
 assets/js/panic.js          极速遮蔽、状态图标、快捷键录制与匹配
 assets/js/settings.js       设置弹窗（带图标的设置项、初始模糊、本地网关、Pixiv、代理、快捷键录制）
 assets/js/app.js            引导、主题、模糊范围、网络状态、网关探测、搜索主流程（含追加加载）、全局快捷键
-docs/research/              接口调研笔记（venera / jasmine 等现役实现的确切端点与密钥来源）
+tools/start-gateway.ps1     引擎一键启动器（停旧进程 / 起新引擎 / 自检 /api/reader / 开浏览器；支持 -Stop -Status -Port 等）
+start-engine.cmd            启动器的双击入口（ASCII-only，转调 start-gateway.ps1）
+docs/research/              接口调研笔记（venera / jasmine 等现役实现的确切端点与密钥来源；sources-probe.md 为三站点实测报告）
 ```
 
 脚本以传统 `<script>` 顺序加载（非 ES Module），因此 `file://` 直接打开也能运行；网关是独立的 Node 进程。
@@ -427,6 +511,9 @@ docs/research/              接口调研笔记（venera / jasmine 等现役实�
 - 汉化判定基于标题/标签文本，可能有个别误判（例如标题里带「中文」但其实是原文）；角标只作提示。
 - 追加加载依赖各源的分页参数，个别源（Hitomi / 自定义源）没有分页，追加时会重复第一批并被去重，
   这时会较早判定为「已经到底」。
+- **在线阅读依赖网关联网取页**：阅读器本身不直连图床，页地址全部由 `/api/reader` 与 `/api/proxy` 提供；网关没起来、或没接上代理，就会「能搜不能读」。nhentai / E-Hentai / 紳士漫畫 / Hitomi 这些源更是**必须**经代理才可能读到图。
+- **禁漫的图片还原可能失败**：网关取不到该章节的 `scramble_id` 时（上游改版、或出口被禁漫的 CF 挑战挡住），会**按原图显示并给出中文原因**，而不是猜一个分块规则 —— 猜错不会报错，只会把正常的图上下颠倒。
+- **porn-comic 阅读的前置条件与检索相同**：条目页要先过 Cloudflare（本机 Chrome + Node 22+）；正文图虽然不经 CF，但拿不到条目页就取不到页表。
 - VPN 检测基于「能否建立连接」的启发式判断，不做任何网络隧道操作；网关在线时以网关自检结果为准。
 - **Pixiv 需要重启网关**：`/api/pixiv/search` 是后加的接口，加完必须重启一次网关进程才生效；
   页面上会直接提示「当前网关是旧进程」，不会只丢一个 404。封面是网关**相对地址**，

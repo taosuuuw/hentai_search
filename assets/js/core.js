@@ -42,7 +42,7 @@ window.HS = (function () {
     /* 本地网关（tools/gateway.js）：禁漫/哔咔/拷贝漫画的官方 API 需要签名+解密，
        浏览器同源策略下无法直连，由这个本地小服务代劳 */
     gateway: 'http://127.0.0.1:8788',
-    sources: ['mangadex', 'nhentai', 'ehentai', 'jmcomic', 'wnacg', 'kemono', 'danbooru'],
+    sources: ['mangadex', 'nhentai', 'ehentai', 'jmcomic', 'wnacg', 'danbooru'],
     /* 其他 */
     adultOk: false
   };
@@ -132,7 +132,7 @@ window.HS = (function () {
        ③ 标签 / 标题里出现成人词
      三者都不命中 → `adult = null`（未知，不硬杀）；跨源去重时，同一本只要在别的源被确认成人向，
      合并后的条目就算成人向 —— 这就是「由其他途径检验」那一层。 */
-  NS.ADULT_SOURCES = ['jm', 'wnacg', 'ehentai', 'nhentai', 'hitomi', 'porncomic'];
+  NS.ADULT_SOURCES = ['jmcomic', 'jm', 'wnacg', 'ehentai', 'nhentai', 'hitomi', 'porncomic'];
   NS.ADULT_TAGS = [
     'r-18', 'r18', 'r 18', '18+', '18禁', 'x-rated', 'hentai', 'h漫', 'h 漫',
     'pornographic', 'porn', 'erotica', 'erotic', 'explicit', 'nsfw', 'smut', 'pwp',
