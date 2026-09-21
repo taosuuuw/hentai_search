@@ -3,7 +3,7 @@
    1) 统一超时 fetch（AbortController）
    2) 多代理链：直连 / 用户代理 / 公共代理（自动竞速挑选可用者 + 会话内记忆）
    3) 失败诊断：区分「站点不可达」与「站点可达但被跨域拦截」
-   4) VPN / 网络环境探测与分级判定
+   4) 网络环境探测与分级判定（只在检索之前 / 网络变化时执行）
    ========================================================================== */
 (function (HS) {
   'use strict';
@@ -11,10 +11,50 @@
   const net = HS.net = {};
 
   /* ---------------- 基础请求 ---------------- */
+  /* 检索作用域（「新检索打断旧检索」的底层开关）
+     ------------------------------------------------------------------
+     一次检索会并发发出很多请求（多源 × 多候选串 × 代理链逐条重试），
+     用户再次提交搜索时，旧的这一整批必须**当场让位**，而不是等它自己超时。
+     做法：每次检索开一个 AbortController（scope），此后网络层发出的每个请求都把它
+     自己的超时 controller 与 scope controller 串起来 —— scope 一 abort，
+     这一批请求在同一帧内全部断掉（fetch 收到 AbortError）。
+     ★范围是精确的★：只有检索会开 scope，探测 / 网关卡体检 / 封面图这些
+     自己不带 scope 的请求一律不受影响；不存在「关一个把全站请求都掐了」的副作用。 */
+  net._scope = null;
+  net.openScope = function () {
+    net.closeScope();
+    net._scope = new AbortController();
+    return net._scope;
+  };
+  net.closeScope = function () {
+    const s = net._scope;
+    net._scope = null;
+    if (s && !s.signal.aborted) {
+      try { s.abort(new DOMException('superseded', 'AbortError')); } catch (e) {}
+    }
+  };
+  net.scopeSignal = function () {
+    return net._scope ? net._scope.signal : null;
+  };
+
+  /** 把「本次调用的超时 controller」挂到 scope 上，返回解绑函数 */
+  function linkScope(ctrl) {
+    const sig = net.scopeSignal();
+    if (!sig) return null;
+    if (sig.aborted) {
+      try { ctrl.abort(sig.reason); } catch (e) { try { ctrl.abort(); } catch (e2) {} }
+      return null;
+    }
+    const onAbort = () => { try { ctrl.abort(sig.reason); } catch (e) { ctrl.abort(); } };
+    try { sig.addEventListener('abort', onAbort, { once: true }); } catch (e) { return null; }
+    return () => { try { sig.removeEventListener('abort', onAbort); } catch (e) {} };
+  }
+
   net.withTimeout = function (ms, fn) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(new DOMException('timeout', 'TimeoutError')), ms);
-    return fn(ctrl.signal).finally(() => clearTimeout(timer));
+    const unlink = linkScope(ctrl);
+    return fn(ctrl.signal).finally(() => { clearTimeout(timer); if (unlink) unlink(); });
   };
 
   net.fetch = function (url, opts, ms) {
@@ -44,15 +84,17 @@
     });
   };
 
-  /* ---------------- CORS 代理链 ---------------- */
-  /* 顺序即优先级；json:true 表示该代理把内容包进 JSON（需要解包） */
+  /* ---------------- CORS 代理链 ----------------
+     顺序即优先级。★这张表按**实测**维护（tools/netprobe.js --relay 会逐个体检）★：
+       · AllOrigins raw / get：实测可用（能带回被墙站的 JSON / HTML / 图片），会限流所以两个都留
+       · corsproxy.io      ：实测 HTTP 401（改成要 API key 了）→ 移出
+       · api.codetabs.com  ：实测 SNI 阻断（TCP 通、TLS 被重置）→ 移出
+       · cors.isomorphic-git.org：实测 403 拒绝代取 → 移出
+       · thingproxy.freeboard.io：实测连不上 → 移出
+     留着打不通的只会白吃每源的时间预算，所以一个都不留。 */
   net.PROXIES = [
     { id: 'allorigins-raw', name: 'AllOrigins', tpl: 'https://api.allorigins.win/raw?url={url}' },
-    { id: 'codetabs', name: 'codetabs', tpl: 'https://api.codetabs.com/v1/proxy?quest={url}' },
     { id: 'allorigins-json', name: 'AllOrigins(JSON)', tpl: 'https://api.allorigins.win/get?url={url}', json: true },
-    { id: 'corsproxy', name: 'corsproxy.io', tpl: 'https://corsproxy.io/?url={url}' },
-    { id: 'isomorphic', name: 'isomorphic-git', tpl: 'https://cors.isomorphic-git.org/{rawurl}' },
-    { id: 'thingproxy', name: 'thingproxy', tpl: 'https://thingproxy.freeboard.io/fetch/{rawurl}' },
     { id: 'local8080', name: '本地 :8080', tpl: 'http://127.0.0.1:8080/?url={url}' }
   ];
   net.PROXY_MAP = {};
@@ -62,9 +104,6 @@
     { v: '', label: '不使用代理（仅直连）' },
     { v: 'auto', label: '自动挑选可用公共代理' },
     { v: 'https://api.allorigins.win/raw?url={url}', label: 'AllOrigins' },
-    { v: 'https://api.codetabs.com/v1/proxy?quest={url}', label: 'codetabs' },
-    { v: 'https://corsproxy.io/?url={url}', label: 'corsproxy.io' },
-    { v: 'https://cors.isomorphic-git.org/{rawurl}', label: 'isomorphic-git' },
     { v: 'http://127.0.0.1:8080/?url={url}', label: '本地自建 :8080' },
     { v: '__custom__', label: '自定义…' }
   ];
@@ -109,6 +148,12 @@
   /**
    * 构造尝试序列。
    * proxyFirst=true 时先走代理（这些站点不返回 CORS 头，直连注定失败），直连放最后兜底。
+   *
+   * ★本地网关在线时不再叠加公共 CORS 代理链★（2026 实测教训）：
+   *   网关自己就有「DoH 钉真 IP / 境内中继」两层，用的还是同一批中继（AllOrigins）；
+   *   前端再并发打一遍，等于两边抢同一个限流配额 —— 实测把 AllOrigins 打成 429 之后，
+   *   浏览器侧和网关侧**同时**全灭（一次检索能打出上百条 allorigins 请求：每个镜像每条路都试）。
+   *   所以网关在线时只留「网关 → 直连」两条，把中继配额让给网关统一调度。
    */
   net.buildAttempts = function (url, o) {
     const list = [];
@@ -121,6 +166,15 @@
     /* 本地网关在线时它是第一优先：同源、带正确 Referer/UA，比公共代理可靠得多 */
     const gw = net.gateway && net.gateway.ok ? { gw: true } : null;
     const pushGw = () => { if (gw) push('本地网关', net.gateway.proxyUrl(url, url), gw); };
+
+    if (gw) {
+      if (o.proxyFirst) { pushGw(); push('直连', url, null); }
+      else { push('直连', url, null); pushGw(); }
+      /* 用户显式配了代理时仍然尊重它（放在网关之后，而不是被吞掉） */
+      if (user && user !== 'auto') push(net.proxyName(user), net.via(url, user), net.proxyMeta(user));
+      const seen0 = {};
+      return list.filter(a => (seen0[a.url] ? false : (seen0[a.url] = 1)));
+    }
 
     if (o.proxyFirst) {
       pushGw();
@@ -174,6 +228,12 @@
 
     for (let i = 0; i < attempts.length; i++) {
       const at = attempts[i];
+      /* 检索已被新的搜索打断：立刻收手，别再逐条试代理（每次都会当场被 abort） */
+      if (net.scopeSignal() && net.scopeSignal().aborted) {
+        const st = new Error('检索已被新的搜索打断');
+        st.superseded = 1;
+        throw st;
+      }
       const left = deadline - u.now();
       if (left < 1200) { errs.push('预算耗尽，跳过 ' + at.label); break; }
       const to = Math.min(per, left);
@@ -183,6 +243,11 @@
         if (!r.ok) throw new Error('HTTP ' + r.status);
         raw = await r.text();
       } catch (e) {
+        if (net.scopeSignal() && net.scopeSignal().aborted) {
+          const st = new Error('检索已被新的搜索打断');
+          st.superseded = 1;
+          throw st;
+        }
         const why = (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) ? '超时' : ((e && e.message) || e);
         errs.push(at.label + '：' + why);
         continue;
@@ -199,7 +264,13 @@
       return unwrap(raw, at.meta);
     }
 
-    /* 全部失败 → 做一次可达性诊断，给出可执行的结论 */
+    /* 全部失败 → 做一次可达性诊断，给出可执行的结论。
+       被打断的检索不再诊断：那会多打一次网络，且结论对用户毫无意义。 */
+    if (net.scopeSignal() && net.scopeSignal().aborted) {
+      const st = new Error('检索已被新的搜索打断');
+      st.superseded = 1;
+      throw st;
+    }
     const diag = await net.diagnose(url);
     /* 如果连一个公共代理都没成功过，短时间冷却，避免每次检索都空跑整条代理链 */
     const hadProxyAttempt = attempts.some(a => a.meta);
@@ -232,12 +303,15 @@
       : '';
     const gwHint = GW.ok ? '' : '；禁漫/拷贝漫画 这类「需要签名 + 不返回跨域头」的站点，' +
       '最省事的解法是启动随附的本地网关：node tools/gateway.js，然后打开 http://127.0.0.1:' + GW.DEFAULT_PORT + '/';
-    if (diag === 'offline') return '网络已断开，请检查网络或 VPN';
+    if (diag === 'offline') return '网络已断开，请检查网络连接';
     if (diag === 'cors-blocked') {
       return host + ' 可以连通，但被浏览器跨域策略拦截，且当前所有 CORS 代理都不可用。' +
         '请改用可用代理或自建代理' + fileHint + gwHint;
     }
-    return host + ' 完全不可达（可能被网络限制或被墙）。请开启 VPN，或换一个镜像域名' + fileHint + gwHint;
+    return host + ' 浏览器直连不通（被 DNS 污染 / SNI 阻断，或被网络限制）。' +
+      '本地网关自带三层补偿 —— 原路直连 → DoH 多解析器钉真 IP → 境内中继，' +
+      '多数站（禁漫 / 拷贝 / 绅士 / hitomi / nhentai / E-Hentai）不依赖任何代理也能取到' +
+      fileHint + gwHint;
   };
 
   /** 手动测试一个代理地址是否可用 */
@@ -255,13 +329,15 @@
     { id: 'domestic', label: '境内网络 (baidu)',      url: 'https://www.baidu.com/favicon.ico', kind: 'domestic' },
     { id: 'global',   label: '国际出口 (gstatic)',    url: 'https://www.gstatic.com/generate_204', kind: 'global' },
     { id: 'jmcomic',  label: '禁漫天堂',              url: 'https://18comic.vip/',     kind: 'target' },
+    { id: 'copymanga', label: '拷贝漫画',             url: 'https://api.copy2000.online/', kind: 'target' },
     { id: 'wnacg',    label: '紳士漫畫',              url: 'https://www.wnacg.com/',   kind: 'target' },
     { id: 'ehentai',  label: 'E-Hentai',              url: 'https://e-hentai.org/',    kind: 'target' },
     { id: 'nhentai',  label: 'nhentai',               url: 'https://nhentai.net/',     kind: 'target' },
     { id: 'hitomi',   label: 'Hitomi',                url: 'https://hitomi.la/',       kind: 'target' },
+    { id: 'danbooru', label: 'Danbooru',              url: 'https://danbooru.donmai.us/', kind: 'target' },
     { id: 'mangadex', label: 'MangaDex API',          url: 'https://api.mangadex.org/ping', kind: 'target' }
   ];
-  const PROBEABLE = ['mangadex', 'nhentai', 'ehentai', 'jmcomic', 'wnacg', 'hitomi'];
+  const PROBEABLE = ['mangadex', 'nhentai', 'ehentai', 'jmcomic', 'copymanga', 'wnacg', 'hitomi', 'danbooru'];
 
   net.ping = function (target, ms) {
     const t0 = u.now();
@@ -277,8 +353,20 @@
 
   net._cache = null;
 
+  /** ★只读缓存★：检索主流程只看这个，绝不在这里发探测请求（见 app.js 的 doSearch 第 2 步）。
+      没有缓存就返回 null，调用方自己决定要不要在后台补一次。 */
+  net.probeCached = function () { return net._cache || null; };
+
+  /** 缓存是不是已经过期（超过 TTL）—— 供「空闲时再补一次」判断，本身不发请求 */
+  net.probeStale = function (ttlMs) {
+    if (!net._cache) return true;
+    return (Date.now() - net._cache.ts) > (ttlMs || NET_TTL);
+  };
+
+  const NET_TTL = 120 * 1000;
+
   net.probe = async function (force) {
-    const TTL = 45 * 1000;
+    const TTL = NET_TTL;
     if (!force && net._cache && (Date.now() - net._cache.ts) < TTL) return net._cache;
 
     const targets = await Promise.all(TARGETS.map(t => net.ping(t)));
@@ -306,17 +394,34 @@
     } else if (adultOk > 0) {
       verdict = 'partial'; label = '部分站点受限';
       detail = adultOk + '/' + adult.length + ' 个目标站点可达，其余（' + blockedNames +
-        '）连接失败。要在这些站点上检索，请在浏览器之外自行开启 VPN 后点击重新检测。';
+        '）浏览器直连失败。先启动本地网关再点一次「检测」—— 网关会用 DoH 钉真 IP / 境内中继' +
+        '尽量把它们也打通；也可以在「筛选 → CORS 代理」里换一条出口。';
     } else if (by.domestic.ok) {
-      verdict = 'vpn-needed'; label = '建议开启 VPN';
-      detail = '境内网络正常，但目标站点全部连接失败（典型的区域网络限制）。请在浏览器之外自行开启 VPN / 代理后点击重新检测。';
+      verdict = 'restricted'; label = '目标站点直连受限';
+      detail = '本机网络正常，但目标站点浏览器直连全部失败（典型的 DNS 污染 / 区域限制）。' +
+        '先启动本地网关（node tools/gateway.js 或 start-engine.cmd）再点「检测」：' +
+        '网关会用 DoH 多解析器钉真 IP、必要时走境内中继，多数站不依赖任何代理也能取到数据。';
     } else if (by.global.ok) {
-      verdict = 'vpn-needed'; label = '部分受限';
-      detail = '国际出口可达，但目标站点连接失败，可能被 DNS 污染或需要代理。';
+      verdict = 'restricted'; label = '部分受限';
+      detail = '国际出口可达，但目标站点连接失败，多为 DNS 污染 —— 本地网关可用 DoH 钉真 IP 打通。';
     } else {
       verdict = 'unknown'; label = '网络异常';
-      detail = '所有探测目标均不可达，请确认已联网或已开启 VPN。';
+      detail = '所有探测目标均不可达，请确认本机已联网（或代理设置是否正确）。';
     }
+
+    /* ★先落一个「临时结论」★
+       浏览器侧的探针最多 3.5s 就出结果，而下面的 /api/diag 是网关逐个目标跑
+       DoH / 中继，慢的时候要几十秒。用户很可能在这中间就按了回车 ——
+       临时结论先写进缓存，检索主流程读到的就不是 null，
+       思维链上写的是真实的初步判定，而不是「后台检测中」。
+       最终结论算完会整体覆盖它（同一个对象字段，语义一致）。 */
+    net._cache = {
+      ts: Date.now(), provisional: true, verdict, label, detail, targets, blocked,
+      restrictedLikely: verdict === 'restricted' || verdict === 'partial',
+      gatewayTiers: net._gwTiers || null, gatewayEgress: net._gwEgress || '',
+      adultOk, adultTotal: adult.length
+    };
+    HS.bus.emit('net:probe', net._cache);      /* 临时结论也广播：右上角状态立刻跟上 */
 
     let proxyOk = null;
     if (net.hasProxy() && net.userProxy() !== 'auto') {
@@ -336,32 +441,47 @@
       try {
         const d = (net._gwDiag && (Date.now() - net._gwDiagAt < 120000))
           ? net._gwDiag
-          : await GW.get('/api/diag', {}, 30000);
+          : await GW.get('/api/diag', {}, 20000);
         net._gwDiag = d; net._gwDiagAt = Date.now();
         const tg = d.targets || {};
+        const tiers = {};
         Object.keys(tg).forEach(k => {
           if (!tg[k] || !tg[k].ok) return;
+          tiers[k] = tg[k].via || '';
           targets.forEach(t => {
-            if (t.id === k && !t.ok) { t.ok = true; t.viaGateway = true; t.ms = tg[k].ms; }
+            if (t.id === k && !t.ok) { t.ok = true; t.viaGateway = true; t.via = tg[k].via; t.ms = tg[k].ms; }
           });
         });
+        net._gwTiers = tiers;
+        net._gwEgress = d.egress || '';
         adultOk = adult.filter(r => r.ok).length;
         blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok);
         blockedNames = blocked.map(r => r.label).join('、');
+        /* 「网关靠哪一层打通的」：这里通常写满 doh / relay，
+           文案要照实说「由本地网关打通」，不引导用户去开任何隧道。 */
+        const handled = Object.keys(tiers).filter(k => tiers[k] === 'doh' || tiers[k] === 'relay');
+        const handledText = handled.length
+          ? '（其中 ' + handled.length + ' 个由本地网关打通：' + handled.slice(0, 4).join('、') +
+            (handled.length > 4 ? ' 等' : '') + '）'
+          : '';
         if (adultOk === adult.length && adultOk > 0) {
           verdict = 'ok'; label = '目标可达';
-          detail = '全部目标站点均可连通（其中被墙的部分由本地网关出口打通），无需额外操作。';
+          detail = '全部目标站点均可连通' + (handledText || '（被墙的部分由本地网关出口打通）') +
+            '，无需额外操作。若结果为空，可能是查询词或标签问题。';
         } else if (adultOk > 0) {
           verdict = 'partial'; label = '部分站点受限';
-          detail = adultOk + '/' + adult.length + ' 个目标站点可达，其余（' + blockedNames + '）连接失败。' +
-            '可在「筛选 → 本地网关」点「检测」跑一次网关自检，确认是不是出口的问题。';
+          detail = adultOk + '/' + adult.length + ' 个目标站点可达' + handledText + '，其余（' +
+            blockedNames + '）连网关也打不通 —— 可在「筛选 → 本地网关」点「检测」看网关自检详情，' +
+            '或换一条 CORS 代理出口。';
         }
       } catch (e) { /* 自检失败不影响原本的判定 */ }
     }
 
     net._cache = {
-      ts: Date.now(), verdict, label, detail, targets, blocked,
-      vpnLikely: verdict === 'vpn-needed' || verdict === 'partial',
+      ts: Date.now(), provisional: false, verdict, label, detail, targets, blocked,
+      restrictedLikely: verdict === 'restricted' || verdict === 'partial',
+      gatewayTiers: net._gwTiers || null,
+      gatewayEgress: net._gwEgress || '',
       adultOk, adultTotal: adult.length,
       domesticOk: !!(by.domestic && by.domestic.ok),
       globalOk: !!(by.global && by.global.ok),

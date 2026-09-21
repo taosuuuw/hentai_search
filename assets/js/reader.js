@@ -1,7 +1,9 @@
 /* ==========================================================================
    reader.js — 阶段一 · 在线阅读器
    · 全屏覆盖层（惰性创建）：顶部工具条 + 纵向连续滚动的图片列 + 底部进度条
-   · 三个源：MangaDex（多章）/ nhentai（单章）/ Danbooru（单图）
+   · 支持的源**以 SRC_NAME 为准**（与 tools/gateway.js 的 READER_SOURCES 白名单一一对应：
+     MangaDex / nhentai / Danbooru / 紳士漫畫 / E-Hentai / Hitomi / Pixiv / 拷贝漫画 /
+     禁漫天堂 / porn-comic / LectorManga，一一实现，不再在这里抄一份会过期的清单）
      页地址由本地网关 /api/reader 提前转成 /api/proxy?...，浏览器不撞防盗链
    · 「自动连读」滚到章末自动接上下一章（仍然插一条章节分隔标题），并预取下一章
    · 打开时 Esc 只关阅读器（results.js 的放大卡片 Esc 处理里会先问 isOpen()）
@@ -22,7 +24,8 @@
   const SRC_NAME = {
     mangadex: 'MangaDex', nhentai: 'nhentai', danbooru: 'Danbooru',
     wnacg: '紳士漫畫', ehentai: 'E-Hentai', hitomi: 'Hitomi', pixiv: 'Pixiv',
-    copymanga: '拷贝漫画', jmcomic: '禁漫天堂', porncomic: 'porn-comic'
+    copymanga: '拷贝漫画', jmcomic: '禁漫天堂', porncomic: 'porn-comic',
+    lectormanga: 'LectorManga'
   };
   const HOMEPAGE = {
     mangadex: 'https://mangadex.org/',
@@ -34,7 +37,8 @@
     pixiv: 'https://www.pixiv.net/',
     copymanga: 'https://www.copy20.com/',
     jmcomic: 'https://18comic.vip/',
-    porncomic: 'https://porn-comic.com/'
+    porncomic: 'https://porn-comic.com/',
+    lectormanga: 'https://lector-mangas.lat/'
   };
   const AUTO_DELAY = 900;      // 滚到章末后等这么久再自动接下一章（给用户一点反悔时间）
   /* 网关没在跑 / 还是旧进程时统一用这句「能直接照做」的中文提示：不只是弹一个
@@ -283,8 +287,15 @@
        pointer 事件用来区分「点一下」和「按住拖动平移图片」 */
     el.scroll.addEventListener('wheel', onWheel, { passive: false });
     el.scroll.addEventListener('pointerdown', onTapStart, { passive: true });
-    el.scroll.addEventListener('pointerup', onTapEnd, { passive: true });
-    el.scroll.addEventListener('pointercancel', onTapCancel, { passive: true });
+    /* 拖动平移：pointermove / pointerup 挂在 **window** 上（不是只挂滚动容器）。
+       原因见 panMove 的注释：指针拖快一点就会移出容器，只挂容器会「拖两下就断」。
+       必须非 passive —— 拖动成立时要 preventDefault，免得选中文字 / 触发图片原生拖拽。 */
+    window.addEventListener('pointermove', onTapMove, { passive: false });
+    window.addEventListener('pointerup', onTapEnd);
+    window.addEventListener('pointercancel', onTapCancel);
+    /* 抬起/取消统一在这里收尾（window 上的监听在元素监听之后触发，不影响 onTapEnd 读 panMoved） */
+    window.addEventListener('pointerup', panEnd, true);
+    window.addEventListener('pointercancel', panEnd, true);
     if ('IntersectionObserver' in window) {
       io = new IntersectionObserver(entries => {
         if (entries.some(e => e.isIntersecting)) maybeContinue();
@@ -434,9 +445,17 @@
     el.chapBtn.setAttribute('aria-expanded', want ? 'true' : 'false');
     if (want) {
       paintChapActive();
-      /* 打开时把当前话滚进视野（100+ 话时不做这一步等于每次都要自己找） */
+      /* 打开时把当前话滚进视野（100+ 话时不做这一步等于每次都要自己找）。
+         ★只动列表自己的 scrollTop，不用 scrollIntoView★（用户报「点章节按钮图片会稍微上滑」）：
+         scrollIntoView 会把**所有**可滚祖先都滚一遍，而页面流的可滚祖先是阅读区本身
+         —— .hs-rd-pg / .hs-rd-col 现在都是 overflow:auto（见 paintZoom），于是这一下会把
+         正在看的漫画往上挪一截。自己算偏移只影响列表这一个盒子，阅读区位置一个像素都不动。 */
       const cur = u.$('.hs-rd-chapitem.is-cur', el.chapList);
-      if (cur && cur.scrollIntoView) { try { cur.scrollIntoView({ block: 'center' }); } catch (e) {} }
+      if (cur) {
+        const box = el.chapList;
+        const top = cur.offsetTop - (box.clientHeight - cur.offsetHeight) / 2;
+        box.scrollTop = Math.max(0, top);
+      }
     }
   }
 
@@ -660,15 +679,121 @@
     return zoomWriteItems(items);
   }
 
+  /* ======================================================================
+     多章节作品的阅读进度：读到第几章、章内第几页
+     ----------------------------------------------------------------------
+     键 hs.rd.prog.v1   结构 { v:1, items:{ "<source>:<id>": {
+       ch: 章节稳定 id（可为 ''）, ci: 章节下标, cn: 总章数,
+       nm: 章节名, p: 章内 0 基页下标, pn: 该章页数, t: 写入时间
+     } } }
+     · 主键口径与缩放完全一致（reuse zoomKeyOf）：同一作品的各章共用一条记录。
+     · **章节优先按稳定 id 记**，下标只当兜底：网关侧的章节列表可能被截断 / 重新编号
+       （MD_MAX_CHAPTERS / JM_MAX_CHAPTERS 都会截），按 id 找比按下标夹取可靠。
+     · 读不到 / JSON 坏 / 无痕模式写不进去 → 静默降级为「没有进度」，绝不抛。
+     ====================================================================== */
+  const PROG_KEY = 'hs.rd.prog.v1';
+  const PROG_VER = 1;
+  const PROG_MAX_ITEMS = 600;
+  const PROG_TTL = 180 * 864e5;      // 半年没碰过的记录不再续读（还会被上限淘汰）
+
+  /** 通用：读出某个「{v, items}」型 localStorage 键的 items 表 */
+  function lsItemsRead(key) {
+    const raw = rdLsGet(key);
+    if (!raw) return {};
+    let db = null;
+    try { db = JSON.parse(raw); } catch (e) { return {}; }
+    if (!db || typeof db !== 'object' || Array.isArray(db)) return {};
+    const items = db.items;
+    if (!items || typeof items !== 'object' || Array.isArray(items)) return {};
+    return items;
+  }
+
+  /** 通用：按 t 升序（最旧在前），t 缺失当 0；同 t 按键名定序，结果可复现 */
+  function lsItemsOldest(items) {
+    return Object.keys(items).map(k => {
+      const r = items[k];
+      const t = (r && typeof r === 'object') ? Number(r.t) : 0;
+      return { k: k, t: isFinite(t) ? t : 0 };
+    }).sort((a, b) => (a.t - b.t) || (a.k < b.k ? -1 : (a.k > b.k ? 1 : 0)));
+  }
+
+  /** 通用：写回 items 表；配额满就丢掉最旧的一批再试一次 */
+  function lsItemsWrite(key, ver, max, items) {
+    const pack = () => JSON.stringify({ v: ver, items: items });
+    if (rdLsSet(key, pack())) return true;
+    const rows = lsItemsOldest(items);
+    const drop = Math.max(1, Math.floor(rows.length / 10));
+    if (rows.length - drop < 1) return false;
+    rows.slice(0, drop).forEach(r => { delete items[r.k]; });
+    return rdLsSet(key, pack());
+  }
+
+  /** 读某个作品的进度：没有 / 过期 / 结构坏 → null */
+  function progGet(item) {
+    const k = zoomKeyOf(item);
+    if (!k) return null;
+    const r = lsItemsRead(PROG_KEY)[k];
+    if (!r || typeof r !== 'object') return null;
+    const t = Number(r.t) || 0;
+    if (t && Date.now() - t > PROG_TTL) return null;
+    const ci = parseInt(r.ci, 10);
+    return {
+      key: k,
+      ch: String(r.ch == null ? '' : r.ch),
+      ci: isFinite(ci) && ci >= 0 ? ci : 0,
+      cn: Math.max(0, parseInt(r.cn, 10) || 0),
+      name: String(r.nm || ''),
+      page: Math.max(0, parseInt(r.p, 10) || 0),
+      pages: Math.max(0, parseInt(r.pn, 10) || 0),
+      ts: t
+    };
+  }
+  /** 对外只读口：recent.js 用它显示「看到第 N 话（最新 / 非最新）」 */
+  RD.progressOf = progGet;
+
+  let progTimer = 0;
+
+  /** 记下当前进度。force=false 走 800ms 防抖（滚动时每帧都会调，绝不能每帧写盘） */
+  function progSave(force) {
+    if (!S) return;
+    if (!force) {
+      if (progTimer) return;
+      progTimer = setTimeout(() => { progTimer = 0; if (S) progSave(true); }, 800);
+      return;
+    }
+    if (progTimer) { clearTimeout(progTimer); progTimer = 0; }
+    const key = S.zoomKey;                 /* 与缩放同一个作品主键（RD.open 时算好） */
+    if (!key || !S.chapters.length) return;
+    const ci = u.clamp(visibleChapter(), 0, Math.max(0, S.chapters.length - 1));
+    const ch = S.chapters[ci] || {};
+    const items = lsItemsRead(PROG_KEY);
+    items[key] = {
+      ch: String(ch.id || ''),
+      ci: ci,
+      cn: S.chapters.length,
+      nm: String(ch.name || ''),
+      p: Math.max(0, currentIndex()),
+      pn: (S.pagesByCh[ci] || []).length || 0,
+      t: Date.now()
+    };
+    lsItemsWrite(PROG_KEY, PROG_VER, PROG_MAX_ITEMS, items);
+  }
+
   /** 把倍数画到 CSS 变量上：图片尺寸由变量算出来，页码 / 章末几何完全不受影响 */
   function paintZoom() {
     if (!root || !S) return;
     const z = S.zoom;
     root.style.setProperty('--hs-rd-zoom', String(z));
-    /* 放大后在当前页内部可以滚（看图不算翻页）；100% 时收起滚动，避免没必要的滚动条 */
-    const sc = z > 1.001 ? 'auto' : 'hidden';
-    if (el.scroll) el.scroll.style.overflow = isH() ? 'hidden' : sc;
-    if (el.pages) el.pages.style.overflow = sc;
+    /* 溢出策略：★100% 时也保留 auto★（与「按住拖动不限放大态」配套，见 panStart）——
+       否则图比一屏大时也没有滚动量，拖动就永远没有位移。
+       代价只是「图比容器大」时可能出现细滚动条（scrollbar-gutter: stable 已在 CSS 里，
+       出现/消失不会让图片尺寸抖动）；图比容器小时盒子里没有可滚余量，滚动条不会出现。 */
+    if (el.scroll) el.scroll.style.overflow = isH() ? 'hidden' : 'auto';
+    if (el.pages) el.pages.style.overflow = 'auto';
+    /* ★放大态标记★：CSS 靠它给出 cursor:grabbing 与 touch-action:none。
+       touch-action:none 只在放大后加 —— 100% 时触屏还要靠浏览器原生滚动翻页，
+       那时禁掉 touch-action 会把整页滚不动。 */
+    root.classList.toggle('is-zoom', z > 1.001);
     if (el.zoomVal) el.zoomVal.textContent = Math.round(z * 100) + '%';
     if (el.zoomOut) el.zoomOut.disabled = z <= ZOOM_MIN + 1e-6;
     if (el.zoomIn) el.zoomIn.disabled = z >= ZOOM_MAX - 1e-6;
@@ -745,8 +870,10 @@
          缩到两条上限之内，各页渲染宽度就不一样（和图片那条规则是同一个坑）。 */
       '.hs-rd-img canvas{display:block;width:100%;height:auto;margin:0 auto;' +
       'max-width:none;max-height:none;}' +
-      '.hs-rd[data-dir="h"] .hs-rd-img canvas{width:calc(100% * var(--hs-rd-zoom,1));' +
-      'max-width:none;height:auto;max-height:calc(100% * var(--hs-rd-zoom,1));object-fit:contain;}';
+      /* 横向：盒子（.hs-rd-img）已经按倍数长大，canvas 只要铺满盒子就行。
+         flex:none 同样必须有 —— 否则 flex 收缩会把放大结果缩回去。 */
+      '.hs-rd[data-dir="h"] .hs-rd-img canvas{width:100%;height:100%;flex:none;' +
+      'max-width:none;max-height:none;object-fit:contain;}';
     (document.head || document.documentElement).appendChild(st);
   }
 
@@ -817,7 +944,14 @@
     /* loading="eager"：加载范围已经由 pumpNear() / pumpH() 控住，不需要浏览器再猜；
        而且隐藏文档里 Chrome 会**推迟 loading="lazy" 图片的 onload**（请求照发、200 照记，
        就是不绘制），改成 eager 就走不到那条路径上。 */
-    const img = u.el('img', { alt: '', loading: 'eager', decoding: 'async', referrerpolicy: 'no-referrer' });
+    /* draggable="false"：图片默认可拖拽，按住一拖就会变成 HTML5 原生拖放，
+       期间 pointermove / pointerup **根本不会派发** —— 表现就是「按住拖不动」。
+       CSS 里的 -webkit-user-drag:none 只管 WebKit，这里再显式关掉原生死拽。
+       注意不影响我们自己的「按住拖动平移」：那是 pointer 事件，与原生拖放无关。 */
+    const img = u.el('img', {
+      alt: '', loading: 'eager', decoding: 'async', referrerpolicy: 'no-referrer',
+      draggable: 'false'
+    });
     img.addEventListener('load', () => {
       /* 禁漫：先按站点算法把分块还原到 canvas，再标 is-ok（图片本身已经加载完了）。
          还原失败就把失败标在盒子上并按原图显示 —— 不静默乱画，也不留白。 */
@@ -914,6 +1048,8 @@
   async function jumpChapter(idx) {
     if (!S || S.busy) return;
     if (idx < 0 || idx >= S.chapters.length) return;
+    /* 已经是这一章：不重画、不复位滚动（下拉里点到当前话时位置必须原地不动） */
+    if (idx === S.lastRendered) return;
     S.busy = true;
     try {
       let pages = S.pagesByCh[idx];
@@ -936,6 +1072,7 @@
       if (isH()) paintHPage();            // 横向：只显示出第 1 页（paintHPage 里也会补 pumpH）
       watchFoot();
       prefetchNext();
+      progSave(true);                     // 换章 = 一次明确的进度变更，立刻落盘
     } catch (e) {
       HS.toast('打开失败：' + ((e && e.message) || e), 'err', 4200);
     } finally {
@@ -1021,6 +1158,7 @@
       const idx = currentIndex();
       schedulePump();                     // 滚过一屏就重算加载窗口（rAF 合并，滚动时不抖）
       paintProg(idx + 1);
+      progSave(false);                    // 进度：800ms 防抖后落盘（每帧写盘会把主线程拖死）
       /* 横向：翻到最后一页就等于纵向「滚到底」——章末条、自动连读都从这儿触发 */
       if (isH()) {
         syncFoot();
@@ -1063,10 +1201,18 @@
     }
     paintProg(idx + 1);
     syncFoot();
+    progSave(false);                       // 明确跳页：记一次进度（防抖）
   }
 
-  /** 横向：只留当前页（其余 display:none）、把页内滚动复位到左上角，并更新计数器 / 章末判定。
-      hIdx = -1 表示「这一批页还没定位过」→ 默认落在第 1 页（仍然会画出 is-cur） */
+  /** 横向：只留当前页（其余 display:none），并更新计数器 / 章末判定。
+      hIdx = -1 表示「这一批页还没定位过」→ 默认落在第 1 页（仍然会画出 is-cur）
+
+      ★页内平移位置按页记忆★（放大后左右拖出来的偏移）
+      此前每换一页都把位置清零，于是「拖到右下角 → 翻下一页 → 翻回来」会回到左上角，
+      用户看到的是「翻页后不在刚才拖动后的位置」。
+      这里在切走时把这一页的 scrollLeft/scrollTop 记在页盒自己身上（box._sx/_sy），
+      切回来时原样恢复；没拖过的页是 0，行为与改动前一致。
+      刻意不落盘：这是「这次阅读时的看图位置」，不是进度，刷新后回到左上角才符合预期。 */
   function paintHPage() {
     if (!root || !isH()) return;
     const list = pageEls();
@@ -1074,9 +1220,17 @@
     if (!(S.hIdx >= 0)) S.hIdx = 0;
     const i = u.clamp(S.hIdx, 0, list.length - 1);
     S.hIdx = i;
+    /* 先把「正要离开的那一页」的位置记下来，再切类名 */
+    const prev = u.$('.hs-rd-pg.is-cur', el.pages);
+    if (prev) { prev._sx = prev.scrollLeft; prev._sy = prev.scrollTop; }
     for (let n = 0; n < list.length; n++) list[n].classList.toggle('is-cur', n === i);
-    /* 放大后页内可以滚 / 拖：换页就回到这一页的左上角 */
     if (el.pages) { el.pages.scrollTop = 0; el.pages.scrollLeft = 0; }
+    /* 恢复这一页上次的位置（第一次看 = 左上角） */
+    const box = list[i];
+    if (box && box !== prev) {
+      box.scrollLeft = box._sx || 0;
+      box.scrollTop = box._sy || 0;
+    }
     pumpH();                              // 一次只有一页在视口：当前页必须**立刻**开始加载
     paintProg(i + 1);
     syncFoot();
@@ -1109,12 +1263,107 @@
   const TAP_SLOP = 12;
   let tapFrom = null;
 
+  /* ---------------- 按住拖动 = 平移图片（放大看图的主要手段） ----------------
+     为什么是「改滚动偏移」而不是 CSS transform：
+       本文件的缩放（paintZoom）改的是**尺寸变量** --hs-rd-zoom，放大后超出的那部分
+       本来就已经在滚动盒子里（纵向 X 在 .hs-rd-col，纵向 Y 在覆盖层 .hs-rd；
+       横向在 .hs-rd-pg.is-cur，样式里给了 overflow:auto + scrollbar-gutter:stable）。
+       用 transform 平移会把 getBoundingClientRect().top 一起挪走，直接破坏
+       currentIndex() / visibleChapter() 的翻页判定与 goToIndex() 的 scrollIntoView，
+       属于高风险改动。所以这里只把指针位移翻译成 scrollLeft / scrollTop。
+     行为约定：
+       · 纵向模式：按住拖动一律可以上下拖（等于拖动手势滚动），左右只在放大后才有得拖；
+       · 横向模式：只有放大后才允许拖（没放大时保留「点一下翻左右页」的既有语义）；
+       · 位移小于 PAN_SLOP 时不算拖动 —— 「点一下翻页」「点重试按钮」完全不受影响；
+       · 拖动一旦成立就 setPointerCapture，指针滑出图外也不会断。 */
+  const PAN_SLOP = 4;
+  let pan = null;
+  /* 本次「按下 → 抬起」序列是否已经构成一次拖动。
+     单独用一个标志（而不是读 pan.moved）的原因：pointerup 在 window 上先把 pan 清掉，
+     el.scroll 上那个「点一下翻页」的处理器可能已经看不到 pan 了 —— 用标志就不会漏判。 */
+  let panMoved = false;
+
+  function panStart(e) {
+    pan = null;
+    panMoved = false;
+    if (!open || !S || e.button > 0) return;
+    /* 工具条按钮 / 「加载失败·重试」/ 章节下拉：不抢它们的指针。
+       ★刻意不排除 <a> 和 <img>★ —— 阅读页里的图片就是 <img>，
+       排除它等于这个功能在鼠标下永远不触发。 */
+    if (e.target && e.target.closest &&
+      e.target.closest('button, .hs-rd-retry, .hs-rd-bar, .hs-rd-chappick')) return;
+    /* ★按住拖动不再要求已放大★（用户要求：任意倍率都能按住移动图片）
+       各模式下的实际位移（改动后）：
+         · 横向单页：写当前页盒子的 scrollLeft/scrollTop —— 100% 时页盒子按 contain 显示，
+           只要图比一屏大就有真实的横纵滚动量；图比一屏小则没有可滚的余量，位移自然是 0。
+         · 纵向连续：写 vRef() 的 scrollTop / el.pages 的 scrollLeft —— 纵向本来就在滚，
+           按住拖动 = 直接拖滚动位置（100% 下同样成立，超出部分能拖着看）。
+       触屏语义保持原样：touch-action:none 仍然只在 .is-zoom（放大态）下加，
+       所以 100% 时单指拖动依旧交给浏览器原生滚动翻页，不会被这里抢走。 */
+    if (isH()) {
+      const list = pageEls();
+      const i = u.clamp(S.hIdx >= 0 ? S.hIdx : 0, 0, Math.max(0, list.length - 1));
+      let box = list[i];
+      /* 兜底：hIdx 万一和真实 .is-cur 页不一致，就用真正显示着的那一页，
+         绝不把位移写到一个 display:none 的页上（那样表现就是「拖不动」）。 */
+      const cur = u.$('.hs-rd-pg.is-cur', el.pages);
+      if (cur && (!box || !box.classList.contains('is-cur'))) box = cur;
+      if (!box) return;
+      pan = { id: e.pointerId, x: e.clientX, y: e.clientY,
+        kind: 'h', box: box, l: box.scrollLeft, t: box.scrollTop };
+    } else {
+      const yBox = vRef() || root;
+      if (!yBox) return;
+      pan = { id: e.pointerId, x: e.clientX, y: e.clientY,
+        kind: 'v', yBox: yBox, l: (el.pages ? el.pages.scrollLeft : 0), t: yBox.scrollTop };
+    }
+  }
+
+  /** 指针移动：★挂在 window 上★，而不是只挂 .hs-rd-scroll。
+      只挂滚动容器的话，指针一旦移到图外（拖快一点就会）事件就断了，
+      用户看到的就是「拖两下就不动了」。window 上收事件 + pointerId 校验最稳。 */
+  function panMove(e) {
+    if (!pan || e.pointerId !== pan.id) return;
+    const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+    if (!panMoved) {
+      if (Math.abs(dx) < PAN_SLOP && Math.abs(dy) < PAN_SLOP) return;
+      panMoved = true;
+      /* 拖动一旦成立就捕获指针：即使滑出窗口也不会丢事件。
+         （刻意不在 pointerdown 就捕获：那会让 click 的 target 变成容器，
+           页内「加载失败·重试」这类按钮就点不动了。） */
+      const host = el.scroll;
+      try { if (host && host.setPointerCapture) host.setPointerCapture(e.pointerId); } catch (err) {}
+    }
+    if (e.cancelable) e.preventDefault();      /* 拖动中不要选中文字 / 触发图片原生拖拽 */
+    if (pan.kind === 'h') {
+      pan.box.scrollLeft = pan.l - dx;
+      pan.box.scrollTop = pan.t - dy;
+    } else {
+      if (el.pages) el.pages.scrollLeft = pan.l - dx;
+      pan.yBox.scrollTop = pan.t - dy;
+    }
+  }
+
+  /** 指针抬起 / 取消：只清 pan，panMoved 留给 onTapEnd 判「这是拖动不是点击」 */
+  function panEnd() {
+    if (!pan) return;
+    const host = el.scroll;
+    try { if (host && host.releasePointerCapture && host.hasPointerCapture &&
+      host.hasPointerCapture(pan.id)) host.releasePointerCapture(pan.id); } catch (e) {}
+    pan = null;
+  }
+
   function onTapStart(e) {
+    panStart(e);
     if (!open || !isH() || e.button > 0) { tapFrom = null; return; }
     tapFrom = { x: e.clientX, y: e.clientY, id: e.pointerId };
   }
 
+  function onTapMove(e) { panMove(e); }
+
   function onTapEnd(e) {
+    /* 这一下是「按住拖动」而不是「点一下」：不翻页。panMoved 在下一次 pointerdown 才复位。 */
+    if (panMoved) { tapFrom = null; return; }
     if (!open || !isH() || !tapFrom) { tapFrom = null; return; }
     const from = tapFrom;
     tapFrom = null;
@@ -1127,7 +1376,7 @@
     jumpTo(x < w / 2 ? -1 : 1);
   }
 
-  function onTapCancel() { tapFrom = null; }
+  function onTapCancel() { tapFrom = null; panEnd(); }
 
   function jumpEdge(last) {
     const list = pageEls();
@@ -1238,7 +1487,9 @@
       /* 缩放：**按作品**记忆。这个作品没记过（或记录坏了）就是 100%（NEW_WORK_ZOOM），
          绝不会继承上一个作品 / 老版本那个全局值；主键在打开时算好，改倍率就写这个键。 */
       zoom: zoomGet(item),
-      zoomKey: zoomKeyOf(item)
+      zoomKey: zoomKeyOf(item),
+      /* 上次读到哪（章节 + 页）；章节列表拿到之后在下面解析成真实的章下标 */
+      resume: progGet(item)
     };
     open = true;
     root.hidden = false;
@@ -1295,7 +1546,36 @@
       S.fetched[0] = true;
       S.lastRendered = 0;
       S.pageTotal = 0;
-      renderPages(0, S.pagesByCh[0]);
+
+      /* ★续读：把「上次读到第几章第几页」解析成这一批的真实章下标★
+         章节**优先按稳定 id 找**（列表可能被网关截断 / 重新编号），找不到再按下标夹取。
+         第 0 章已经在上面取回来了，只有 idx > 0 才需要多发一次 /api/reader。 */
+      let startCh = 0, startPage = 0;
+      if (S.resume && S.chapters.length) {
+        let idx = -1;
+        if (S.resume.ch) idx = S.chapters.findIndex(c => String(c.id) === S.resume.ch);
+        if (idx < 0) idx = u.clamp(S.resume.ci || 0, 0, S.chapters.length - 1);
+        if (idx > 0) {
+          try {
+            const j2 = await fetchChapter(S.chapters[idx].id);
+            S.pagesByCh[idx] = j2.pages || [];
+            S.fetched[idx] = true;
+            startCh = idx;
+          } catch (e) {
+            /* 那一章取不回来（被删 / 限流）：不打断阅读，老老实实从第 1 章开头开始 */
+            startCh = 0;
+            HS.toast('上次读到的那一章取不回来了，已从第 1 章打开', 'warn', 3600);
+          }
+        } else {
+          startCh = idx;
+        }
+        /* 只有「真的落在记录里的那一章」时才恢复页号：
+           章取不回来而降级到第 0 章时，那个页号属于另一章，照搬会落到莫名其妙的位置 */
+        startPage = (startCh === idx) ? (S.resume.page || 0) : 0;
+      }
+      const firstPages = S.pagesByCh[startCh] || S.pagesByCh[0] || [];
+      S.lastRendered = startCh;
+      renderPages(startCh, firstPages);
       root.classList.add('is-ready');
       paintBar(); paintFoot(); paintProg(1);
       /* 首屏按需：只把「当前页 ± 几页」真正挂上 src，后面的等滚动到附近再说 */
@@ -1304,6 +1584,14 @@
          否则打开时整列都是 display:none（看着是空白），要按一次方向键才出图。
          与 jumpChapter() 里那一行同款（本机实测：纵向打开正常，横向打开原本空白）。 */
       if (isH()) paintHPage();
+      /* 定位到章内那一页。页盒的宽高比由 --hs-rd-ar 占位撑住，所以图片还没下载完
+         scrollIntoView 也能落对位置（纵向走 scrollIntoView，横向走 paintHPage）。 */
+      const want = u.clamp(startPage, 0, Math.max(0, firstPages.length - 1));
+      if (want > 0 || startCh > 0) {
+        goToIndex(want);
+        HS.toast('已定位到上次读到的地方：' + chapLabel(startCh) +
+          (want > 0 ? ' 第 ' + (want + 1) + ' 页' : ''), 'info', 3000);
+      }
       watchFoot();
       prefetchNext();
     } catch (e) {
@@ -1331,6 +1619,10 @@
     /* 退出阅读器 = 直接回到"小卡片"状态：把放大卡片也一起收掉，不停在放大态 */
     try { if (HS.results && HS.results.closeCard) HS.results.closeCard(); } catch (e) {}
     if (!open) return;
+    /* ★关闭 = 最后一次可靠的进度落盘时机★
+       S 马上就会被置空（下一行往下），而且此时章节 / 页码 / 页数都还是完整的。
+       放在最前面写，避免后面任何一步出问题把这次保存吞掉。 */
+    try { progSave(true); } catch (e) {}
     open = false;
     clearTimeout(autoTimer);
     autoTimer = null;

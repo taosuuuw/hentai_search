@@ -46,10 +46,13 @@ try {
         <span id="panic-indicator-state" class="hs-chip-state">OFF</span>
       </button>
 
-      <button id="vpn-chip" class="hs-chip" type="button" title="重新检测网络环境">
-        <span id="vpn-chip-dot" class="hs-chip-dot"></span>
-        <span id="vpn-chip-text">网络检测中…</span>
+      <button id="net-chip" class="hs-chip" type="button" title="重新检测网络环境">
+        <span id="net-chip-dot" class="hs-chip-dot"></span>
+        <span id="net-chip-text">网络检测中…</span>
       </button>
+
+      <!-- 最近浏览：图标 + 条数角标由 recent.js 注入；点开是本机浏览足迹（时间倒序） -->
+      <button id="recent-btn" class="hs-icon-btn" type="button" title="最近浏览" aria-label="最近浏览"></button>
 
       <button id="theme-toggle" class="hs-icon-btn" type="button" title="切换深色/浅色模式" aria-label="切换深色/浅色模式"></button>
       <button id="settings-btn" class="hs-icon-btn" type="button" title="设置" aria-label="设置"></button>
@@ -57,20 +60,21 @@ try {
   </header>
 
   <main class="hs-main">
-    <!-- VPN / 网络提醒：放在搜索区之前，避免把结果推离搜索框 -->
-    <section id="vpn-banner" class="hs-banner hs-banner-slim" hidden role="status">
+    <!-- 网络状态提醒：只在「检测到目标站点不可达」时出现，且**只在检索开始之前**更新
+         （检索主流程一律读缓存，绝不在检索中途发探测请求） -->
+    <section id="net-banner" class="hs-banner hs-banner-slim" hidden role="status">
       <div class="hs-banner-ico" aria-hidden="true"></div>
       <div class="hs-banner-body">
-        <b id="vpn-banner-title">可能需要在浏览器之外开启 VPN</b>
-        <p id="vpn-banner-desc"></p>
-        <ul id="vpn-banner-list" class="hs-banner-list"></ul>
+        <b id="net-banner-title">部分目标站点当前不可达</b>
+        <p id="net-banner-desc"></p>
+        <ul id="net-banner-list" class="hs-banner-list"></ul>
       </div>
       <div class="hs-banner-actions">
-        <button id="vpn-recheck" class="hs-btn hs-btn-primary" type="button">我已开启 VPN，重新检测</button>
-        <button id="vpn-proxy-enable" class="hs-btn hs-btn-ghost" type="button" hidden>改用代理绕过</button>
-        <button id="vpn-auto-proxy" class="hs-btn hs-btn-ghost" type="button">自动挑选可用代理</button>
-        <button id="vpn-continue" class="hs-btn hs-btn-ghost" type="button">仍然搜索</button>
-        <button id="vpn-dismiss" class="hs-btn hs-btn-text" type="button">忽略</button>
+        <button id="net-recheck" class="hs-btn hs-btn-primary" type="button">重新检测网络</button>
+        <button id="net-proxy-enable" class="hs-btn hs-btn-ghost" type="button" hidden>改用公共 CORS 代理</button>
+        <button id="net-auto-proxy" class="hs-btn hs-btn-ghost" type="button">自动挑选可用代理</button>
+        <button id="net-continue" class="hs-btn hs-btn-ghost" type="button">仍然搜索</button>
+        <button id="net-dismiss" class="hs-btn hs-btn-text" type="button">忽略</button>
       </div>
     </section>
 
@@ -118,6 +122,17 @@ try {
             <div>
               <label class="hs-fl">成人向</label>
               <div id="f-adult" class="hs-seg" data-key="adult" role="group" aria-label="成人向筛选"></div>
+            </div>
+          </div>
+
+          <div class="hs-fg hs-fg-2">
+            <div>
+              <label class="hs-fl">堪美 / 女性向 <small>BL · 乙女 · 男娘 · 女装</small></label>
+              <div id="f-fem" class="hs-seg" data-key="fem" role="group" aria-label="堪美 / 女性向筛选"></div>
+            </div>
+            <div>
+              <label class="hs-fl">3D <small>3DCG · MMD · Koikatsu …</small></label>
+              <div id="f-3d" class="hs-seg" data-key="threeD" role="group" aria-label="3D 筛选"></div>
             </div>
           </div>
 
@@ -249,6 +264,12 @@ try {
       </div>
     </section>
 
+    <!-- 联想泡泡槽位：位于「搜索框」与「思维链」之间的流内空节点。
+         suggest.js 把 .hs-sg-layer 建在这里 —— 泡泡是普通流内块，
+         排布顺序天生就是 搜索框 → 联想泡泡 → 思维链 → 结果，
+         不再依赖绝对定位去躲让思维链。空着的时候高度为 0，不占位。 -->
+    <div id="sg-slot" class="hs-sg-slot" aria-live="polite"></div>
+
     <!-- 思维链：仅检索时出现；紧贴搜索框底部，默认折叠成一行清晰文字 -->
     <section id="chain-panel" class="hs-chain" hidden data-state="collapsed">
       <button class="hs-chain-head" id="chain-toggle" type="button" aria-expanded="false" aria-controls="chain-body">
@@ -332,6 +353,9 @@ try {
 <script src="assets/dict/core.js"></script>
 <script src="assets/js/dict-hint.js"></script>
 <script src="assets/js/suggest.js"></script>
+<!-- 跨语言检索串扩展：中文关键词 → 英/日/西/法候选串。纯旁路，
+     任何失败都只是「少几条候选」，绝不影响检索本身（见文件头契约）。 -->
+<script src="assets/js/xlate.js"></script>
 <script src="assets/js/net.js"></script>
 <script src="assets/js/sources.js"></script>
 <script src="assets/js/filters.js"></script>
@@ -340,7 +364,13 @@ try {
 <script src="assets/js/reader.js"></script>
 <script src="assets/js/panic.js"></script>
 <script src="assets/js/fav.js"></script>
+<!-- 最近浏览：包装 HS.results.openCard / HS.reader.open 记账，所以排在它们之后 -->
+<script src="assets/js/recent.js"></script>
 <script src="assets/js/settings.js"></script>
+<!-- 封面加载诊断面板：只在 ?coverdiag=1 时生效，平时从第一行 return（零影响）。
+     面板会数「当前结果区有多少张卡片真的把封面取回来了」，用来验证
+     「随机关键词刷新 20 次以上封面都能加载」这条指标。 -->
+<script src="assets/js/dev/coverdiag.js"></script>
 <script src="assets/js/app.js"></script>
 </body>
 </html>

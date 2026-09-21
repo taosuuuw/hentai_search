@@ -20,6 +20,10 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
+const tls = require('tls');
+const zlib = require('zlib');
+const dnsNative = require('dns');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -91,7 +95,7 @@ const PORT = parseInt(argOf('port') || process.env.PORT || '8788', 10);
 const ROOT = path.resolve(argOf('root') || path.join(__dirname, '..'));
 const UA_CHROME = 'Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ1A.230305.002; wv) ' +
   'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.0.0 Mobile Safari/537.36';
-const GW_VERSION = '1.1.1';
+const GW_VERSION = '1.3.0';
 
 const state = {
   picacgToken: String(process.env.PICACG_TOKEN || '').trim(),
@@ -171,32 +175,699 @@ function withTimeout(ms) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-/** 统一的出站请求（Node 18+ 自带 fetch / undici） */
+/* ==========================================================================
+   出口 / 解析 / 兜底 —— 「无 VPN 也要能用」的三层补偿
+   --------------------------------------------------------------------------
+   tools/netprobe.js 在本机无 VPN 环境下的实测（这是设计的全部依据）：
+
+   ① **真正的元凶是出口被粘死，不是站点被墙**：网关启动时若探测到本地代理，
+      就把 HTTPS_PROXY 写进环境变量重启自己，此后**再不重判**。VPN 一关，
+      每一次请求都先撞那个已经没人监听的端口 —— 日志里是 ms=5 的 fetch failed，
+      连本来直连就通的禁漫 APP 接口（www.cdnbea.net）/ 拷贝漫画 API
+      （api.copy2000.online）/ 绅士镜像（www.wn03.ru）也一起被废掉。
+   ② 紳士漫畫（www.wnacg.com）与 hitomi.la 是**纯 DNS 污染**：系统 DNS 给假 IP，
+      带 SNI 直连真 IP 就 200。而且解析器会互相打脸 —— 实测 hitomi.la：
+      阿里 DNS 给 202.160.128.14（假）、腾讯 DoH 给 185.165.169.231（真，✓200）。
+      所以 DoH 必须**多解析器并取候选，再用「能不能带 SNI 连上」验真**。
+   ③ nhentai / E-Hentai / danbooru / kemono / i.pximg.net 直连彻底不通（SNI 阻断），
+      但 Cloudflare 上的中继在境内直连可达，能把这些站的内容带回来：
+         · api.allorigins.win/raw?url=…  文字 / JSON / 图片都行（实测 nhentai API 真回 JSON、
+           E-Hentai favicon 回 image/x-icon）—— 会限流，所以只当最后手段且带冷却
+         · i0.wp.com/<host>/<path>       图片专用（实测 nhentai 缩略图 → 200 image/jpeg 112KB）
+         · wsrv.nl / images.weserv.nl    **不可用**（实测 400 Domain or TLD blocked by policy）
+         · corsproxy.io 401 / codetabs SNI 阻断 / thingproxy 死 / isomorphic 403
+
+   三层按顺序生效，任一层成功即返回；每台主机记住「哪一层有效」（hostPlan，10 分钟），
+   所以只有第一次付探测成本：
+     ① 原路（全局 fetch + 启动时探测到的代理）—— **有 VPN 时走的就是这一层，行为一字未改**
+     ② 直连强化：DoH 多解析器并取 → 带 SNI 逐个验真 → 钉住可用 IP，用 node:https 直连
+     ③ 中继：境内可达的 Cloudflare 中继代取（仅 GET、无自定义签名头时才允许）
+   ========================================================================== */
+
+/* ------------------------------ 统一响应对象 ------------------------------ */
+function makeRes(status, rawHeaders, buf) {
+  const h = {};
+  Object.keys(rawHeaders || {}).forEach(k => { h[String(k).toLowerCase()] = rawHeaders[k]; });
+  return {
+    status: status,
+    ok: status >= 200 && status < 300,
+    headers: {
+      raw: h,
+      get: n => {
+        const v = h[String(n).toLowerCase()];
+        return Array.isArray(v) ? v.join(', ') : (v == null ? null : String(v));
+      }
+    },
+    buf: buf,
+    text: () => buf.toString('utf8'),
+    json: () => JSON.parse(buf.toString('utf8'))
+  };
+}
+
+/* ------------------------------ ① IP 钉选（DoH + 验真） ------------------------------ */
+/* 解析器会互相打脸，所以「并取候选」而不是「信第一个」 */
+const DOH_SERVERS = [
+  { id: 'dnspod', url: 'https://doh.pub/dns-query' },
+  { id: 'alidns', url: 'https://dns.alidns.com/resolve' },
+  { id: 'cloudflare', url: 'https://cloudflare-dns.com/dns-query' },
+  { id: 'quad9', url: 'https://dns.quad9.net:5053/dns-query' }
+];
+const DNS_OK_TTL = 5 * 60e3;
+const DNS_BAD_TTL = 60e3;
+const PIN_TTL = 10 * 60e3;
+const dnsCache = new Map();         // host -> { at, ttl, ips:[{ip,src}] }
+const pinCache = new Map();         // host -> { ip, src, at, ttl }
+const hostPlan = new Map();         // host -> { mode, at, ttl }
+const PLAN_TTL = 10 * 60e3;
+
+const stripHost = u => String(u || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+
+/** 钉选表的 lookup：命中就返回钉住的 IP，否则交回系统 DNS（**只有验真过的 IP 才会进表**） */
+function hsLookup(hostname, options, cb) {
+  if (typeof options === 'function') { cb = options; options = {}; }
+  const pin = pinCache.get(hostname);
+  if (pin && pin.ip && Date.now() - pin.at < pin.ttl) {
+    if (options && options.all) return cb(null, [{ address: pin.ip, family: 4 }]);
+    return cb(null, pin.ip, 4);
+  }
+  return dnsNative.lookup(hostname, options, cb);
+}
+
+const directAgent = new https.Agent({ keepAlive: true, maxSockets: 12, lookup: hsLookup });
+
+/** 一次最原始的请求（可指定出口 agent；keepAlive 复用连接，读图才不会每张握一次手）
+    ★必须自己跟随重定向★：node:http(s) 不像 fetch 那样自动跟，而这两个站的正常应答就是 3xx ——
+      绅士漫画 www.wn03.ru → 301 → www.wn07.ru、www.wnacg.date → 301 → www.wnacg.com、
+      porn-comic /q/<词>-<页>.html → 302 → 规范化地址。
+      不跟的话，/api/proxy 把 301 原样回给浏览器，浏览器再去直连上游（跨域必失败），
+      整个源就表现为「取不到」—— 之前绅士「经常检索不到」有一份就出在这里。 */
+const HS_MAX_REDIRECT = 5;
+function hsRequest(urlStr, o) {
+  o = o || {};
+  const hop = o._hop || 0;
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlStr); } catch (e) { return reject(new Error('URL 不合法：' + urlStr)); }
+    const isHttps = u.protocol === 'https:';
+    const mod = isHttps ? https : http;
+    const headers = Object.assign({
+      'user-agent': o.ua || UA_CHROME,
+      accept: '*/*',
+      /* ★千万别写 identity★（这个坑实测踩过）：
+         E-Hentai 的 Varnish 对**不带压缩协商**的请求会回
+         「HTTP 200 + content-type: text/html + content-length: 0」的空壳 ——
+         状态码是成功的、正文是空的，上层只会看到「搜索 0 条 / 页面没匹配到作品」，
+         究其原因能查很久。如实声明客户端支持的编码即可，解压由下面的
+         gunzip / inflate / brotli 处理（本来就已经在处理了）。 */
+      'accept-encoding': 'gzip, deflate, br'
+    }, o.headers || {});
+    const opt = {
+      protocol: u.protocol, hostname: u.hostname, port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search, method: o.method || 'GET', headers: headers,
+      agent: o.agent || (isHttps ? directAgent : undefined),
+      timeout: o.timeout || 15000
+    };
+    if (isHttps && !o.agent) opt.servername = u.hostname;
+    const req = mod.request(opt, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        let buf = Buffer.concat(chunks);
+        const enc = String(res.headers['content-encoding'] || '').toLowerCase();
+        try {
+          if (enc === 'gzip') buf = zlib.gunzipSync(buf);
+          else if (enc === 'deflate') buf = zlib.inflateSync(buf);
+          else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
+        } catch (e) { /* 解压失败就按原样返回 */ }
+        /* 空正文单独记原始响应头：这是最难查的一类「看起来成功了」——
+           实测 E-Hentai 经 node:https 会回 200 + text/html + 0 字节，不看头根本没法判断是谁的问题 */
+        if (!buf.length && res.statusCode < 400) {
+          log('  ↑ 上游回空正文（HTTP ' + res.statusCode + '）：' +
+            JSON.stringify(res.headers).slice(0, 320));
+        }
+        const code = res.statusCode;
+        const loc = res.headers.location;
+        /* 只跟 GET 的重定向；303 一律降级成 GET。hop 上限防环。 */
+        if (loc && code >= 300 && code < 400 && o.redirect !== 'manual' && hop < HS_MAX_REDIRECT &&
+            String(o.method || 'GET').toUpperCase() === 'GET') {
+          let next;
+          try { next = new URL(loc, urlStr).toString(); }
+          catch (e) { return resolve(makeRes(code, res.headers, buf)); }
+          log('  跟随重定向 ' + code + ' → ' + stripHost(next));
+          resolve(hsRequest(next, Object.assign({}, o, { _hop: hop + 1 })));
+          return;
+        }
+        resolve(makeRes(code, res.headers, buf));
+      });
+      res.on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end(o.body || undefined);
+  });
+}
+
+/** 多解析器并取候选 A 记录（缓存 5 分钟；全空只缓存 60 秒） */
+async function dohResolve(host, timeout) {
+  const now = Date.now();
+  const hit = dnsCache.get(host);
+  if (hit && now - hit.at < hit.ttl) return hit.ips;
+  const one = async s => {
+    const tk = withTimeout(timeout || 4000);
+    try {
+      const r = await hsRequest(s.url + '?name=' + encodeURIComponent(host) + '&type=A', {
+        headers: { accept: 'application/dns-json' }, timeout: timeout || 4000
+      });
+      if (!r.ok) return [];
+      const j = JSON.parse(r.text());
+      return (j.Answer || [])
+        .filter(a => a.type === 1 && a.data)
+        .map(a => String(a.data).trim())
+        .filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip))
+        .map(ip => ({ ip: ip, src: s.id }));
+    } catch (e) { return []; } finally { tk.done(); }
+  };
+  const got = await Promise.all(DOH_SERVERS.map(one));
+  const seen = {};
+  const ips = [];
+  got.forEach(list => list.forEach(x => { if (!seen[x.ip]) { seen[x.ip] = 1; ips.push(x); } }));
+  dnsCache.set(host, { at: now, ips: ips, ttl: ips.length ? DNS_OK_TTL : DNS_BAD_TTL });
+  if (ips.length) log('DoH 解析 ' + host + ' → ' + ips.map(x => x.ip + '(' + x.src + ')').join(' '));
+  return ips;
+}
+
+/** 带 SNI 试握手：能握上（**并且证书真的覆盖这个域名**）才算这个 IP 在服务这个域名。
+    证书校验刻意打开 —— 验真必须跟真实请求同一个口径，否则会把「同一台机器上的另一个站」
+    钉进来（实测 api.copy-manga.com 被墙外 DNS 解析到 api.copy2000.online 的 IP 上，
+    证书不覆盖它：宽松验真会钉一个用过就 100% 失败的 IP）。 */
+function tlsCheck(ip, host, timeout) {
+  return new Promise(resolve => {
+    let done = false;
+    let sock;
+    const fin = ok => { if (!done) { done = true; try { sock.destroy(); } catch (e) {} resolve(ok); } };
+    try {
+      sock = tls.connect({ host: ip, port: 443, servername: host, rejectUnauthorized: true });
+    } catch (e) { return resolve(false); }
+    sock.setTimeout(timeout || 4000);
+    sock.on('secureConnect', () => fin(true));
+    sock.on('timeout', () => fin(false));
+    sock.on('error', () => fin(false));
+    sock.on('close', () => fin(false));
+  });
+}
+
+const lookupSysIps = host => new Promise(resolve => {
+  dnsNative.lookup(host, { all: true, verbatim: true }, (e, list) => {
+    resolve(e ? [] : (Array.isArray(list) ? list : [list])
+      .filter(x => x && x.family === 4).map(x => x.address));
+  });
+});
+
+/** 候选 IP 并行验真，第一个握上的就赢（**不是**一个个顺序等超时 ——
+    顺序等的话，系统 DNS 那个假 IP 会先吃掉 2.5s，DoH 的真 IP 就轮不到了） */
+async function raceTls(cands, host, perTimeout) {
+  const list = [];
+  const seen = {};
+  cands.forEach(c => { if (c && c.ip && !seen[c.ip]) { seen[c.ip] = 1; list.push(c); } });
+  if (!list.length) return null;
+  return new Promise(resolve => {
+    let left = list.length;
+    let settled = false;
+    list.forEach(c => {
+      tlsCheck(c.ip, host, perTimeout).then(ok => {
+        if (ok && !settled) { settled = true; resolve(c); }
+        else if (--left === 0 && !settled) { settled = true; resolve(null); }
+      }).catch(() => { if (--left === 0 && !settled) { settled = true; resolve(null); } });
+    });
+  });
+}
+
+/** 墙外解析：境内 DoH 有时也给污染值（实测 hitomi.la 前一次给真 IP、后一次给假 IP），
+    这时借中继去问墙外的 Google DoH —— 解析结果照样要过「带 SNI 验真」这一关，所以不怕它乱说。 */
+async function relayDohResolve(host, timeout) {
+  if (!relayUsable('allorigins')) return [];
+  const inner = 'https://dns.google/resolve?name=' + encodeURIComponent(host) + '&type=A';
+  const via = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(inner);
+  try {
+    const r = await hsRequest(via, { timeout: timeout || 6000, headers: { accept: 'application/dns-json' } });
+    if (!r.ok) return [];
+    const j = JSON.parse(r.text());
+    const ips = (j.Answer || [])
+      .filter(a => a.type === 1 && a.data)
+      .map(a => String(a.data).trim())
+      .filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+    if (ips.length) log('墙外解析 ' + host + ' → ' + ips.join(' ') + '（经中继问 Google DoH）');
+    return ips.map(ip => ({ ip: ip, src: 'relay-dns' }));
+  } catch (e) { return []; }
+}
+
+/** 给某台主机钉一个验真过的 IP；钉不上返回 ''（调用方就该走中继了）
+    系统 DNS 与 DoH **同时**问、候选 IP 一起并行验真，所以这一层的耗时 ≈ 一次握手，
+    而不是「系统 DNS 超时 + DoH 超时 + 逐个验真」的累加。 */
+async function pinHost(host, budget) {
+  const hit = pinCache.get(host);
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.ip;
+  const per = Math.max(1500, Math.min(2500, budget || 2500));
+  const [sysIps, dohIps] = await Promise.all([
+    lookupSysIps(host),
+    dohResolve(host, Math.max(1500, Math.min(3500, budget || 2500))).catch(() => [])
+  ]);
+  let win = await raceTls(
+    sysIps.map(ip => ({ ip: ip, src: 'sysdns' })).concat(dohIps), host, per);
+  /* 结点偶发抽风（实测拷贝漫画的节点会「这一次握不上、下一次没问题」）→ 短退避重试一次 */
+  if (!win) {
+    await sleep(400);
+    win = await raceTls(
+      sysIps.map(ip => ({ ip: ip, src: 'sysdns' })).concat(dohIps), host, per);
+  }
+  /* 境内解析器集体说谎（全给了污染值）→ 借中继问一次墙外 DNS 再验 */
+  if (!win) {
+    const far = await relayDohResolve(host, per + 2000);
+    if (far.length) win = await raceTls(far, host, per);
+  }
+  if (win) {
+    pinCache.set(host, { ip: win.ip, src: win.src, at: Date.now(), ttl: PIN_TTL });
+    log('IP 钉选 ' + host + ' → ' + win.ip + '（来自 ' + win.src + '，带 SNI 验真通过）');
+    return win.ip;
+  }
+  return '';
+}
+
+/* ------------------------------ ② 运行期出口（不再粘死） ------------------------------ */
+const egress = {
+  live: '',            // 当前真的活着的本地代理（'' = 走直连）
+  lastLive: null,
+  checkedAt: 0,
+  switching: false
+};
+
+function envProxyUrl() { return String(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || ''); }
+function portOfUrl(u) {
+  const m = String(u || '').match(/^[a-z]+:\/\/([^:/]+)(?::(\d+))?/i);
+  if (!m) return 0;
+  return m[2] ? parseInt(m[2], 10) : 0;
+}
+
+/** 出口健康检查：启动时代理能用 ≠ 现在还能用，反之亦然。
+    间隔刻意**不对称**：
+      · 当前有可用代理 → 60 秒探一次（省得反复去打它）
+      · 当前没有可用代理 → 10 秒探一次（用户随时可能开 VPN，等一分钟才认出来太迟钝）
+    另外：任何请求失败都会把 checkedAt 清零、立刻重探（见 outFetch）。
+    关掉的端口是 ECONNREFUSED、秒回，所以这个频率不花钱。 */
+async function probeEgress() {
+  const now = Date.now();
+  const interval = egress.live ? 60e3 : 10e3;
+  if (now - egress.checkedAt < interval) return egress;
+  egress.checkedAt = now;
+  let live = '';
+  const envp = envProxyUrl();
+  if (envp) {
+    const p = portOfUrl(envp);
+    if (p && await testProxyPort(p)) live = envp;
+  }
+  if (!live) {
+    const found = await pickLocalProxy();
+    if (found) live = found;
+  }
+  egress.live = live;
+  if (egress.lastLive !== null && live !== egress.lastLive) {
+    log('出口变化：' + (egress.lastLive || '直连') + ' → ' + (live || '直连') + '，清掉各主机记住的通路');
+    hostPlan.clear();
+  }
+  egress.lastLive = live;
+  return egress;
+}
+
+/** 经本地 HTTP 代理建隧道（CONNECT + TLS）；只有「原路是直连、但运行期发现了可用代理」时才用 */
+class ProxyTunnelAgent extends https.Agent {
+  constructor(proxy, opt) {
+    super(Object.assign({ keepAlive: true, maxSockets: 8 }, opt || {}));
+    this.proxyUrl = new URL(proxy);
+  }
+  createConnection(options, cb) {
+    const target = (options.host || options.hostname) + ':' + (options.port || 443);
+    const req = http.request({
+      host: this.proxyUrl.hostname,
+      port: this.proxyUrl.port || 80,
+      method: 'CONNECT',
+      path: target,
+      headers: { host: target },
+      timeout: options.timeout || 10000
+    });
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        return cb(new Error('代理 CONNECT 返回 HTTP ' + res.statusCode));
+      }
+      const t = tls.connect({
+        socket: socket,
+        servername: options.servername || options.host || options.hostname,
+        rejectUnauthorized: false
+      });
+      t.on('secureConnect', () => cb(null, t));
+      t.on('error', e => cb(e));
+    });
+    req.on('timeout', () => req.destroy(new Error('代理 CONNECT 超时')));
+    req.on('error', e => cb(e));
+    req.end();
+  }
+}
+const tunnelAgents = new Map();
+function tunnelAgentFor(proxy) {
+  if (!tunnelAgents.has(proxy)) tunnelAgents.set(proxy, new ProxyTunnelAgent(proxy));
+  return tunnelAgents.get(proxy);
+}
+
+/* ------------------------------ ③ 中继（真被墙时的最后一条腿） ------------------------------ */
+/* 全部为**境内实测直连可达**的中继，墙外取内容再带回来。
+   AllOrigins 会限流（实测同一接口重复打会回 {"error":…}），所以带冷却 + 失败即换下一个。 */
+const RELAYS = [
+  { id: 'allorigins', kind: 'any', tpl: u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u) },
+  /* 同一个服务的另一个端点：返回体是 {"contents":"…"}。
+     它有独立的工作进程与缓存，实测主端点回 522 时它常常还能答上来 ——
+     所以当**第二路**用（不占第一路的位置，只在主端点 5xx / 报错时兜）。 */
+  { id: 'allorigins-get', kind: 'text', json: true, tpl: u => 'https://api.allorigins.win/get?url=' + encodeURIComponent(u) },
+  { id: 'i0.wp', kind: 'image', tpl: u => 'https://i0.wp.com/' + String(u).replace(/^https?:\/\//i, '') }
+];
+const relayState = new Map();       // relayId -> 冷却截止时间
+/* 两档冷却：429 是真限流（等久一点）；5xx / 522 / 524 多是中继自己那一刻打不到上游，
+   属于**瞬时**故障 —— 罚它 45 秒会让「本来下一秒就能成功」的请求全部落空。 */
+const RELAY_COOLDOWN = 45e3;
+const RELAY_SOFT_COOLDOWN = 15e3;
+function relayUsable(id) { return (relayState.get(id) || 0) < Date.now(); }
+
+function looksLikeImage(url) {
+  try {
+    const u = new URL(url);
+    return /\.(jpe?g|png|webp|gif|avif|bmp|ico)(\?|$)/i.test(u.pathname + u.search);
+  } catch (e) { return false; }
+}
+
+/** 中继取内容：只允许「GET + 没有自定义签名头」（有签名头的接口中继转不了，也不该转） */
+async function relayFetch(url, o) {
+  o = o || {};
+  const method = String(o.method || 'GET').toUpperCase();
+  if (method !== 'GET' || o.body) throw new Error('中继只支持 GET');
+  const hk = Object.keys(o.headers || {}).map(k => k.toLowerCase());
+  if (hk.some(k => /token|signature|authorization|x-auth|umstring|cookie/.test(k))) {
+    throw new Error('这条请求带自定义签名头，中继转不了（也不该把你的签名交给第三方）');
+  }
+  const wantImg = o.image === true || looksLikeImage(url);
+  const errs = [];
+  /* 中继会把上游的 3xx 原样回给我们（它自己不跟），所以这里要自己跟 —— 
+     porn-comic 的 /q/<词>-<页>.html 就是 302 到规范化地址的。 */
+  let cur = url;
+  for (let hop = 0; hop <= 3; hop++) {
+    const one = await relayFetchOnce(cur, o, wantImg);
+    if (one.res) return one.res;
+    if (one.redirect) { cur = one.redirect; continue; }
+    errs.push(one.err || '未知原因');
+    break;
+  }
+  throw new Error('中继全失败：' + errs.slice(0, 3).join('；'));
+}
+
+async function relayFetchOnce(url, o, wantImg) {
+  const errs = [];
+  for (const rel of RELAYS) {
+    /* eslint-disable no-await-in-loop */
+    if (!relayUsable(rel.id)) { errs.push(rel.id + ' 冷却中'); continue; }
+    if (rel.kind === 'image' && !wantImg) { continue; }
+    if (rel.json && wantImg) { continue; }        /* 图片不要走 get 端点（它会把二进制塞进 JSON） */
+    const via = rel.tpl(url);
+    let r;
+    try {
+      /* 中继本身必须**直连**取（它就在墙上边；跟着死代理走就没意义了），并且不要再跟 3xx */
+      r = await hsRequest(via, {
+        timeout: o.timeout || 20000, headers: { accept: '*/*' }, redirect: 'manual'
+      });
+    } catch (e) {
+      relayState.set(rel.id, Date.now() + RELAY_SOFT_COOLDOWN);
+      errs.push(rel.id + ' 连不上：' + ((e && e.message) || e));
+      continue;
+    }
+
+    /* get 端点：把 {"contents":…} 拆出来，合成为普通响应 */
+    if (rel.json) {
+      let j = null;
+      try { j = JSON.parse(r.text()); } catch (e) { /* 下面统一处理 */ }
+      if (!j || typeof j.contents !== 'string') {
+        relayState.set(rel.id, Date.now() + RELAY_SOFT_COOLDOWN);
+        errs.push(rel.id + ' 返回体不是 {contents}（HTTP ' + r.status + '）');
+        continue;
+      }
+      const code = (j.status && j.status.http_code) || 200;
+      const body = j.contents;
+      /* ★空 200 必须当成失败★：AllOrigins 的 /get 在自己没抓到时会回
+         {"contents":"","status":{"http_code":200}} —— 当成成功就会把一个空页面
+         当成「搜索 0 条」上报，用户看到的是「没结果」而不是「没取到」。 */
+      if (code >= 400 || !body) {
+        relayState.set(rel.id, Date.now() + RELAY_SOFT_COOLDOWN);
+        errs.push(rel.id + (code >= 400 ? ' 上游 HTTP ' + code : ' 回了空 contents（http_code=' + code + '）'));
+        continue;
+      }
+      log('中继取回 ' + stripHost(url) + ' ← ' + rel.id + '（' + Buffer.byteLength(body) + 'B）');
+      return { res: makeRes(code, { 'content-type': 'text/html; charset=utf-8' }, Buffer.from(body, 'utf8')) };
+    }
+
+    const head = r.buf.slice(0, 160).toString('utf8');
+    if (r.status === 429 || /^\s*\{\s*"(error|status)"\s*:/i.test(head)) {
+      relayState.set(rel.id, Date.now() + RELAY_COOLDOWN);
+      errs.push(rel.id + ' 限流/报错（HTTP ' + r.status + ' ' + head.slice(0, 60) + '），冷却 ' +
+        Math.round(RELAY_COOLDOWN / 1000) + 's');
+      continue;
+    }
+    if (r.status >= 500) {
+      relayState.set(rel.id, Date.now() + RELAY_SOFT_COOLDOWN);
+      errs.push(rel.id + ' HTTP ' + r.status + '（中继自己打不到上游，' +
+        Math.round(RELAY_SOFT_COOLDOWN / 1000) + 's 后自动重试）');
+      continue;
+    }
+    /* 上游的 3xx 经中继原样回来：交给调用方再中继一次（换个地址） */
+    if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
+      return { redirect: r.headers.get('location'), err: rel.id + ' → 上游 ' + r.status };
+    }
+    if (!r.ok) { errs.push(rel.id + ' HTTP ' + r.status); continue; }
+    /* 空 200 同样当失败（中继偶尔会先回一个空壳，正文随后才到 / 或干脆没抓到） */
+    if (!r.buf.length) {
+      relayState.set(rel.id, Date.now() + RELAY_SOFT_COOLDOWN);
+      errs.push(rel.id + ' 回了空响应（HTTP 200 但 0 字节）');
+      continue;
+    }
+    if (wantImg && !/^image\//i.test(r.headers.get('content-type') || '')) {
+      errs.push(rel.id + ' 回的不是图片（' + (r.headers.get('content-type') || '?') + '）');
+      continue;
+    }
+    log('中继取回 ' + stripHost(url) + ' ← ' + rel.id + '（' + r.buf.length + 'B）');
+    return { res: r };
+  }
+  return { err: errs.slice(0, 3).join('；') };
+}
+
+/* ------------------------------ 路由记忆 ------------------------------ */
+function planOf(host) {
+  const p = hostPlan.get(host);
+  return (p && Date.now() - p.at < p.ttl) ? p.mode : '';
+}
+function setPlan(host, mode) {
+  if (host) hostPlan.set(host, { mode: mode, at: Date.now(), ttl: PLAN_TTL });
+}
+const errMsg = e => (e && (e.code || e.message)) || String(e);
+
+/** 出口的一句话说明（前端 filters.js 直接显示这串，所以是**字符串**） */
+function egressText() {
+  if (egress.live) return '经本地代理 ' + egress.live;
+  if (envProxyUrl()) return '直连（启动时的代理 ' + envProxyUrl() + ' 现在不可用，已自动改走直连）';
+  return '直连（未检测到可用本地代理；被墙的站会走 DoH 钉 IP 或境内中继）';
+}
+
+/** 各主机记住的通路（/api/ping 与 /api/diag 都带上，排查时一眼看出谁在靠哪一层） */
+function planSummary() {
+  const out = {};
+  hostPlan.forEach((v, k) => {
+    if (Date.now() - v.at < v.ttl) out[k] = v.mode;
+  });
+  return out;
+}
+
+/* ------------------------------ 统一出站入口 ------------------------------
+   契约与改造前逐字一致：{ status, ok, headers(.get), buf, text(), json() }
+   只是**在失败之后**才多出两层补偿 —— 有 VPN 且原路通时，下面第二三层一行都不执行。
+
+   首次遇到一台主机时，①原路 与 ②直连强化 **并行竞速**（先成功的算数，另一条丢弃）：
+   否则「系统 DNS 被污染」的主机会先让 ① 干等到超时，把 ② 的预算吃光，
+   结果本该 2 秒打通的站被推去走限流的中继（实测 hitomi 就是这样从 doh 掉到 relay 的）。
+   带签名头的接口（禁漫 / 拷贝漫画）**不参与竞速**：那两个站直连本来就通，
+   多发一次带 token 的请求只会白吃上游风控。 */
+function hasSignatureHeaders(headers) {
+  return Object.keys(headers || {}).map(k => k.toLowerCase())
+    .some(k => /token|signature|authorization|x-auth|umstring|cookie/.test(k));
+}
+
 async function outFetch(url, opts) {
   opts = opts || {};
   const ms = opts.timeout || 15000;
-  const tk = withTimeout(ms);
-  try {
-    const res = await fetch(url, {
-      method: opts.method || 'GET',
-      headers: Object.assign({ 'user-agent': opts.ua || UA_CHROME, accept: '*/*' }, opts.headers || {}),
-      body: opts.body,
-      redirect: 'follow',
-      signal: tk.signal
-    });
-    const buf = Buffer.from(await res.arrayBuffer());
-    return {
-      status: res.status,
-      ok: res.ok,
-      headers: res.headers,
-      buf,
-      text: () => buf.toString('utf8'),
-      json: () => JSON.parse(buf.toString('utf8'))
-    };
-  } finally { tk.done(); }
-}
+  const host = stripHost(url);
+  const t0 = Date.now();
+  const left = () => Math.max(2500, ms - (Date.now() - t0));
+  const plan = opts.force === true ? '' : planOf(host);
+  const method = String(opts.method || 'GET').toUpperCase();
+  const canRace = opts.race !== false && method === 'GET' && !opts.body && !hasSignatureHeaders(opts.headers);
+  const errs = [];
 
-const stripHost = u => String(u || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+  /* opts.relayOnly：调用方明说「就走中继」。
+     用途是「同一个站换个出口 IP 再试一次」—— 例如 E-Hentai 的搜索侧按出口 IP 限制，
+     当前出口返回空集，中继是另一个出口，重试一次常常就有真结果（实测 0 条 → 25 条）。
+     这种主动调用不该给主机记通路（否则会把正常请求也带偏）。 */
+  if (opts.relayOnly) {
+    const r = await relayFetch(url, Object.assign({}, opts, { timeout: ms }));
+    r.via = 'relay';
+    return r;
+  }
+
+  /* 给响应盖上「这一发是哪条腿给的」的戳：出问题时（尤其**空响应**）能一眼看出是谁的锅 —— 
+     AllOrigins 的 raw 端点在它自己抓不到时也会回 HTTP 200 + 0 字节，
+     没有这个戳就只能靠猜。 */
+  const mark = (r, via) => { if (r && typeof r === 'object') r.via = via; return r; };
+
+  /* ★200 + 空正文 = 失败★（实测踩到过，很隐蔽）
+     E-Hentai 的 Varnish 在**限流/反爬软封锁**时会回一个
+     「HTTP 200 + content-type: text/html + content-length: 0」的空壳。
+     不拦的话它会被当成**成功**一路返回：上层看到的是「搜索 0 条」「页面没匹配到作品」，
+     而不是「没取到」—— 错误被静默吞掉（这正是「E-Hentai 老是说搜不到」的一半原因）。
+     所以这里对 GET 的 200 空正文一律当失败，并**顺手把这台主机拉进 60 秒空壳冷却**：
+     软封锁期间继续硬撞只会让封锁更久，冷却期内直接改走中继（另一个出口 IP）更划算。 */
+  const guardEmpty = (r, via) => {
+    if (r && r.status === 200 && r.buf && r.buf.length === 0 && opts.allowEmpty !== true &&
+        String(opts.method || 'GET').toUpperCase() === 'GET') {
+      emptyShellUntil.set(host, Date.now() + EMPTY_SHELL_COOLDOWN);
+      throw new Error('上游回了 200 但正文是空的（via=' + via + '）');
+    }
+    return r;
+  };
+
+  /* 空壳冷却期内：跳过原路与直连强化，直接用中继换出口 IP */
+  const shellCooling = !opts.relayOnly && (emptyShellUntil.get(host) || 0) > Date.now();
+
+  /* ① 原路：全局 fetch（启动时若探测到代理，undici 会自己走它）—— 有 VPN 时就是这条路 */
+  const tierEnv = async () => {
+    const tk = withTimeout(ms);
+    try {
+      const res = await fetch(url, {
+        method: opts.method || 'GET',
+        headers: Object.assign({ 'user-agent': opts.ua || UA_CHROME, accept: '*/*' }, opts.headers || {}),
+        body: opts.body,
+        redirect: 'follow',
+        signal: tk.signal
+      });
+      const buf = Buffer.from(await res.arrayBuffer());
+      return guardEmpty(mark({
+        status: res.status,
+        ok: res.ok,
+        headers: res.headers,
+        buf,
+        text: () => buf.toString('utf8'),
+        json: () => JSON.parse(buf.toString('utf8'))
+      }, 'env'), 'env');
+    } finally { tk.done(); }
+  };
+
+  /* ② 直连强化：钉一个验真过的 IP，用 node:https 直连 */
+  const tierDoh = async () => {
+    const eg = await probeEgress().catch(() => egress);
+    /* 运行期发现可用代理、而原路不是它 → 先用代理隧道试（「开着网关再开 VPN」的情形） */
+    if (eg.live && eg.live !== envProxyUrl()) {
+      return guardEmpty(mark(await hsRequest(url, {
+        method: opts.method, headers: opts.headers, body: opts.body, ua: opts.ua,
+        timeout: left(), agent: tunnelAgentFor(eg.live)
+      }), 'doh'), 'doh');
+    }
+    const pin = await pinHost(host, Math.min(5000, ms));
+    if (!pin) throw new Error('DoH 没给出能验真的 IP');
+    return guardEmpty(mark(await hsRequest(url, {
+      method: opts.method, headers: opts.headers, body: opts.body, ua: opts.ua, timeout: left()
+    }), 'doh'), 'doh');
+  };
+
+  /* ③ 中继：真被墙（SNI 阻断 / 整段不可达）时的最后一条腿 */
+  const tierRelay = async () => guardEmpty(mark(await relayFetch(url, Object.assign({}, opts, { timeout: left() })), 'relay'), 'relay');
+
+  /* 原路是「经代理」却失败 → 立刻重判出口，别让它继续粘死 */
+  const onEnvFail = async e => {
+    errs.push('原路：' + errMsg(e));
+    if (process.env.HS_GW_PROXIED === '1' || envProxyUrl()) {
+      egress.checkedAt = 0;
+      await probeEgress().catch(() => {});
+    }
+  };
+
+  let envTried = false;
+  let dohTried = false;
+
+  if (shellCooling) {
+    /* 刚被空壳拒过：这段时间里直连基本没戏（软封锁通常按出口 IP 计），
+       直接交给中继，省掉两次注定失败的往返。 */
+    errs.push('原路/直连强化：刚被空壳拒过，冷却中');
+    envTried = true; dohTried = true;
+  } else if (plan === 'env') {
+    try { return await tierEnv(); } catch (e) { await onEnvFail(e); envTried = true; }
+  } else if (plan === 'doh') {
+    try { return await tierDoh(); } catch (e) { errs.push('直连强化：' + errMsg(e)); setPlan(host, ''); dohTried = true; }
+  } else if (plan === 'relay') {
+    try { return await tierRelay(); } catch (e) { errs.push('中继：' + errMsg(e)); setPlan(host, ''); }
+  }
+
+  /* 没有记忆（或记忆里那条不通了）：第一次给这台主机定通路 */
+  if (!dohTried && opts.doh !== false) {
+    if (!plan && !envTried && canRace) {
+      /* 两条都成功时**以先到的为准**，并且只给赢的那条记通路 ——
+         否则后到的那条会把 plan 覆盖掉（上一版实测：mangadex 明明原路就通，却被记成 doh） */
+      const envP = tierEnv().then(r => ({ tier: 'env', r: r }),
+        e => onEnvFail(e).then(() => Promise.reject(e)));
+      const dohP = tierDoh().then(r => ({ tier: 'doh', r: r }),
+        e => { errs.push('直连强化：' + errMsg(e)); return Promise.reject(e); });
+      envP.catch(() => {}); dohP.catch(() => {});          /* 输掉的那条别变成未处理异常 */
+      try {
+        const w = await Promise.any([envP, dohP]);
+        setPlan(host, w.tier);
+        return w.r;
+      } catch (e) {
+        /* 两条都挂了：errs 里已有原因，落到中继 */
+      }
+    } else {
+      if (!envTried && !plan) {
+        try { return await tierEnv(); } catch (e) { await onEnvFail(e); }
+      }
+      try { return await tierDoh(); } catch (e) { errs.push('直连强化：' + errMsg(e)); }
+    }
+  }
+
+  if (opts.relay !== false) {
+    try {
+      const r = await tierRelay();
+      setPlan(host, 'relay');
+      return r;
+    } catch (e) { errs.push('中继：' + errMsg(e)); }
+  }
+
+  /* ④ http → https 升级重试（实测结论，必须留着）：
+     绅士漫画的正文图给的是 `http://img5.qy0.ru/…?verify=…`，而**同一个地址**换成 https 就
+     正常返回 200 image/jpeg —— 明文 HTTP 的 Host 头会被拦成 ECONNRESET。
+     这条不是「兜底猜一下」：同一 URL 两种协议实测一个 200 一个 ECONNRESET，所以值得多花一次往返。 */
+  if (/^http:\/\//i.test(url) && !opts.schemeTried) {
+    try {
+      const r = await outFetch(url.replace(/^http:/i, 'https:'),
+        Object.assign({}, opts, { schemeTried: true }));
+      log('http 被重置、https 正常，已改用 https：' + stripHost(url));
+      return r;
+    } catch (e) { errs.push('https 升级：' + errMsg(e)); }
+  }
+
+  const err = new Error('取不到 ' + host + '：' + (errs.length ? errs.join('；') : '所有通路都失败'));
+  err.tiers = errs;
+  log('三层都没打通 ' + host + '：' + (errs.join('；') || '（无原因记录）'));
+  throw err;
+}
 
 /* ==========================================================================
    禁漫天堂（18comic / JMComic）—— 官方 APP API
@@ -240,11 +911,113 @@ async function jmRemoteHosts() {
 async function jmHostsList(extra) {
   const list = [];
   const push = h => { h = stripHost(h); if (h && list.indexOf(h) < 0) list.push(h); };
-  if (state.jmHost && Date.now() - state.jmHostAt < 10 * 6000e3) push(state.jmHost);
+  if (state.jmHost && Date.now() - state.jmHostAt < 10 * 60e3) push(state.jmHost);
   String(extra || '').split(/[\s,;，、]+/).forEach(push);
   try { (await jmRemoteHosts()).forEach(push); } catch (e) { /* 用兜底 */ }
   JM_FALLBACK_HOSTS.forEach(push);
   return list;
+}
+
+/* 候选主机里挑一个能用的：**分批竞速 + 失败冷却**。
+   旧实现是 `for (host of hosts.slice(0, 6))` 顺序试 —— 远程域名列表一变长，
+   排在第 7 位之后的兜底域名（www.cdnbea.net 这类实测直连可用的）就永远轮不到，
+   表现正是「有 VPN 好好的，没 VPN 全废」。 */
+const hostDead = new Map();          // host -> 冷却截止时间
+const HOST_DEAD_MS = 90e3;
+
+/** 硬超时：到点就 reject，不管里面那一层还有多少事没做完。
+    为什么需要它：outFetch 的 timeout 是**逐层**的（原路 → DoH 钉 IP → 中继），
+    一层超时还会试下一层，所以「传 7000」并不等于「7 秒内一定有结论」——
+    实测绅士某一轮就是因此把整条路径拖到 15.6s。
+    竞速/探针这类「只要一个答案」的场景必须用硬超时把预算钉死，
+    否则上面算好的 deadline 形同虚设。 */
+function withHardTimeout(promise, ms, label) {
+  let t = 0;
+  const timer = new Promise((_, rej) => {
+    t = setTimeout(() => rej(new Error((label || '请求') + ' 硬超时 ' + ms + 'ms')), Math.max(200, ms));
+  });
+  return Promise.race([promise, timer]).finally(() => clearTimeout(t));
+}
+
+async function pickProbe(hosts, probe, opt) {
+  const batch = (opt && opt.batch) || 3;
+  /* opt.deadline：到这个时刻就**不再开新的批次**。
+     没有它的时候，一批 3 个域名各 7s、下一批还能再等 7s，整条路径能拖到 14s 以上 ——
+     这就是「绅士有时要等 19s」的来源（两次网关请求各拖一轮）。
+     注意：已经发出去的批次会等它自然结束，不做硬中断（免得把半截结果丢掉）。 */
+  const deadline = (opt && opt.deadline) || 0;
+  const now = Date.now();
+  const live = hosts.filter(h => (hostDead.get(h) || 0) < now);
+  const list = live.length ? live : hosts;      // 全在冷却里就硬着头皮全试一遍
+  const errs = [];
+  for (let i = 0; i < list.length; i += batch) {
+    if (deadline && Date.now() > deadline) break;
+    /* eslint-disable no-await-in-loop */
+    const slice = list.slice(i, i + batch).filter(h => h);
+    if (!slice.length) continue;
+    const got = await Promise.all(slice.map(async h => {
+      try { return { host: h, val: await probe(h) }; }
+      catch (e) {
+        /* 连不上/返回不对 → 冷却，避免同一轮里反复撞。
+           「返回 0 条」是**正常的空结果**（不是主机坏了），不记冷却。 */
+        if (!/code 210|接口闸门|返回 0 条/.test((e && e.message) || '')) hostDead.set(h, Date.now() + HOST_DEAD_MS);
+        errs.push(h + '：' + ((e && e.message) || e));
+        return null;
+      }
+    }));
+    const ok = got.filter(Boolean)[0];
+    if (ok) return ok;
+  }
+  const err = new Error('候选主机全不可用（' + list.length + ' 个）：' + errs.slice(0, 4).join('；'));
+  err.all = errs;
+  throw err;
+}
+
+/** 找一个能用的禁漫 APP 域名 */
+async function jmResolveHost(extra) {
+  const hosts = await jmHostsList(extra);
+  const pick = await pickProbe(hosts,
+    h => jmApi(h, '/setting?app_img_shunt=1&express=', { timeout: 6000 }),
+    { batch: 3, deadline: Date.now() + 9000 });
+  const data = pick.val;
+  const img = data && (data.img_host || (data.setting && data.setting.img_host));
+  if (img) { state.jmCdn = String(img).replace(/\/+$/, ''); state.jmCdnAt = Date.now(); }
+  state.jmHost = pick.host; state.jmHostAt = Date.now();
+  return pick.host;
+}
+
+/* ★记住的域名直接用，不再每次搜索都重新探测★
+   旧实现：jmSearch → jmResolveHost → 每次都跑一遍 pickProbe（批量 3 个域名 × 6s）。
+   域名一多、只要前几个在冷却里，就要跑好几批 —— 实测「触手」这一个词要 20.3s，
+   而其中绝大部分时间花在**探测**上，不是花在搜索上。
+   现在：5 分钟内记住的域名直接用（省掉整轮探测，一次搜索只剩 1 个上游请求）；
+   只有超过 5 分钟、或这次请求失败了，才重新探测。 */
+const JM_HOST_TTL = 5 * 60e3;
+async function jmPickHost(extra) {
+  const fresh = state.jmHost && (Date.now() - (state.jmHostAt || 0) < JM_HOST_TTL);
+  if (fresh && !extra) return state.jmHost;
+  return jmResolveHost(extra);
+}
+
+/* 禁漫搜索：总预算 + 结果缓存（见 jmSearch 里的说明） */
+const JM_BUDGET_MS = 11000;        /* 整段上限；前端给 16s，留足余量 */
+const JM_SEARCH_CACHE_MS = 5 * 60e3;
+const JM_SEARCH_CACHE_MAX = 80;
+const jmSearchCache = new Map();
+function jmSearchCacheGet(k) {
+  const h = jmSearchCache.get(k);
+  if (!h) return null;
+  if (Date.now() - h.at > JM_SEARCH_CACHE_MS) { jmSearchCache.delete(k); return null; }
+  return h.val;
+}
+function jmSearchCacheSet(k, v) {
+  jmSearchCache.delete(k);
+  jmSearchCache.set(k, { at: Date.now(), val: v });
+  while (jmSearchCache.size > JM_SEARCH_CACHE_MAX) {
+    const oldest = jmSearchCache.keys().next().value;
+    if (oldest === undefined) break;
+    jmSearchCache.delete(oldest);
+  }
 }
 
 function jmHeaders(host, ts) {
@@ -286,24 +1059,6 @@ async function jmApi(host, apiPath, opts) {
   return data;
 }
 
-/** 找一个能用的禁漫 APP 域名 */
-async function jmResolveHost(extra) {
-  const hosts = await jmHostsList(extra);
-  const errs = [];
-  for (const host of hosts.slice(0, 6)) {
-    try {
-      const data = await jmApi(host, '/setting?app_img_shunt=1&express=', { timeout: 6000 });
-      const img = data && (data.img_host || (data.setting && data.setting.img_host));
-      if (img) { state.jmCdn = String(img).replace(/\/+$/, ''); state.jmCdnAt = Date.now(); }
-      state.jmHost = host; state.jmHostAt = Date.now();
-      return host;
-    } catch (e) { errs.push(host + '：' + e.message); }
-  }
-  const err = new Error('禁漫全部候选域名都不可用：' + errs.slice(0, 4).join('；'));
-  err.all = errs;
-  throw err;
-}
-
 const asArray = v => Array.isArray(v) ? v : (v == null || v === '' ? [] : [v]);
 const jmCover = (raw, id, host) => {
   const s = String(raw || '').trim();
@@ -338,16 +1093,56 @@ async function jmSearch(query) {
   const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
   const o = String(query.o || 'mr').replace(/[^a-z_]/gi, '') || 'mr';
   if (!q) throw new Error('缺少关键词 q');
-  const host = await jmResolveHost(query.hosts);
+
+  /* 结果缓存：同一关键词 5 分钟内不重复打上游（详情页 / 重搜 / 追加页会反复问到同一批串） */
+  const ck = [q, page, o].join('|');
+  const hit = jmSearchCacheGet(ck);
+  if (hit) return Object.assign({}, hit, { cached: true });
+
+  /* ★总预算★：整段（可能的探测 + 搜索）不超过 JM_BUDGET_MS。
+     为什么要它：旧实现没有任何总预算，域名探测（批量 3 × 6s）+ 搜索（9s）
+     串起来最坏能到 20s 以上 —— 实测「触手」20.3s。现在按剩余预算给每一步超时，
+     预算耗尽就把已有的结论返回（宁可少试一个域名，也不许把整次检索拖死）。 */
+  const t0 = Date.now();
+  const left = () => JM_BUDGET_MS - (Date.now() - t0);
+
+  let host = '';
+  let probeErr = null;
+  try { host = await jmPickHost(query.hosts); } catch (e) { probeErr = e; }
   const apiPath = '/search?search_query=' + encodeURIComponent(q).replace(/%20/g, '+') +
     '&page=' + page + '&o=' + o;
-  const data = await jmApi(host, apiPath);
+
+  let data = null, apiErr = null;
+  if (host) {
+    try {
+      data = await jmApi(host, apiPath, { timeout: Math.max(3000, Math.min(9000, left() - 500)) });
+    } catch (e) {
+      apiErr = e;
+      /* 记住的那个域名失效了（换域名 / 被打回网页）→ 清掉记忆、重探一次再试一把。
+         只在还有预算时做，避免在慢链路上滚雪球。 */
+      state.jmHost = ''; state.jmHostAt = 0;
+      if (left() > 4000 && !query.hosts) {
+        try {
+          host = await jmResolveHost(query.hosts);
+          data = await jmApi(host, apiPath, { timeout: Math.max(3000, Math.min(9000, left() - 500)) });
+          apiErr = null;
+        } catch (e2) { apiErr = e2; }
+      }
+    }
+  }
+  if (!data) {
+    const e = apiErr || probeErr || new Error('禁漫没有可用域名');
+    e.soft = 1;                       /* 「没取到」不是通路故障，交给调用方降级处理 */
+    throw e;
+  }
   if (query.raw) return data;
   const rows = asArray(data && (data.search || data.list || data.content || data));
   const items = rows.filter(x => x && typeof x === 'object')
     .map(x => jmNormalizeItem(x, host, query.web))
     .filter(x => x.id && x.title);
-  return { source: 'jmcomic', host: host, total: (data && data.total) || items.length, items: items };
+  const out = { source: 'jmcomic', host: host, total: (data && data.total) || items.length, items: items, ms: Date.now() - t0 };
+  jmSearchCacheSet(ck, out);
+  return out;
 }
 
 /* ==========================================================================
@@ -636,11 +1431,57 @@ async function copymangaSearch(query) {
    取不到的域名进冷却，避免一次检索里被反复重试
    ========================================================================== */
 const deadHosts = new Map();          // host -> 冷却截止时间戳
-const DEAD_MS = 45000;
+/* 空壳冷却（见 outFetch 的 guardEmpty）：某些站在限流时会回「200 + 0 字节」，
+   识别到之后这段时间里别再用直连去撞，直接换中继出口。 */
+const emptyShellUntil = new Map();
+const EMPTY_SHELL_COOLDOWN = 60e3;
+/* 三层都打不通才记冷却。45 秒太短了：前端取源时会拿一整排镜像域名竞速
+   （绅士漫画 10 个域名 × 3 种路径），其中真被 SNI 阻断的那几个只能靠中继，
+   而中继**是限流的公共资源**（AllOrigins 实测会被打成 429，之后整条中继腿对所有人都失效）。
+   冷却拉长到 3 分钟，一次检索烧掉的那点配额就不会被下一次检索重复烧一遍。 */
+const DEAD_MS = 180e3;
+
+/* 进程内响应缓存（只缓存 GET 的 200）：
+   · 中继是限流资源，同一张封面 / 同一页 HTML 不该反复穿过它
+   · 前端「镜像竞速」会把同一个 URL 打很多次（不同检索、翻页、重绘）
+   按总字节数封顶，先进先出淘汰，绝不无限涨。 */
+const proxyCache = new Map();
+const PROXY_CACHE_MS = 5 * 60e3;
+const PROXY_CACHE_MAX = 64 * 1024 * 1024;
+const PROXY_ONE_MAX = 6 * 1024 * 1024;
+let proxyCacheBytes = 0;
+
+function proxyCacheGet(key) {
+  const hit = proxyCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > PROXY_CACHE_MS) {
+    proxyCache.delete(key); proxyCacheBytes -= hit.buf.length;
+    return null;
+  }
+  return hit;
+}
+function proxyCacheSet(key, entry) {
+  if (entry.buf.length > PROXY_ONE_MAX) return;
+  const old = proxyCache.get(key);
+  if (old) proxyCacheBytes -= old.buf.length;
+  proxyCache.set(key, entry);
+  proxyCacheBytes += entry.buf.length;
+  while (proxyCacheBytes > PROXY_CACHE_MAX && proxyCache.size) {
+    const k = proxyCache.keys().next().value;
+    const v = proxyCache.get(k);
+    proxyCache.delete(k);
+    proxyCacheBytes -= v.buf.length;
+  }
+}
 
 async function proxyFetch(url, referer) {
   if (!/^https?:\/\//i.test(String(url || ''))) throw new Error('url 必须是 http(s)');
   const u = new URL(url);
+  const ck = url + '\u0000' + (referer || '');
+  const cached = proxyCacheGet(ck);
+  if (cached) {
+    return { status: cached.status, buf: cached.buf, headers: cached.headers, type: cached.type, cached: true };
+  }
   const until = deadHosts.get(u.host) || 0;
   if (until > Date.now()) {
     throw new Error(u.host + ' 近期取源失败，已临时跳过（' + Math.ceil((until - Date.now()) / 1000) + 's 后可重试）');
@@ -657,7 +1498,8 @@ async function proxyFetch(url, referer) {
     if (cred.ua) headers['user-agent'] = cred.ua;
   }
   try {
-    const r = await outFetch(url, { headers: headers, timeout: 12000 });
+    /* relay 的候选要靠 image 判断（图片走 i0.wp.com，网页只能走 AllOrigins） */
+    const r = await outFetch(url, { headers: headers, timeout: 12000, image: looksLikeImage(url) });
     deadHosts.delete(u.host);
     /* 带出去的凭证被上游否了（CF 又拦了）：立刻丢掉，免得后面每一页都先白撞一次 403。
        回给浏览器的仍然是上游那一个原始响应，语义一点不变。 */
@@ -667,12 +1509,23 @@ async function proxyFetch(url, referer) {
         '下次渲染过验证时会重新缓存');
     }
     /* headers 也带出来：/api/proxy 要靠 cf-mitigated 判断「这张/这段是不是 CF 挑战页」 */
-    return {
+    const out = {
       status: r.status, buf: r.buf, headers: r.headers,
       type: r.headers.get('content-type') || 'text/html; charset=utf-8'
     };
+    if (r.status === 200 && r.buf.length) proxyCacheSet(ck, { at: Date.now(), status: 200, buf: r.buf, headers: r.headers, type: out.type });
+    /* 空响应单独记一笔：这是「看起来成功、其实什么都没拿到」的唯一形态，
+       不记的话前端只会表现为「结果为空」，排查时无从下手。 */
+    if (!r.buf.length) {
+      log('取到空响应（HTTP ' + r.status + ' via=' + (r.via || '?') + '）：' + stripHost(url));
+    }
+    return out;
   } catch (e) {
-    deadHosts.set(u.host, Date.now() + DEAD_MS);
+    /* 冷却分两档：中继限流是**短时**状态（45 秒后中继自己就恢复了，不该把一个站也一起罚 3 分钟），
+       站点真的不可达才用长冷却。 */
+    const msg = (e && e.message) || '';
+    const transient = /限流|HTTP 429|冷却中|timeout|超时|ETIMEDOUT|ECONNRESET|UND_ERR/.test(msg);
+    deadHosts.set(u.host, Date.now() + (transient ? 45e3 : DEAD_MS));
     throw e;
   }
 }
@@ -930,9 +1783,14 @@ async function pixivSearch(query) {
 const CF_RENDER_TTL = 5 * 60e3;      /* 同一 URL 5 分钟内直接用缓存 */
 const CF_RENDER_MAX = 40;            /* 缓存条数上限 */
 const CF_FAIL_COOLDOWN = 90e3;       /* 验证失败后 90 秒内不再硬闯 */
+/* 第一次失败只罚 15 秒：CF 的挑战本来就时好时坏（换个 target / 换一秒就可能过），
+   一次没过就把整个源锁死 90 秒，正是「porn-comic 经常无法检索」的重要成因。
+   只有**环境性**失败（Chrome 根本起不来）和**连续第 2 次**失败才用长冷却。 */
+const CF_FAIL_SOFT_COOLDOWN = 15e3;
 const cfCache = new Map();           /* url -> { html, at } */
 let cfCooldownUntil = 0;
 let cfLastErr = '';
+let cfConsecFails = 0;
 const CF_CHALLENGE_RE = /just a moment|请稍候|attention required|checking your (browser|connection)|verifying you are human|正在验证|人机验证|cf-chl|_cf_chl_/i;
 
 /* --- 「这是不是 Cloudflare 的挑战页」的可复用判断（porn-comic 与 danbooru 共用）-------
@@ -1051,7 +1909,17 @@ const CF_STEALTH_JS = `(function(){
 const CF_PROBE_JS = `(function(){
   var t = document.title || '';
   var el = document.querySelector('#challenge-running,#challenge-stage,#cf-challenge-running,.cf-error-title,[id^="cf-chl"]');
-  return { title: t, href: location.href, dom: !!el, body: document.body ? document.body.innerHTML.length : 0 };
+  /* thumbs / works：给「这页到底渲染出来没有」一个可判定的依据。
+     只看正文字节数会被**骨架页**骗过去 —— porn-comic 的标签页先出骨架、作品网格稍后才补，
+     两种阶段的 innerHTML 长度差不了多少（实测 17.1KB vs 17.7KB），拿字节数当判据必然误判。 */
+  var thr = 0, wk = 0;
+  try {
+    thr = document.querySelectorAll('a.thumb').length;
+    wk = document.querySelectorAll('a[href^="/h/"],a[href^="/hentai/"],a[href^="/gif/"]').length;
+  } catch (e) {}
+  return { title: t, href: location.href, dom: !!el,
+    body: document.body ? document.body.innerHTML.length : 0,
+    thumbs: thr, works: wk };
 })()`;
 
 function cfChromePath() {
@@ -1492,6 +2360,32 @@ async function cfRender(url, opt) {
       await cdpSend('Page.navigate', { url: url }, page.sid);
       const deadline = Date.now() + timeout;
       let seenTitle = '';
+      /* ★readyWhen / readyGrace：等「真的渲染出来了」再抓★
+         只看正文字节数会被**骨架页**骗过去：porn-comic 的标签页先出骨架，
+         作品网格随后异步补上，两个阶段的 innerHTML 只差几千字节
+         （实测 /tags/naruto.html：1s 时 13509B、0 个 a.thumb，页面标题却已经是
+          "naruto comics Page 1 - porn-comic"）。旧逻辑在这一刻就判「取到了」并抓走，
+         结果是一张**没有任何作品链接**的真页面 —— 上层只能报「0 条」或「站点改版」。
+         调用方用 opt.readyWhen(st) 说清「什么时候才算就绪」（例如 thumbs>0）；
+         一直不就绪也不会死等：给 readyGrace 毫秒，到点仍按「至少不是挑战页」抓回去。 */
+      let fallbackAt = 0, captured = '', challengeAt = 0, sig = '', sigAt = 0;
+      const challengeGrace = Number(opt.challengeGrace) || 6000;
+      /* 列表页是**渐进渲染**的：第一条作品链接出现时后面往往还有几十条。
+         只看「有没有列表」会抓到一个只含 1 条的真页面（实测 fate 只回了 1 条）。
+         所以再加一层「稳定判据」：条目数/正文规模连续 readyStableMs 毫秒不变，
+         才认为这一页渲染完了。 */
+      const stableMs = Number(opt.readyStableMs) || 1200;
+      const capture = async () => {
+        const html = await cfEval('document.documentElement.outerHTML', page.sid);
+        if (!html) return '';
+        cfState.renders++; cfState.solvedAt = Date.now(); cfState.lastOkAt = Date.now();
+        cfCacheSet(url, String(html));
+        /* 顺手把「这次过了验证」的 cookie + UA 记进内存 —— /api/proxy 代取 *.donmai.us
+           的图片要用它（cf_clearance 绑 IP + UA，所以两样一起存、一起带）。
+           抓不到不影响本次取数，见 cfCredCapture。 */
+        await cfCredCapture(url, page.sid);
+        return String(html);
+      };
       while (Date.now() < deadline) {
         await sleep(600);
         const st = await cfEval(CF_PROBE_JS, page.sid);
@@ -1499,20 +2393,43 @@ async function cfRender(url, opt) {
         last = st;
         if (st.title !== seenTitle) {
           seenTitle = st.title;
-          log('  CF[' + url.replace(/^https:\/\/[^/]+/, '') + '] ' + Math.round((Date.now() - (deadline - timeout)) / 1000) + 's 标题="' + String(st.title).slice(0, 60) + '" len=' + st.body + ' dom=' + st.dom);
+          log('  CF[' + url.replace(/^https:\/\/[^/]+/, '') + '] ' + Math.round((Date.now() - (deadline - timeout)) / 1000) + 's 标题="' + String(st.title).slice(0, 60) + '" len=' + st.body + ' dom=' + st.dom + ' 列表=' + (st.thumbs || 0) + '/' + (st.works || 0));
         }
         if (/^chrome-error:/i.test(String(st.href))) throw new Error('Chrome 打不开这个地址（' + st.href + '）');
-        if (!st.dom && !CF_CHALLENGE_RE.test(String(st.title)) && st.body > minBody) {
-          await sleep(900);                       /* 等首屏列表补完 */
-          const html = await cfEval('document.documentElement.outerHTML', page.sid);
-          if (html) {
-            cfState.renders++; cfState.solvedAt = Date.now(); cfState.lastOkAt = Date.now();
-            cfCacheSet(url, String(html));
-            /* 顺手把「这次过了验证」的 cookie + UA 记进内存 —— /api/proxy 代取 *.donmai.us
-               的图片要用它（cf_clearance 绑 IP + UA，所以两样一起存、一起带）。
-               抓不到不影响本次取数，见 cfCredCapture。 */
-            await cfCredCapture(url, page.sid);
-            return String(html);
+        /* ★挑战页不要死等★ 标题命中 CF 挑战特征就记时；超过 challengeGrace 还没过去就判失败。
+           旧逻辑会一直空转到整个 timeout（默认 40 秒，porn-comic 这条给了 10 秒），
+           而实测这一类挑战在本 profile 下**根本不会自己过去** ——
+           白等的那几秒本来正是下一个入口（/tags/ 空结果页）要用的。 */
+        if (CF_CHALLENGE_RE.test(String(st.title))) {
+          if (!challengeAt) challengeAt = Date.now();
+          if (Date.now() - challengeAt > challengeGrace) {
+            throw new Error('Cloudflare 验证没通过（等了 ' + Math.round(challengeGrace / 1000) +
+              's 仍是「' + String(st.title).slice(0, 40) + '」）');
+          }
+        } else { challengeAt = 0; }
+        const settled = !st.dom && !CF_CHALLENGE_RE.test(String(st.title)) && st.body > minBody;
+        if (settled) {
+          const ready = !opt.readyWhen || opt.readyWhen(st);
+          if (ready) {
+            /* 用「条目数 + 正文规模（按 2KB 分桶）」当指纹：任一变化都说明还在加载 */
+            const fp = (st.thumbs || 0) + ':' + (st.works || 0) + ':' + Math.round(st.body / 2000);
+            if (fp !== sig) { sig = fp; sigAt = Date.now(); }
+            if (Date.now() - sigAt >= stableMs) {
+              await sleep(500);                   /* 末条图/标题补完 */
+              captured = await capture();
+              if (captured) return captured;
+            }
+          } else if (!fallbackAt) {
+            fallbackAt = Date.now();
+          }
+        }
+        if (fallbackAt && Date.now() - fallbackAt > (Number(opt.readyGrace) || 6000)) {
+          captured = await capture();
+          if (captured) {
+            log('  CF[' + url.replace(/^https:\/\/[^/]+/, '') + '] 等够 ' +
+              Math.round((Number(opt.readyGrace) || 6000) / 1000) + 's 仍未就绪，按当前 DOM 抓回（列表=' +
+              (last && last.thumbs || 0) + '/' + (last && last.works || 0) + '）');
+            return captured;
           }
         }
       }
@@ -1524,11 +2441,16 @@ async function cfRender(url, opt) {
   };
   const p = cfState.chain.then(task, task);
   cfState.chain = p.then(() => undefined, () => undefined);
-  return p.then(html => html, e => {
-    cfCooldownUntil = Date.now() + CF_FAIL_COOLDOWN;
-    cfState.lastFailAt = Date.now();               /* /api/ping 据此把 available 降级成 false */
+  return p.then(html => { cfConsecFails = 0; return html; }, e => {
+    cfConsecFails++;
     cfLastErr = (e && e.message) || String(e);
-    log('CF 验证失败，' + Math.round(CF_FAIL_COOLDOWN / 1000) + ' 秒内不再硬闯：' + cfLastErr);
+    /* 环境性失败（Chrome 起不来）跟「这次挑战没过」要分开：前者重试也没用，直接长冷却 */
+    const envFail = /Chrome 没能启动|调试连接失败|浏览器不可用|无法启动/.test(cfLastErr);
+    const wait = (envFail || cfConsecFails >= 2) ? CF_FAIL_COOLDOWN : CF_FAIL_SOFT_COOLDOWN;
+    cfCooldownUntil = Date.now() + wait;
+    cfState.lastFailAt = Date.now();               /* /api/ping 据此把 available 降级成 false */
+    log('CF 验证失败（本进程连续第 ' + cfConsecFails + ' 次' + (envFail ? '，环境性' : '') + '），' +
+      Math.round(wait / 1000) + ' 秒内不再硬闯：' + cfLastErr);
     throw e;
   });
 }
@@ -1687,8 +2609,53 @@ function pcParse(html, host, limit) {
   return out;
 }
 
-/* 一旦被 CF 挡过，后续请求直接走 Chrome，不再白等一次普通请求 */
-let pcNeedsRender = false;
+/* 三条通路的「暂时别试了」时间戳。用时间戳而不是布尔量：
+   VPN 开关、中继限流都是**会变**的状态，钉死成 true 就再也回不来了。 */
+let pcDirectDeadUntil = 0;
+let pcRelayDeadUntil = 0;
+/* ★Chrome 通道也要有熔断★（本轮新增，2026-09-22 实测）
+   症状：这个站点在本机**完全够不着** —— 浏览器直连 `ERR_CONNECTION_TIMED_OUT`、
+   网关直连 403（CF）、公共中继整条超时、Chrome 通道起不来（沙箱禁命名管道）。
+   但没有熔断时，**每一次检索**都要把 Chrome 路径完整走一遍（每次挑战宽限 4.5s），
+   实测一轮搜索里它连撞 30 次、每次 6–9 秒 —— 这正是「porn-comic 偶尔超时」的真相：
+   不是偶尔，而是它每次都在偷前端聚合器 22 秒预算里的一大块。
+   所以：连续失败 3 次就熔断 15 分钟（成功一次立刻清零），冷却期内**直接跳过** Chrome。
+   站点恢复时最多等 15 分钟就能自己回来（熔断到期后第一条检索会真试一次）。 */
+const PC_CHROME_FAIL_LIMIT = 3;
+const PC_CHROME_COOLDOWN = 15 * 60e3;
+let pcChromeDeadUntil = 0;
+let pcChromeFails = 0;
+
+/* ★「超时」的根因就在这里，改之前先看清账★（2026-09-21 实测，本机出口）
+     直连  → HTTP 403（CF 挡），**快**（<1s），且一次就够（进 5 分钟冷却）
+     中继  → 公共代理（allorigins / allorigins-get）现在**整体在超时**：
+           中继内部是「逐个中继各给一份 timeout」，两个中继 × 20s = 40s 的潜在开销，
+           实测冷启动一次就吃掉 16–18s —— 把整个预算耗光，连 Chrome 都轮不上
+     本机 Chrome → 过验证成功能取到真页面，**每次 6–9 秒**，是本环境下唯一真能出数的通路
+   于是「一次成功检索」= 0.5s + 20s + 6s ≈ 26.5s，而前端聚合器的硬上限只有 22s
+   （sources.js 的 RUN_CAP_MS）—— 结果就是用户看到的「porn-comic 经常超时无返回」。
+
+   四处改动，缺一不可：
+     ① **通路顺序改成 直连 → 本机 Chrome → 中继**。
+        旧顺序把中继排在 Chrome 前面，理由是「中继比 Chrome 稳」；那是中继还能用时的结论，
+        现在实测反了：中继每次都超时，Chrome 每次都能出数。把最不可能成功的排在最前，
+        等于每次检索都先白等十几秒。中继退到最后当「Chrome 起不来时」的兜底。
+     ② 中继超时 20s → 6s，并且**只给它剩余预算**（不再吃满全线）；
+        中继失败冷却 60s → 3 分钟（它是整条链在超时，不是偶发 522）。
+     ③ **记住上一条走得通的通路**，下次先走它（10 分钟内有效）——
+        Chrome 一旦通，后续检索直接落在 6–9 秒，不必每次重走一遍直连。
+     ④ 每条通路都受**总预算**约束：预算耗尽就跳过、cfRender 也带上剩余时间，
+        保证 pcFetchPage 一定在 PC_BUDGET_MS 内返回（不管成功还是失败）。 */
+const PC_RELAY_TIMEOUT = 6000;
+const PC_RELAY_COOLDOWN = 3 * 60e3;
+const PC_DIRECT_TIMEOUT = 8000;
+/* Chrome 单次上限：它能出数的页面 6–9 秒就出来了，出不来的是**挑战页**（永远不会就绪）。
+   给 10 秒足够，多给的每一秒都是在偷下一个入口的预算。 */
+const PC_CHROME_TIMEOUT = 9000;
+const PC_BUDGET_MS = 20000;         /* 单次取页的总预算：前端 RUN_CAP 22s，必须留出余量 */
+const PC_STICKY_MS = 10 * 60e3;     /* 「上次走通的那条路」有效期 */
+
+let pcLastGood = { ch: '', at: 0 };
 
 /* 判断是不是 CF 的验证中间页。
    注意：正常页面里也会引用 cdn-cgi/challenge-platform 的脚本，所以绝不能只看那个字符串 ——
@@ -1699,24 +2666,144 @@ function pcIsChallenge(html) {
   return !PC_OK_RE.test(String(html || '')) && cfChallengeHtml(html);
 }
 
-/** 取一页：先普通请求，被 CF 挡住就交给本机 Chrome 过验证 */
-async function pcFetchPage(pathname) {
-  if (!pcNeedsRender) {
+/** 这一页到底算不算「站点真的把页面给我们了」（不是挑战页、不是错误页） */
+function pcLooksReal(html) {
+  const s = String(html || '');
+  if (s.length < 2048) return false;
+  return !cfChallengeHtml(s);
+}
+
+/* ★站点自述「没有这个结果」★
+   实测 /tags/zzqqxxqqzz.html 渲染后 <title> 就是 `zzqqxxqqzz no result`
+   —— 这是站点自己给的、精确无疑的空结果标记，比任何启发式都可靠。
+   只有认到这个标记才敢回答「0 条」；「真页面 + 0 个 a.thumb」不算数
+   （那可能是列表还没渲染完 / 站点改版），得继续试下一个入口。 */
+function pcNoResult(html) {
+  const s = String(html || '');
+  const m = s.match(/<title[^>]*>([\s\S]{0,200}?)<\/title>/i);
+  return !!(m && pcNoResultTitle(m[1]));
+}
+/** 同一个判据的「只有标题」版本：CF 探针在页面里就能拿到 title，不用等 outerHTML */
+function pcNoResultTitle(t) { return /\bno\s+result/i.test(String(t || '')); }
+
+/** 取一页，三条通路依次试；带总预算 + 「上次走通的那条优先」 */
+async function pcFetchPage(pathname, budgetMs, opts) {
+  opts = opts || {};
+  const url = PC_BASE + pathname;
+  const budget = budgetMs || PC_BUDGET_MS;
+  const deadline = Date.now() + budget;
+  const left = () => deadline - Date.now();
+  const now = Date.now();
+
+  const byDirect = async () => {
+    const r = await outFetch(url, { headers: PC_HEADERS, timeout: Math.min(PC_DIRECT_TIMEOUT, left()) });
+    const html = r.text();
+    if (!cfIsChallenge(r.status, r.headers, html, PC_OK_RE)) {
+      return { html: html, status: r.status, via: planOf('porn-comic.com') || 'http' };
+    }
+    pcDirectDeadUntil = Date.now() + 5 * 60e3;
+    log('porn-comic 直连被 Cloudflare 挡住（HTTP ' + r.status + '），改试中继 / 本机 Chrome');
+    return null;
+  };
+
+  const byRelay = async () => {
+    /* 中继不转 cookie，也不该转；实测这几个页面本来就不需要 cookie。
+       ⚠ 中继内部是「逐个中继各给一份 timeout」⇒ 真正的开销是 timeout × 中继条数。
+       给它**人均一份剩余预算**，既不超过 PC_RELAY_TIMEOUT，也保证整条中继链
+       在 left() 之内收手 —— 旧版让每个中继各吃满 20 秒，实测冷启动一次就耗掉 16–18 秒。 */
+    const n = Math.max(1, RELAYS.length);
+    const t = Math.max(2000, Math.min(PC_RELAY_TIMEOUT, Math.floor((left() - 1000) / n)));
+    const r = await outFetch(url, {
+      headers: { accept: PC_HEADERS.accept, referer: PC_HEADERS.referer },
+      timeout: t, relayOnly: true
+    });
+    const html = r.text();
+    if (!cfIsChallenge(r.status, r.headers, html, PC_OK_RE)) return { html: html, status: r.status, via: 'relay' };
+    pcRelayDeadUntil = Date.now() + PC_RELAY_COOLDOWN;
+    log('porn-comic 中继取回的也是 CF 挑战页，改走本机 Chrome');
+    return null;
+  };
+
+  const byChrome = async () => {
+    /* Chrome 通道已经确认过标题和正文，这里直接信它。
+       ★必须把剩余预算喂给 cfRender★：它默认自己给 40 秒，
+       不受外层总预算约束 —— 实测过「预算 19 秒、实际跑了 45 秒」的破口。
+       ★readyWhen★：这一站的列表页先出骨架、作品网格随后异步补上，
+       只看正文字节数会把骨架页当成成品抓走（见 cfRender 里的注释）。
+       三个「真就绪」信号任一成立即可：
+         · thumbs/works > 0 —— 作品网格已经渲染出来；
+         · 站点自述 no result —— 它已经把「没有结果」写进标题了，等下去也不会有；
+         · 不是上面两种就一直等（readyGrace 到点仍按当前 DOM 抓回去，绝不空手而归）。
+       force：上一跳是被 search 子域的 CF 挑战挡住的，而这一跳打的是主域 ——
+       主域页面前一刻刚渲染成功过，没有理由跟着一起冷却（见 porncomicSearch）。 */
+    const html = await cfRender(url, {
+      timeout: Math.max(5000, Math.min(left(), PC_CHROME_TIMEOUT)),
+      force: !!opts.forceChrome,
+      readyWhen: st => !st.dom && ((st.thumbs || 0) > 0 || (st.works || 0) > 0 || pcNoResultTitle(st.title)),
+      readyGrace: 5000,
+      /* 挑战页在本 profile 下基本不会自己过去，等 4.5 秒足够判死；
+         多等的每一秒都是从「下一个入口」的预算里偷的。 */
+      challengeGrace: 4500
+    });
+    return { html: html, status: 200, via: 'chrome' };
+  };
+
+  const CH = { direct: byDirect, relay: byRelay, chrome: byChrome };
+  /* ★顺序 = 实测成功率 × 速度★：直连最便宜（有 VPN 时就是它），
+     Chrome 是本环境下唯一真能出数的通路，中继退到最后兜底。
+     ★中继默认不参与★（只有调用方说「这是最后一个入口了」才放行，见 opts.allowRelay）：
+     实测公共中继现在整条链在超时，让它夹在中间只会把本该留给下一个入口的预算吃光，
+     表现就是「第一个入口挑战失败 → 中继白等十几秒 → 第二个入口预算耗尽」。 */
+  const order = opts.allowRelay === false ? ['direct', 'chrome'] : ['direct', 'chrome', 'relay'];
+  /* 上一次真的走通过的那条，先试它（有效期内）。失败时下面的循环会把其余通路补齐。 */
+  if (pcLastGood.ch && (now - pcLastGood.at) < PC_STICKY_MS && CH[pcLastGood.ch]) {
+    order.splice(order.indexOf(pcLastGood.ch), 1);
+    order.unshift(pcLastGood.ch);
+  }
+
+  const errs = [];
+  for (const id of order) {
+    if (left() < 1500) { errs.push(id + '：总预算耗尽，跳过'); continue; }
+    /* 已被判死的通路在冷却期内直接跳过，别白等 */
+    if (id === 'direct' && Date.now() < pcDirectDeadUntil) continue;
+    if (id === 'relay' && Date.now() < pcRelayDeadUntil) continue;
+    /* Chrome 熔断期内直接跳过（否则每次检索都要白等 4.5s 的挑战宽限，实测一轮撞 30 次） */
+    if (id === 'chrome' && Date.now() < pcChromeDeadUntil) {
+      errs.push('chrome：连续 ' + pcChromeFails + ' 次起不来，已熔断 ' +
+        Math.ceil((pcChromeDeadUntil - Date.now()) / 60000) + ' 分钟（避免每次检索都空等）');
+      continue;
+    }
     try {
-      const r = await outFetch(PC_BASE + pathname, { headers: PC_HEADERS, timeout: 15000 });
-      const html = r.text();
-      /* 状态码 + 响应头（cf-mitigated）+ 正文特征一起判：实测 CF 不一定用 403 */
-      if (!cfIsChallenge(r.status, r.headers, html, PC_OK_RE)) return { html: html, status: r.status, via: 'http' };
-      pcNeedsRender = true;
-      log('porn-comic 被 Cloudflare 挡住，切换到本机 Chrome 过验证');
+      const got = await CH[id]();
+      if (got) {
+        pcLastGood = { ch: id, at: Date.now() };
+        if (id === 'chrome') pcChromeFails = 0;
+        return got;
+      }
     } catch (e) {
-      if (cfUnavailableReason()) throw e;      /* 没浏览器可用就别切了，直接报原错 */
-      pcNeedsRender = true;
+      const msg = ((e && e.message) || e).slice(0, 110);
+      errs.push(id + '：' + msg);
+      if (id === 'direct') {
+        pcDirectDeadUntil = Date.now() + 5 * 60e3;
+        log('porn-comic 直连取不到（' + msg + '），改试中继');
+      }
+      if (id === 'relay') {
+        pcRelayDeadUntil = Date.now() + PC_RELAY_COOLDOWN;
+        log('porn-comic 中继没取到（' + msg + '），改走本机 Chrome');
+      }
+      if (id === 'chrome') {
+        pcChromeFails++;
+        if (pcChromeFails >= PC_CHROME_FAIL_LIMIT && Date.now() >= pcChromeDeadUntil) {
+          pcChromeDeadUntil = Date.now() + PC_CHROME_COOLDOWN;
+          log('porn-comic Chrome 通道连续 ' + pcChromeFails + ' 次起不来，熔断 ' +
+            Math.round(PC_CHROME_COOLDOWN / 60000) + ' 分钟（不再让每次检索白等）');
+        }
+      }
     }
   }
-  /* Chrome 通道已经确认过标题和正文，这里直接信它 */
-  const html = await cfRender(PC_BASE + pathname);
-  return { html: html, status: 200, via: 'chrome' };
+  const err = new Error('三条通路都没取到：' + (errs.join('；') || '预算耗尽'));
+  err.pcErrs = errs;
+  throw err;
 }
 
 async function porncomicSearch(query) {
@@ -1729,26 +2816,309 @@ async function porncomicSearch(query) {
   if (extra) tries.push('/tags/' + pcSlug(extra) + '.html');
   if (!tries.length) tries.push(page > 1 ? '/index-' + page + '.html' : '/h/');
 
+  /* 整个请求的总预算：前端聚合器只给每个源 22 秒（sources.js 的 RUN_CAP_MS），
+     这里必须**一定**在它之前给出答复，否则用户看到的就是「超时无返回」。 */
+  const deadline = Date.now() + 19000;
   const errs = [];
-  for (const p of tries) {
+  /* 上一跳被 search 子域的 CF 挑战挡住时置 1：下一跳允许绕过 CF 冷却再试一次。
+     依据：挑战只发生在 /q/ 302 过去的 search.porn-comic.com，
+     主域的 /tags/ 页面在同一台机器上刚刚渲染成功过。 */
+  let forceChromeNext = false;
+  for (let i = 0; i < tries.length; i++) {
+    const p = tries[i];
+    let left = deadline - Date.now();
+    if (left < 2500) { errs.push(p + '：总预算耗尽，未尝试'); break; }
+    /* 中继只留给**最后一个入口**：它不是这一站的可用通路，但「Chrome 起不来」时
+       仍是唯一的兜底，所以不能彻底删掉 —— 只是不许它夹在中间吃预算。 */
+    const stepOpts = { forceChrome: forceChromeNext, allowRelay: i === tries.length - 1 };
+    let r = null;
     try {
-      const r = await pcFetchPage(p);
-      if (r.status >= 400) { errs.push(p + '：HTTP ' + r.status); continue; }
-      const items = pcParse(r.html, 'porn-comic.com', 60);
-      if (!items.length) {
-        const why = cfUnavailableReason();
-        errs.push(p + '：' + (pcIsChallenge(r.html)
-          ? ('被 Cloudflare 人机验证挡住' + (why ? '（' + why + '）' : '，Chrome 通道也没过'))
-          : '页面结构没有匹配到作品'));
+      r = await pcFetchPage(p, Math.min(left, PC_BUDGET_MS), stepOpts);
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      /* ★「冷却中」不算站点给的答复★
+         那是**本进程自己**在限速（上一次 CF 失败留下的 15 秒冷却），这一跳根本没真的试。
+         不放行的话，一个刚发生的「无结果」查询会把紧接着的下一次检索一起堵死
+         —— 实测就是这样白丢了 hiten 的结果（/q/ 连试都没试就被自己的冷却拦下）。
+         还有预算就用 force 真试一次：只重试一次，不递归、不循环。 */
+      if (/冷却中/.test(msg) && (deadline - Date.now()) > 9000) {
+        try {
+          r = await pcFetchPage(p, Math.min(deadline - Date.now(), PC_BUDGET_MS),
+            { forceChrome: true, allowRelay: false });
+        } catch (e2) { r = null; errs.push(p + '：' + (((e2 && e2.message) || e2) + '（绕过冷却重试后）')); }
+      }
+      if (!r) {
+        errs.push(p + '：' + msg);
+        /* 被 CF 挑战挡住的是 search 子域，不代表主域也拒我们 —— 放行下一跳绕过冷却 */
+        if (/Cloudflare 验证没通过/.test(msg)) forceChromeNext = true;
         continue;
       }
+    }
+    forceChromeNext = false;
+    if (r.status >= 400) { errs.push(p + '：HTTP ' + r.status); continue; }
+    const items = pcParse(r.html, 'porn-comic.com', 60);
+    if (items.length) {
       return {
         source: 'porncomic', host: 'porn-comic.com', total: items.length,
         items: items.slice(0, 60), via: r.via
       };
-    } catch (e) { errs.push(p + '：' + ((e && e.message) || e)); }
+    }
+    /* ★站点自己说「没有结果」⇒ 就答「0 条」★
+       实测这个站把空结果直接写进标题（`zzqqxxqqzz no result`），是精确信号。
+       以前这里会继续把**剩下的入口**再撞一遍，于是本来 6–8 秒能给出的
+       「0 条」被拖成 60 秒的「超时无返回」—— 这正是用户报的那个症状。 */
+    if (pcNoResult(r.html)) {
+      return {
+        source: 'porncomic', host: 'porn-comic.com', total: 0,
+        items: [], via: r.via, empty: true,
+        note: 'porn-comic 没有匹配「' + (q || extra || '(浏览)') + '」的作品（站点返回 no result）'
+      };
+    }
+    const why = cfUnavailableReason();
+    errs.push(p + '：' + (pcIsChallenge(r.html)
+      ? ('被 Cloudflare 人机验证挡住（经 ' + r.via + ' 取回' + (why ? '；Chrome 通道不可用：' + why : '') + '）')
+      : ('经 ' + r.via + ' 取回了页面，但结构里没有作品链接，站点也没说 no result（改版？页面 ' + r.html.length + 'B）')));
   }
-  throw new Error('porn-comic 没有取到结果：' + errs.slice(0, 3).join('；'));
+  throw new Error('porn-comic 没有取到结果（已试 ' + tries.length + ' 条入口：' + tries.join(' / ') +
+    '）：' + errs.slice(0, 3).join('；') +
+    '。可用手段：直连 / 境内中继 / 本机 Chrome 过验证 —— 三者都失败时多为出口 IP 被 CF 记恨，换个节点再试');
+}
+
+/* ==========================================================================
+   lectormangas（西语站，现役域名 lector-mangas.lat）—— 服务端渲染的 Astro 页面
+   --------------------------------------------------------------------------
+   ★为什么是 lector-mangas.lat 而不是 lectormanga.com / lectormangas.com★
+     · lectormanga.com       → DNS 无解析
+     · lectormangas.com      → **域名停放页**（parklogic 广告路由，不是漫画站）
+     · lectormangaa/ss.com   → 301 到 lector-mangas.lat（实测）
+     · lector-mangas.lat     → 真站：200、云flare、完整列表/详情/标签/排行
+   （旧 TMO 系 visortmo.com / zonatmo.com 已随西警方查封下线，DNS 都不解析了。）
+
+   ★检索参数是 ?search= 不是 ?q=★
+     站点自己的 JSON-LD 里写的是 /comics?q={search_term_string}，但实测 **?q= 被忽略**
+     （q=naruto 返回的是全库第一页，与不带参数完全一致）；真正生效的是 ?search=：
+     ?search=fate → 24 条全是 Fate 系；?search=fate&page=2 → 第 2 页；无结果时返回空列表。
+     所以这里只认 search=，并且**不做任何客户端过滤**（过滤会掩盖端点变化）。
+
+   列表结构（服务端渲染，原样可解析）：
+     <div id="directory-results"><div class="row manga-grid">
+       <div class="col-md-6 col-lg-6 col-xl-4 col-12"> … "8 Capítulos" …
+         <a href="/comics/<slug>" class="card-cover-link" title="标题">
+           <img src="https://api.zerocomics.net/storage/series/portadas/<id>.webp" …>
+     · 必须只在 #directory-results 这一段里抓：页面顶部还有整块「Clasificación」排行，
+       用的也是 /comics/<slug> 链接，不切范围会把排行当成检索结果。
+     · 封面图在 api.zerocomics.net（独立 CDN，不带 CF 挑战）。
+
+   网络：不带 Access-Control-Allow-Origin（实测）→ 浏览器 fetch 直连必被拦，
+        只能经网关或公共代理 —— 与 kemono / porn-comic 同一类。
+   ========================================================================== */
+/* 域名轮换池：这类站在被查封 / 换域名之间反复横跳，三个都实测过（后两个 301 回主域） */
+const LM_DOMAINS = ['lector-mangas.lat', 'lectormangass.com', 'lectormangaa.com'];
+const LM_HEADERS = {
+  accept: 'text/html,application/xhtml+xml',
+  'accept-language': 'es-ES,es;q=0.9,zh-CN;q=0.8,en;q=0.7'
+};
+
+/** 站内相对地址 → 绝对地址（封面已经是绝对地址，这里只兜底） */
+function lmAbs(base, href) {
+  const h = String(href || '').trim();
+  if (!h) return '';
+  if (/^https?:\/\//i.test(h)) return h;
+  return base + (h.charAt(0) === '/' ? h : '/' + h);
+}
+
+function lmDecode(s) {
+  return String(s == null ? '' : s)
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (m, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 解析 #directory-results 里的卡片。
+ * 按「列容器」切块（class 里带 col-md-6 / col-lg-6 / col-xl-4 这一组是该站卡片的固定特征），
+ * 再在块内取封面锚点 —— 比全页扫 a.thumb 稳，因为页首排行块长得一模一样。
+ */
+function lmParse(html, base, limit) {
+  const out = [], seen = {};
+  let scope = String(html || '');
+  const i = scope.indexOf('id="directory-results"');
+  if (i >= 0) scope = scope.slice(i); else return out;   /* 没有结果容器：当作没结果，绝不猜 */
+
+  const blocks = scope.split(/<div class="col-md-6 col-lg-6 col-xl-4 col-12"/);
+  blocks.shift();                                        /* 第 0 段是容器开头，不是卡片 */
+  for (const b of blocks) {
+    const tagM = b.match(/<a\b[^>]*class="[^"]*\bcard-cover-link\b[^"]*"[^>]*>/);
+    if (!tagM) continue;
+    const tag = tagM[0];
+    const href = (tag.match(/href="([^"]+)"/) || [])[1] || '';
+    if (!/^\/comics\/[^"?#]+$/.test(href)) continue;
+    const slug = href.replace(/^\/comics\//, '');
+    if (!slug || seen[slug]) continue;
+    seen[slug] = 1;
+    let title = lmDecode((tag.match(/title="([^"]*)"/) || [])[1] || '');
+    const rest = b.slice(b.indexOf(tag) + tag.length);
+    const imgTag = (rest.match(/<img\b[^>]*>/) || [])[0] || '';
+    const cover = lmAbs(base, (imgTag.match(/src="([^"]+)"/) || [])[1] || '');
+    if (!title) title = lmDecode((imgTag.match(/alt="([^"]*)"/) || [])[1] || '').replace(/^Portada de\s*/i, '');
+    /* 移动端统计块里的「N Capítulos」= 章节数（**不是页数**，所以只写进备注，
+       不塞进 pages —— 否则「页数多→少」排序会把连载章节数当成页数比较）。 */
+    const chM = b.match(/(\d+)\s*Cap[ií]tulos/i);
+    const chapters = chM ? parseInt(chM[1], 10) : 0;
+    /* 状态铺在封面上的 chip：/comics?statuses=En%20emisi%C3%B3n */
+    const stM = b.match(/statuses=([^"&]+)/);
+    let status = '';
+    try { status = stM ? decodeURIComponent(stM[1]) : ''; } catch (e) { status = ''; }
+    const noteBits = ['LectorManga · HTML'];
+    if (chapters) noteBits.push(chapters + ' 章');
+    if (status) noteBits.push(status);
+    out.push({
+      id: slug,
+      title: title || slug,
+      cover: cover,
+      url: lmAbs(base, href),
+      artist: '',
+      tags: status ? [status] : [],
+      pages: null,
+      note: noteBits.join(' · ')
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * 取一页：域名池逐个试；每个域名的失败原因都收集起来，全败时一次说清。
+ * ⚠ 只打 HTML 一次请求 —— 这个站没有 CF 挑战、不需要 cookie，是纯 HTTPS 直取。
+ */
+async function lmFetchPage(selector, timeout) {
+  const errs = [];
+  for (const host of LM_DOMAINS) {
+    const base = 'https://' + host;
+    const url = base + selector;
+    try {
+      const r = await outFetch(url, { headers: LM_HEADERS, timeout: timeout || 12000 });
+      const html = r.text();
+      if (r.status >= 400) { errs.push(host + '：HTTP ' + r.status); continue; }
+      return { html: html, base: base, host: host, url: url, status: r.status };
+    } catch (e) {
+      errs.push(host + '：' + ((e && e.message) || e));
+    }
+  }
+  throw new Error('本站不可达（已试 ' + LM_DOMAINS.length + ' 个域名：' + errs.slice(0, 3).join('；') + '）');
+}
+
+async function lectormangaSearch(query) {
+  const q = String(query.q || '').trim();
+  const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
+  const extra = String(query.extra || '').trim();
+  const limit = Math.max(1, Math.min(parseInt(query.limit || '60', 10) || 60, 60));
+  /* 检索词：关键词 + 可选标签/画师（站点只有一个自由文本 search 口，空格连接即可） */
+  const term = [q, extra].filter(Boolean).join(' ').trim();
+
+  const tries = [];
+  if (term) tries.push('/comics?search=' + encodeURIComponent(term) + (page > 1 ? '&page=' + page : ''));
+  /* 纯浏览（无关键词）：给最新上架列表，保证「不输词也能看」的时候有内容 */
+  if (!tries.length) tries.push('/comics' + (page > 1 ? '?page=' + page : ''));
+
+  const errs = [];
+  for (const sel of tries) {
+    try {
+      const r = await lmFetchPage(sel, 12000);
+      const items = lmParse(r.html, r.base, limit);
+      /* ★「真页面 + 0 条」是合法的空结果，不是故障★
+         （?search= <不存在的词> 服务端返回的就是没有卡片的列表页）。
+         如实回 0 条，让前端显示「0 条」，而不是编一个超时/解析失败的错误。 */
+      return {
+        source: 'lectormanga', host: r.host, total: items.length,
+        items: items, via: planOf(r.host) || 'http',
+        empty: items.length === 0, query: term
+      };
+    } catch (e) {
+      errs.push(sel + '：' + ((e && e.message) || e));
+    }
+  }
+  throw new Error('LectorManga 取数失败（已试 ' + tries.length + ' 条入口）：' + errs.slice(0, 3).join('；'));
+}
+
+/* ==========================================================================
+   词语级翻译（/api/translate）
+   --------------------------------------------------------------------------
+   为什么需要它：LectorManga 是**西语**站，只按标题做匹配，中文关键词打过去必然 0 条
+   （实测：?search=人妻 → 0 条；?search=naruto → 9 条）。前端因此需要一份「中文词 →
+   英 / 西 / 日 / 法」的候选串阶梯；高频词走前端内置离线词典（0ms，见 assets/js/xlate.js），
+   词典没收录的才来这里要一次机器译文。
+
+   设计取舍（都是为了「不拖慢、不报错」）：
+     · MyMemory 免费接口，不需要 key；实测本机直连 1.1s 可回。
+     · **硬超时**：整体 timeout（默认 4000ms），各语种并行，超时就放弃 ——
+       宁可少一条候选串，也不许把检索拖过 20 秒。
+     · **进程内缓存 30 分钟 / 200 条**：随机关键词连续检索时命中率不高，但
+       同一批候选串会被反复问（重搜 / 追加页），缓存能把这些重复请求全吃掉。
+     · 任何失败都返回 { ok:false }，**不抛**：调用方一律降级到离线词典。
+   ========================================================================== */
+const XLATE_TTL = 30 * 60e3;
+const XLATE_MAX = 200;
+const xlateCache = new Map();     // "src|lang" -> { at, text }
+
+/** 一眼就能看出是垃圾的译文：原样返回 / 含维基锚点 / MyMemory 的告警串 */
+function xlateBad(text, src) {
+  const t = String(text || '').trim();
+  if (!t) return true;
+  if (t.toLowerCase() === String(src || '').trim().toLowerCase()) return true;
+  if (/MYMEMORY WARNING|QUERY LENGTH LIMIT|#|https?:\/\//i.test(t)) return true;
+  if (t.length > 90) return true;
+  return false;
+}
+
+async function xlateOne(text, lang, timeout) {
+  const key = lang + '|' + text;
+  const hit = xlateCache.get(key);
+  if (hit && Date.now() - hit.at < XLATE_TTL) return hit.text;
+  const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) +
+    '&langpair=' + encodeURIComponent('zh-CN|' + lang);
+  /* MyMemory 直连可达（实测 1.1s）；仍然走 outFetch，于是 DoH 钉 IP / 中继
+     这两层补偿对它同样生效，出口被墙时不会硬死。 */
+  const r = await outFetch(url, {
+    timeout: Math.max(1500, timeout || 4000),
+    headers: { accept: 'application/json' }, allowEmpty: true, relay: true
+  });
+  const body = r.text();
+  let j = null;
+  try { j = JSON.parse(body); } catch (e) { return ''; }
+  if (!j || j.quotaFinished) return '';
+  const out = String(((j.responseData || {}).translatedText) || '').trim();
+  if (xlateBad(out, text)) return '';
+  xlateCache.set(key, { at: Date.now(), text: out });
+  while (xlateCache.size > XLATE_MAX) {
+    const oldest = xlateCache.keys().next().value;
+    if (oldest === undefined) break;
+    xlateCache.delete(oldest);
+  }
+  return out;
+}
+
+async function translateText(query) {
+  const q = String(query.q || '').trim().slice(0, 120);
+  const tos = String(query.to || 'en,es,ja,fr').split(',')
+    .map(s => s.trim()).filter(s => /^[a-z]{2}(-[A-Za-z]{2})?$/.test(s)).slice(0, 6);
+  if (!q) return { ok: false, error: '缺少 q' };
+  if (!tos.length) return { ok: false, error: '缺少 to' };
+  const budget = Math.max(1500, Math.min(6000, parseInt(query.ms || '4000', 10) || 4000));
+  const t0 = Date.now();
+  const pairs = await Promise.all(tos.map(async lang => {
+    try {
+      const text = await xlateOne(q, lang, budget - (Date.now() - t0));
+      return [lang, text];
+    } catch (e) { return [lang, '']; }
+  }));
+  const out = {};
+  pairs.forEach(p => { if (p[1]) out[p[0]] = p[1]; });
+  return {
+    ok: true, q: q, src: 'mymemory', ms: Date.now() - t0,
+    results: out, hit: Object.keys(out).length > 0
+  };
 }
 
 /* ==========================================================================
@@ -1776,7 +3146,11 @@ const READER_HOSTS = {
   jmcomic: 'https://18comic.vip/',
   /* porn-comic.com：条目页 /h/<id>.html、第 n 页 /h/<id>-<n>.html，
      正文图在 file/file2/file3.acgnngca.com（**不经 Cloudflare**，见 readerPorncomic）。 */
-  porncomic: 'https://porn-comic.com/'
+  porncomic: 'https://porn-comic.com/',
+  /* LectorManga（西语站，Astro SSR）：作品页 /comics/<slug>、章节页
+     /comics/<slug>/<capitulo-N|chapter-N>，正文图在 media.ikigaicomics.lat
+     （浏览器直连会失败，必须经 /api/proxy）。见 readerLectormanga。 */
+  lectormanga: 'https://lector-mangas.lat/'
 };
 
 /* 禁漫（jmcomic）的在线阅读：scramble_id 从「章节页模板」里取，还原用站点自己的算法。
@@ -1854,7 +3228,7 @@ const JM_READER_UNAVAILABLE = '禁漫（jmcomic）这次没能还原图片，原
 const READER_SOURCES = Object.keys(READER_HOSTS);
 /* 真正实现了的源（/api/reader 能给出 pages）；剩下的在 READER_UNAVAILABLE 里明确报不支持 */
 const READER_WORKING = ['mangadex', 'nhentai', 'danbooru', 'wnacg', 'ehentai', 'hitomi', 'pixiv',
-  'copymanga', 'jmcomic', 'porncomic'];
+  'copymanga', 'jmcomic', 'porncomic', 'lectormanga'];
 const READER_UNAVAILABLE = [];
 /** 上游 4xx 的统一中文解释（Cloudflare 的人机验证页最容易被误当成「源坏了」） */
 function readerUpstreamErr(what, r) {
@@ -2337,7 +3711,7 @@ async function readerDanbooru(id) {
    ========================================================================== */
 const WN_READER_HOSTS = [
   'www.wnacg.com', 'www.wnacg01.cc', 'www.wnacg02.cc', 'www.wnacg03.cc', 'www.wnacg05.cc',
-  'www.wn03.ru', 'www.wn04.ru', 'wnacg.com', 'wnacg.ru'
+  'www.wn03.ru', 'www.wn04.ru', 'wnacg.com', 'wnacg.ru', 'www.wnacg.date', 'www.wn07.ru'
 ];
 const WN_LEGACY_MAX = 300;      // 老版 ?p=N 兜底最多走多少页（防死循环）
 
@@ -2463,6 +3837,200 @@ async function readerWnacg(id) {
 }
 
 /* ==========================================================================
+   紳士漫畫（wnacg）**检索** —— 网关侧实现
+   --------------------------------------------------------------------------
+   为什么把检索搬到网关（前端原来的做法是「10 个镜像 × 3 条路径全量竞速」）：
+     · 那套做法一次检索最多打 30 个上游请求，其中真被 SNI 阻断的镜像只能靠中继兜底，
+       而中继是限流资源 —— 一次就把配额烧光（实测 AllOrigins 被这个竞速打成 429，
+       之后**所有**需要中继的源一起失效）。
+     · 镜像会持续换域名（实测 www.wn03.ru → 301 → www.wn07.ru，而 wn07.ru 又被 SNI 阻断），
+       前端跟在浏览器里发请求时连 301 都不能跟（跨域），只能靠「枚举 + 赌一个能通」。
+   网关侧能做到前端做不到的四件事：
+     ① **分批竞速**（每批 3 个，先到先得）而不是把 10 个一起甩出去；
+     ② **跟随 301/302**（hsRequest 已实现）—— www.wnacg.date 就是靠这个回到 www.wnacg.com；
+     ③ **记住最近成功的镜像**（state.wnHost，10 分钟）并给失败主机上冷却（pickProbe/hostDead）；
+     ④ **结果缓存 5 分钟**：翻页、重绘、同词重搜都不再打上游。
+   返回结构与其它网关源一致：{ source, host, total, items[] }。
+   ========================================================================== */
+const WN_SEARCH_CACHE_MS = 5 * 60e3;
+const wnSearchCache = new Map();        // key → { at, val }
+/* 本轮新增的时间预算（根因与取值理由见 wnacgSearch 里的「总预算」注释）：
+   旧实现每个镜像 15s、每条路径都独立竞速，实测最慢 28.6s；
+   现在单镜像 7s、整段 12s 封顶。 */
+const WN_HOST_MS = 7000;
+const WN_BUDGET_MS = 12000;
+/* 分类编号 → 前端卡片用的分类名（与 sources.js 的 WN_CATE_LABEL 同口径） */
+const WN_CATE_LABEL = {
+  1: 'doujinshi', 2: 'artbook', 3: 'cosplay', 5: 'doujinshi', 6: 'comic',
+  7: 'oneshot', 9: 'comic', 10: 'oneshot', 12: 'doujinshi', 13: 'comic',
+  14: 'oneshot', 16: 'doujinshi', 17: 'comic', 18: 'oneshot', 19: 'hanman',
+  20: 'hanman', 21: 'hanman', 22: '3d'
+};
+
+/** 紳士的 HTML 实体解码（标题里有 &amp; / &#39; / 搜索高亮的 <em> 等） */
+function wnDecode(s) {
+  return String(s == null ? '' : s)
+    .replace(/<[^>]*>/g, '')                    // 搜索高亮 <em> 之类
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (m, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 从一段 HTML 里取缩略图地址。
+    ★不能写成 `<img[^>]*src="…"`★：绅士检索结果页会把命中词高亮成 `<em>`，
+    而高亮是**写在 alt 属性里**的 —— `alt="…(<em>Fate</em>)…"` 里的 `>` 会让 `[^>]*` 提前收尾，
+    整个 img 标签被截断，src 永远匹配不到（实测表现就是「条目有、封面全空」）。
+    所以这里直接找资源地址本身，并要求它以 `//` 或 `http` 开头（把站点 logo 的 `data:` 排除掉）。 */
+function wnPickCover(html) {
+  const m = String(html || '').match(/(?:data-src|data-original|src)="((?:https?:)?\/\/[^"]+)"/i);
+  return m ? wnAbsUrl(m[1]) : '';
+}
+
+/** 检索结果页 → 条目数组。主路认 .gallary_item 的块，块结构变了就退回「锚点+标题」扫全页。 */
+function wnParseItems(html) {
+  const t = String(html || '');
+  const out = [];
+  const seen = {};
+  const add = (blk, href, title, cate) => {
+    const id = (String(href).match(/aid-(\d+)/) || [])[1] || '';
+    if (!id || seen[id]) return;
+    const name = wnDecode(title);
+    if (!name) return;
+    seen[id] = 1;
+    out.push({ id: id, title: name, cover: wnPickCover(blk), cate: String(cate || '') });
+  };
+  const blockRe = /<li[^>]*class="[^"]*\bgallary_item\b[^"]*"[\s\S]*?(?=<li[^>]*class="[^"]*\bgallary_item\b|<\/ul>)/gi;
+  let m;
+  while ((m = blockRe.exec(t))) {
+    const blk = m[0];
+    const href = (blk.match(/href="([^"]*photos-index-aid-\d+\.html[^"]*)"/i) || [])[1] || '';
+    const title = (blk.match(/<a[^>]*\btitle="([^"]*)"/i) || [])[1] ||
+      (blk.match(/<img[^>]*\balt="([^"]*)"/i) || [])[1] || '';
+    const cate = (blk.match(/pic_box\s+cate-(\d+)/i) || [])[1] || '';
+    add(blk, href, title, cate);
+  }
+  if (!out.length) {
+    /* 兜底：整页扫 photos-index-aid-*，标题取锚点 title，封面取该锚点前后一段里的资源地址 */
+    const re = /href="([^"]*photos-index-aid-(\d+)\.html[^"]*)"[^>]*\btitle="([^"]*)"/gi;
+    let a;
+    while ((a = re.exec(t))) {
+      const at = a.index;
+      const around = t.slice(Math.max(0, at - 300), at + 600);
+      const cate = (around.match(/pic_box\s+cate-(\d+)/i) || [])[1] || '';
+      add(around, a[1], a[3], cate);
+    }
+  }
+  return out;
+}
+
+/** 检索候选路径（按「命中率从高到低」，与前端原实现同口径，只是多了一条 /search/?q=&m=0 的旧式） */
+function wnSearchPaths(q, page, catId) {
+  const paths = [];
+  if (q) {
+    paths.push('/search/?q=' + encodeURIComponent(q) + '&f=_all&s=create_time_DESC&syn=yes' +
+      (page > 1 ? '&p=' + page : ''));
+    paths.push('/search/?q=' + encodeURIComponent(q) + '&m=0' + (page > 1 ? '&p=' + page : ''));
+    if (page === 1) paths.push('/albums-index-tag-' + encodeURIComponent(q) + '.html');
+  }
+  if (catId) {
+    paths.push('/albums-index-cate-' + catId + '.html');
+    if (page > 1) paths.push('/albums-index-page-' + page + '-cate-' + catId + '.html');
+  }
+  if (!paths.length) paths.push('/albums.html');
+  return paths;
+}
+
+async function wnacgSearch(query) {
+  const q = String(query.q || '').trim();
+  const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
+  const limit = Math.min(60, Math.max(10, parseInt(query.limit || '30', 10) || 30));
+  const catId = String(query.cat || '').replace(/[^0-9]/g, '');
+  if (!q && !catId) throw new Error('缺少关键词 q');
+  const key = [q, page, catId, limit].join('|');
+  const hit = wnSearchCache.get(key);
+  if (hit && Date.now() - hit.at < WN_SEARCH_CACHE_MS) {
+    return Object.assign({}, hit.val, { cached: true });
+  }
+
+  const hosts = wnHostOrder().filter(h => (hostDead.get(h) || 0) < Date.now());
+  const pool = hosts.length ? hosts : wnHostOrder();
+  const paths = wnSearchPaths(q, page, catId);
+  const merged = [];
+  const seen = {};
+  const errs = [];
+
+  /* ★总预算★（本轮新增）：旧实现每条路径都用 pickProbe 竞速 3 个镜像、每个 15s，
+     而 paths 有多条 —— 串起来实测能到 28.6s（关键词「巨乳」）。
+     现在：整段不超过 WN_BUDGET_MS，每个镜像的超时按**剩余预算**给，
+     预算耗尽就带着已有结果返回（有货返回货，没货交给调用方降级），
+     绝不允许某一条慢路径把整次检索拖到 20s 以上。 */
+  const t0 = Date.now();
+  const left = () => WN_BUDGET_MS - (Date.now() - t0);
+
+  for (const path of paths) {
+    /* eslint-disable no-await-in-loop */
+    if (left() < 2500) break;
+    let got;
+    try {
+      got = await pickProbe(pool, h => {
+        const per = Math.max(2000, Math.min(WN_HOST_MS, left() - 800));
+        return withHardTimeout(wnGet(h, path, per).then(r => {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const items = wnParseItems(r.text());
+          /* 「返回 0 条」是这一条路径的正常空结果，不是主机挂了 —— 不记冷却（pickProbe 里有白名单） */
+          if (!items.length) throw new Error(path + ' 返回 0 条');
+          return { host: h, items: items };
+        }), per + 400, '绅士镜像 ' + h);
+      }, { batch: 3, deadline: t0 + WN_BUDGET_MS });
+    } catch (e) {
+      errs.push(String((e && e.message) || e).slice(0, 120));
+      continue;
+    }
+    state.wnHost = got.host; state.wnHostAt = Date.now();
+    (got.val.items || []).forEach(it => {
+      if (seen[it.id]) return;
+      seen[it.id] = 1;
+      merged.push(it);
+    });
+    /* 够了就收手：命中数达到 limit 的一半（至少 4 条）就停，省掉剩下的上游请求 */
+    if (merged.length >= Math.max(4, Math.ceil(limit / 2))) break;
+  }
+
+  if (!merged.length) {
+    const e = new Error('紳士漫畫未返回结果（已试 ' + paths.length + ' 条路径 / ' + pool.length +
+      ' 个镜像：' + (errs.slice(0, 2).join('；') || '全部失败') +
+      '）。镜像域名会换，可在「筛选 → 镜像域名」里追加');
+    e.soft = 1;
+    throw e;
+  }
+
+  const items = merged.slice(0, limit).map(it => ({
+    id: it.id,
+    title: it.title,
+    cover: it.cover,
+    url: 'https://' + (state.wnHost || WN_READER_HOSTS[0]) + '/photos-index-aid-' + it.id + '.html',
+    artist: '',
+    tags: it.cate ? [WN_CATE_LABEL[it.cate] || ''].filter(Boolean) : [],
+    pages: null,
+    note: '紳士漫畫 · 网关镜像竞速（' + (state.wnHost || '') + (errs.length ? '，已跳过 ' + errs.length + ' 条失败路径' : '') + '）'
+  }));
+  const val = { source: 'wnacg', host: state.wnHost || '', total: merged.length, items: items };
+  wnSearchCache.set(key, { at: Date.now(), val: val });
+  if (wnSearchCache.size > 200) {
+    const oldest = wnSearchCache.keys().next().value;
+    wnSearchCache.delete(oldest);
+  }
+  return Object.assign({}, val, { cached: false });
+}
+
+/* ==========================================================================
    阶段二新增：E-Hentai（gid + 10 位 token）
    --------------------------------------------------------------------------
    （以下都是本机实测，出口走网关自动探测到的本地代理）
@@ -2541,19 +4109,25 @@ function ehBodyErr(status, body) {
 
 /** 串行 + 限速取一个 E-Hentai 页面，返回 HTML；失败一律抛中文错误（不抛栈）
     cookie：**只有显式传进来才带**。阅读器（逐页看图）一个字都不改 —— 它继续不带
-    cookie、继续走同一套限速与缓存（少一个变量，既有行为原样保留）。 */
-async function ehHtml(url, what, timeout, cookie) {
+    cookie、继续走同一套限速与缓存（少一个变量，既有行为原样保留）。
+    opts.relayOnly：只走中继（= 换一个出口 IP）。中继不转 cookie，调用方别指望它带登录态。 */
+async function ehHtml(url, what, timeout, cookie, opts) {
   const h = { accept: 'text/html,application/xhtml+xml,*/*', referer: EH_REFERER };
   const ck = String(cookie == null ? '' : cookie).trim();
   if (ck) h.cookie = ck;
+  const relayOnly = !!(opts && opts.relayOnly);
   const r = await ehSerial(async () => {
     try {
-      return await outFetch(url, { timeout: timeout || 20000, headers: h });
+      return await outFetch(url, {
+        timeout: timeout || 20000, headers: h,
+        relayOnly: relayOnly, image: false
+      });
     } catch (e) {
       throw new Error('连不上 ' + what + '：' + ((e && e.message) || e));
     }
   });
   const body = r.buf.toString('utf8');
+  ehHtml.lastVia = r.via || '';        /* 这一页到底是哪条腿给的（env/doh/relay），给上层写进 note 用 */
   const why = ehBodyErr(r.status, body);
   if (why) throw new Error(why);
   if (!r.ok) throw new Error(readerUpstreamErr(what, r));
@@ -2940,13 +4514,39 @@ async function readerHitomi(id) {
      HS_EH_COOKIE。带 cookie 会一起送给搜索请求（有些人靠登录态能改善搜索），
      但不带也照常工作；**没有任何情况下会假装 cookie 解决了搜索为空的问题**。
    ========================================================================== */
-const EH_SEARCH_CACHE_MS = 60e3;   /* 同一关键词 60 秒内不重复打上游 */
+/* ★E-Hentai 搜索的预算与缓存（本轮为「稳定性 / 速度」重做）★
+   ---------------------------------------------------------------------------
+   旧实现：搜索 25s → 中继换出口重试 30s（两个中继串行，最坏 60s）→ /torrents.php 25s
+   全部 await 串起来，**没有任何总预算**。最坏 ≈ 80~110s，而前端聚合器 22s 就把这个源
+   判成「超过 22 秒未返回」—— 于是「E-Hentai 老是要等、老是超时」。
+   现在：EH_BUDGET_MS 是**整个函数**的硬预算，每一段开跑前先看还剩多少；
+   不够就直接跳过那一段（宁可少试一条路，也不许超出预算把整次检索拖死）。
+   缓存也从「单槽位 60 秒」改成「小 Map + 5 分钟」：随机关键词连搜时命中率高得多，
+   命中即 0ms 返回，这才是把「五十次随机检索」稳在 15 秒以内的关键。 */
+const EH_BUDGET_MS = 13000;        // 整个 ehentaiSearch 的硬上限（前端给 16s，留 3s 余量）
+const EH_STEP_SEARCH = 8000;       // 第 1 段：正常搜索
+const EH_STEP_RELAY = 4500;        // 第 2 段：经中继换出口重试
+const EH_STEP_TORRENT = 4500;      // 第 3 段：/torrents.php 兜底
+const EH_STEP_POPULAR = 6000;      // 无关键词时取 /popular
+const EH_SEARCH_CACHE_MS = 5 * 60e3;
+const EH_SEARCH_CACHE_MAX = 60;
+const ehSearchCache = new Map();   // key -> { at, val }（插入序即最旧序）
+
 function ehSearchCacheGet(key) {
-  if (state.ehLastSearch && state.ehLastSearch.key === key &&
-    Date.now() - state.ehLastSearchAt < EH_SEARCH_CACHE_MS) return state.ehLastSearch.val;
-  return null;
+  const hit = ehSearchCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > EH_SEARCH_CACHE_MS) { ehSearchCache.delete(key); return null; }
+  return hit.val;
 }
-function ehSearchCacheSet(key, val) { state.ehLastSearch = { key: key, val: val }; state.ehLastSearchAt = Date.now(); }
+function ehSearchCacheSet(key, val) {
+  ehSearchCache.delete(key);                 // 重新插入 → 变成最新
+  ehSearchCache.set(key, { at: Date.now(), val: val });
+  while (ehSearchCache.size > EH_SEARCH_CACHE_MAX) {
+    const oldest = ehSearchCache.keys().next().value;
+    if (oldest === undefined) break;
+    ehSearchCache.delete(oldest);
+  }
+}
 
 /** 把 E-Hentai 列表页切成「一行一段」。
     坑（本机实测）：列表行并不是 `<tr><td class="itd">…` —— 实测 /popular 187706B 里
@@ -3030,16 +4630,21 @@ function ehTorrentRows(html, limit) {
   return out;
 }
 
-/** 把一个「搜索为 0 条」的事实讲成用户能照做的中文 */
+/** 把一个「搜索为 0 条」的事实讲成用户能照做的中文。
+    2026-09 复核：这里的「搜索侧按出口 IP 限制」是**真的**（机房 IP 常常拿不到搜索页），
+    但网关另外还会遇到「上游回 200 + 0 字节空壳」的**限流软封锁** —— 两者表现都是「没结果」，
+    处置却不同（前者换出口节点，后者等一两分钟）。所以两种情况都在文里点明。 */
 function ehZeroReason(withCookie) {
-  return 'E-Hentai 的搜索接口在**当前出口 IP** 下返回空集（实测：本机出口 54.255.249.22 / AWS 新加坡，' +
-    '用本机 Chrome 打开同一个搜索 URL 也显示 No hits found；首页 /popular /toplist /torrents.php 与 api.php 全部正常）。' +
-    '原因在 E-Hentai 服务端的搜索侧限制，不在请求参数或请求头——' +
+  return 'E-Hentai 这次没给出搜索结果。两种已知原因：' +
+    '① **出口 IP 被搜索侧限制**（机房/数据中心 IP 常见，页面正常、搜索恒空）；' +
+    '② **限流软封锁**（上游回「HTTP 200 + 0 字节」的空壳，连续请求就会触发，和请求头、cookie 无关）。' +
     (withCookie ? '本次已带上你配置的 cookie，仍然 0 条；' : '带上登录 cookie 也一样（cookie 与出口 IP 是两回事）；') +
-    '要恢复真正的搜索，需要换一个住宅/非机房的出口 IP（例如把系统代理切到另一个节点后重启网关）。';
+    '网关已自动改经境内中继用**另一个出口 IP** 重试过；要稳定搜索，建议把系统代理切到住宅出口节点。';
 }
 
 async function ehentaiSearch(query) {
+  const t0 = Date.now();
+  const left = () => EH_BUDGET_MS - (Date.now() - t0);
   const q = String(query.q || '').trim();
   const page = Math.max(1, parseInt(query.page || '1', 10) || 1);
   const limit = Math.min(80, Math.max(1, parseInt(query.limit || '60', 10) || 60));
@@ -3053,12 +4658,12 @@ async function ehentaiSearch(query) {
 
   /* 1) 关键词为空：直接给「非搜索入口」的真实结果（/popular 实测 64 条） */
   if (!terms) {
-    const html = await ehHtml(EH_HOST + '/popular', 'E-Hentai 流行榜', 20000);
+    const html = await ehHtml(EH_HOST + '/popular', 'E-Hentai 流行榜',
+      Math.max(2500, Math.min(EH_STEP_POPULAR, left())));
     const items = ehSearchRows(html, limit);
     const out = {
       ok: true, source: 'ehentai', via: 'popular', page: 1, total: items.length, items: items,
-      note: '没有给关键词，返回的是 E-Hentai 的 /popular（流行榜）。E-Hentai 的搜索侧在当前出口 IP 下' +
-        '一律 0 条（取证记录见 tools/gateway.js 里 ehentaiSearch 的注释）。'
+      note: '没有给关键词，返回的是 E-Hentai 的 /popular（流行榜）。'
     };
     ehSearchCacheSet(cKey, out);
     return out;
@@ -3072,41 +4677,73 @@ async function ehentaiSearch(query) {
   if (page > 1) params.push('page=' + (page - 1));
   const searchUrl = EH_HOST + '/?' + params.join('&');
 
+  /* 每一段都按「预算里还剩多少」给超时：宁可这一条腿短一点，也不许整段超预算。
+     全部失败也**不再抛**：搜索侧取不到就当成 0 条返回（ok:true, items:[]）——
+     前端只会显示「这个源 0 条」，而不是一条红色失败把整次检索标脏。 */
   let searchErr = '';
   let html = '';
+  let via = '';
   try {
-    html = await ehHtml(searchUrl, 'E-Hentai 搜索', 25000, cookie);
+    html = await ehHtml(searchUrl, 'E-Hentai 搜索',
+      Math.max(2500, Math.min(EH_STEP_SEARCH, left())), cookie);
+    via = ehHtml.lastVia || '';
   } catch (e) {
     searchErr = (e && e.message) || String(e);
-    throw new Error('E-Hentai 搜索失败：' + searchErr);
   }
   const zero = /No hits found/i.test(html);
-  const items = zero ? [] : ehSearchRows(html, limit);
+  const items = (html && !zero) ? ehSearchRows(html, limit) : [];
   if (items.length) {
     const out = {
       ok: true, source: 'ehentai', via: 'search', page: page, total: items.length, items: items,
-      note: 'E-Hentai 搜索（经网关，带完整请求头' + (withCookie ? ' + 你的 cookie' : '') + '）'
+      note: 'E-Hentai 搜索（经网关，带完整请求头' + (withCookie ? ' + 你的 cookie' : '') +
+        '；这一页由 ' + (via === 'relay' ? '境内中继（另一个出口 IP）' : '直连') + ' 取回）'
     };
     ehSearchCacheSet(cKey, out);
     return out;
   }
 
+  /* 2b) 空集 → **换一个出口 IP 再搜一次**（走中继，出口在墙外）
+     这一条是实测出来的、也是本功能最有效的一步：同一个词，本机出口（机房 IP）返回
+     No hits found，经中继却拿到 25 条真结果 —— E-Hentai 的搜索侧限制是**按出口 IP 认的**，
+     换个出口等于换一张脸。中继不转 cookie（也不该转），所以这条结果是匿名可见的那份。
+     ⚠ 预算不够就跳过：这一段在旧实现里是 30s（两个中继串行最坏 60s），是超时的主因。 */
+  if (!withCookie && left() > 2500) {
+    try {
+      const relayHtml = await ehHtml(searchUrl, 'E-Hentai 搜索（中继出口）',
+        Math.max(2000, Math.min(EH_STEP_RELAY, left() - 1200)), '', { relayOnly: true });
+      const rows = ehSearchRows(relayHtml, limit);
+      if (rows.length) {
+        const out = {
+          ok: true, source: 'ehentai', via: 'relay', page: page, total: rows.length, items: rows,
+          note: 'E-Hentai 搜索：当前出口 IP 下上游返回空集（E-Hentai 按出口 IP 限制搜索），' +
+            '已自动改经境内中继换一个出口 IP 重试，拿到 ' + rows.length + ' 条。'
+        };
+        ehSearchCacheSet(cKey, out);
+        return out;
+      }
+    } catch (e) { /* 中继也不行 → 继续走下面的种子兜底 */ }
+  }
+
   /* 3) 搜索为 0 条 → 真实可用的兜底：/torrents.php?search=<词>（实测按词过滤） */
   let torrents = [];
-  try {
-    const th = await ehHtml(EH_HOST + '/torrents.php?search=' + encodeURIComponent(terms), 'E-Hentai 种子检索', 25000);
-    torrents = ehTorrentRows(th, limit);
-  } catch (e) { /* 兜底也拿不到就只报原事实 */ }
+  if (left() > 2500) {
+    try {
+      const th = await ehHtml(EH_HOST + '/torrents.php?search=' + encodeURIComponent(terms),
+        'E-Hentai 种子检索', Math.max(2000, Math.min(EH_STEP_TORRENT, left() - 800)));
+      torrents = ehTorrentRows(th, limit);
+    } catch (e) { /* 兜底也拿不到就只报原事实 */ }
+  }
 
   const out = {
     ok: true, source: 'ehentai', via: torrents.length ? 'torrents' : 'search',
     page: page, total: torrents.length, items: torrents,
     /* 前端见到 searchZero 会把它当「搜索本身是空的」讲清楚，而不是「没搜到」 */
     searchZero: true,
-    note: ehZeroReason(withCookie) +
+    ms: Date.now() - t0,
+    note: (searchErr ? '搜索侧本次没取到页面（' + searchErr + '）。' : '') + ehZeroReason(withCookie) +
       (torrents.length
         ? '下面这 ' + torrents.length + ' 条来自可用的兜底入口 /torrents.php?search=' + terms +
-          '（同一个出口实测能按词过滤，每条都带 gid+token），**不是** E-Hentai 的搜索结果本身；' +
+          '（每条都带 gid+token），**不是** E-Hentai 的搜索结果本身；' +
           '注意种子表里的图集有可能已被删除/下架，那几条点开会提示读不了 —— 这是原站的状态，不是网关的问题。'
         : '兜底入口 /torrents.php?search=' + terms + ' 这次也没返回条目。')
   };
@@ -3620,6 +5257,220 @@ async function readerPorncomic(id) {
   return { title: info.title || ('porn-comic #' + album), referer: referer, chapters: [], pages: pages, note: note };
 }
 
+/* ==========================================================================
+   LectorManga（lector-mangas.lat）**在线阅读** —— 网关侧实现
+   --------------------------------------------------------------------------
+   实测取证（经 /api/proxy 抓真页面，2026-02）：
+     · 作品页 /comics/<slug> 是 Astro SSR，章节卡**全部**服务端渲染在一个容器里：
+         <div class="row pa-4" id="chapters-list" data-page-size="24">
+           <div class="col-md-6 col-12" data-chapter-num="700">
+             <a href="/comics/naruto/capitulo-700" …>…<div>Capítulo <span>700</span></div>
+                                              <div class="… text--disabled text-caption">hace 2 sem…</div>
+       实测 naruto 的清单一次就是 **700 条**（=站点卡片上写的章数）、tower-of-god 的卡片有 1040 条但
+       **405 条是同一话重复渲染**、去重后 636 话 —— 也就是说那个 data-page-size="24" 只是前端的
+       展示分页，**HTML 里没有截断**，「抓一次作品页 = 拿全量章节」成立；但必须按话号去重。
+     · 同一部作品的章节链接会混用两种写法（/capitulo-N 与 /chapter-N，互为别名：
+       实测 fatezero 的清单写 capitulo-1/capitulo-2，而 head 里 prefetch 的是 chapter-1，
+       两者都能打开、都是同一话）。解析对两种都收。
+     · 必须**只认容器内 + slug 对得上**的链接，否则会收到一堆同形链接：
+       页首 `<link rel="prefetch" href="/comics/<slug>/chapter-1">` 与「继续阅读」那条
+       /comics/<slug>/chapter-1（都在容器之外）、以及 /comics/genre/xxx、/comics/status/xxx、
+       /comics/<slug>（作品自身）。实测按容器切之后 fatezero=2 条、naruto=700 条、clean。
+     · 章节页 /comics/<slug>/<capitulo-N|chapter-N> 的正文图固定在
+         <img src="https://media.ikigaicomics.lat/capitulos/<作品id>/<媒体id>/page_001.webp"
+              alt="Fate/Zero Capítulo 1 — Página 3" loading="eager|lazy" class="… reader-page-img">
+       **class 含 reader-page-img** 是唯一稳定特征；src 就是真地址（不是 data-src，
+       全页 data-src 出现 0 次）。实测 naruto-sazanka/capitulo-1 = 26 页、
+       fatezero/chapter-1 = 38 页，页序号与 alt 里的「Página N」一一对应。
+     · 图床 media.ikigaicomics.lat 浏览器直连会失败（本机 TLS/防盗链），经 /api/proxy
+       实测 200 image/webp（68078B）。referer 传章节页 / 站点首页 / 空三种都能取到同样字节，
+       这里仍按规矩带**章节页自己的 URL** 当 Referer。
+     · pages[].alt 在本项目里是「同一页的备用图片地址」的语义（见上面的契约注释），
+       所以**绝不**把 <img> 的 alt 文案（那是页号文案）塞进去 —— 那等于给了一个坏备用地址。
+     · 章节清单缓存 10 分钟：naruto 的作品页 2.2MB / 700 张卡，而换章时按契约
+       「只抓那一章的 HTML」，清单应当复用第一次的结果，不该每翻一话就重下 2MB。
+   ========================================================================== */
+const LM_READER_MAX_CHAPTERS = 3000;      // 纯防呆（实测最大 tower-of-god 1040 话）
+const LM_READER_MS = 20000;               // 单页 HTML 超时；作品页可达 2.2MB，要给够
+const LM_READER_CACHE_MS = 10 * 60e3;
+const lmReaderCache = new Map();          // slug(小写) → { at, title, chapters:[{id,name}] }
+
+/** slug / 章节段这一层的合法字符（挡掉 ../、/、空白、查询串这类注入） */
+function lmSegOk(s) {
+  return !!s && /^[A-Za-z0-9._-]+$/.test(s) && s.indexOf('..') < 0;
+}
+
+/** <meta property|name="<prop>" content="…"> 的值（属性顺序不敏感，逐 tag 找） */
+function lmMetaContent(html, prop) {
+  const tags = String(html || '').match(/<meta\b[^>]*>/gi) || [];
+  const re = new RegExp('(?:property|name)="' + prop + '"', 'i');
+  for (const t of tags) {
+    if (!re.test(t)) continue;
+    const c = (t.match(/\bcontent="([^"]*)"/i) || [])[1];
+    if (c) return lmDecode(c);
+  }
+  return '';
+}
+
+/** 作品标题：og:title（去掉站点的「 - Leer online | Lectormanga」尾巴）→ h1 → slug */
+function lmReaderTitle(html, slug) {
+  let t = lmMetaContent(html, 'og:title')
+    .replace(/\s*[-–—|]\s*Leer online.*$/i, '')
+    .replace(/\s*\|\s*Lectormanga\s*$/i, '')
+    .trim();
+  if (!t) {
+    const h1 = (String(html || '').match(/<h1[^>]*>([\s\S]{0,400}?)<\/h1>/i) || [])[1] || '';
+    t = lmDecode(h1.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  }
+  return t || slug;
+}
+
+/**
+ * 作品页 → 章节清单（**升序**，chapters[0] 就是第 1 话）。
+ * 主路按 `<div class="col-md-6 col-12" data-chapter-num="N">` 切卡片 —— 这是「章节卡」的结构
+ * 不变量（实测 5 部作品 1～1040 话全都有），页尾那条「继续阅读 /comics/<slug>/chapter-1」
+ * 链接没有卡片外壳，用锚点全扫会把它当成一节，按卡片切就不会。
+ * 兜底：某天 data-chapter-num 消失了，退回「容器内 + slug 对得上 + 形如 chapter-N/capitulo-N」的锚点扫描。
+ * ⚠ 站点会把同一话**重复渲染**（实测 tower-of-god：1040 个卡片、405 个是同一话同 href 出现两次，
+ *   去重后 636 话，而检索卡片上写的「1040 章」正是那个重复计数）→ 必须按话号去重，
+ *   否则下拉里同一话会出现两次；另 chapter-1 与 capitulo-1 是同一话的两种写法，也一并去重。
+ */
+function lmReaderChapters(html, slug) {
+  const src = String(html || '');
+  const at = src.indexOf('id="chapters-list"');
+  if (at < 0) return [];
+  const scope = src.slice(at);
+  const s = String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const aRe = new RegExp('<a\\b[^>]*href="/comics/' + s + '/(chapter|capitulo)-([A-Za-z0-9._-]+)"', 'i');
+  const out = [];
+  const seenSeg = Object.create(null), seenNum = Object.create(null);
+  const push = (seg, numRaw, blk) => {
+    if (out.length >= LM_READER_MAX_CHAPTERS) return;
+    if (seenSeg[seg]) return;
+    seenSeg[seg] = 1;
+    const numKey = /^\d+(?:\.\d+)?$/.test(numRaw) ? String(parseFloat(numRaw)) : '';
+    if (numKey && seenNum[numKey]) return;                    // 同一话的重复卡片 / 两种写法
+    if (numKey) seenNum[numKey] = 1;
+    /* 章节名 = 卡片里 `<a>` 内部的文字，到日期行（class 含 text--disabled）为止。
+       切点必须退到那个 tag 的 `<`，否则会留下半截 `<div class="…` 混进名字里。 */
+    let body = String(blk || '');
+    const dateAt = body.indexOf('text--disabled');
+    if (dateAt > 0) {
+      const lt = body.lastIndexOf('<', dateAt);
+      body = body.slice(0, lt > 0 ? lt : dateAt);
+    }
+    let name = lmDecode(body.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+    if (!name || name.length > 60) name = numKey ? ('Capítulo ' + numRaw) : seg;
+    out.push({ id: seg, name: name, num: numKey ? parseFloat(numKey) : NaN, ord: out.length });
+  };
+
+  const parts = scope.split('data-chapter-num="');
+  parts.shift();                                              // 第 0 段是容器开头，不是卡片
+  for (const part of parts) {
+    const m = part.match(aRe);
+    if (!m) continue;
+    push(m[1] + '-' + m[2], m[2], part.slice(m.index + m[0].length));
+  }
+  if (!out.length) {
+    const re = new RegExp('<a\\b[^>]*href="/comics/' + s + '/(chapter|capitulo)-([A-Za-z0-9._-]+)"[^>]*>', 'gi');
+    const hits = [];
+    let m;
+    while ((m = re.exec(scope))) {
+      hits.push({ start: m.index, end: re.lastIndex, seg: m[1] + '-' + m[2], num: m[2] });
+    }
+    for (let i = 0; i < hits.length; i++) {
+      const stop = hits[i + 1] ? hits[i + 1].start : Math.min(hits[i].end + 1500, scope.length);
+      push(hits[i].seg, hits[i].num, scope.slice(hits[i].end, stop));
+    }
+  }
+  /* 站点是从新到旧渲染的（naruto 第一条是 capitulo-700）；统一翻成升序 */
+  const numeric = out.filter(c => !isNaN(c.num)).sort((a, b) => (a.num - b.num) || (a.ord - b.ord));
+  const rest = out.filter(c => isNaN(c.num)).sort((a, b) => a.ord - b.ord);
+  return numeric.concat(rest).map(c => ({ id: c.id, name: c.name }));
+}
+
+/** 章节页 → 正文图地址（按文档顺序 = 页顺序；class 含 reader-page-img 的 <img> 的 src 就是真地址） */
+function lmReaderPages(html) {
+  const out = [], seen = Object.create(null);
+  const tags = String(html || '').match(/<img\b[^>]*>/gi) || [];
+  for (const t of tags) {
+    if (!/\breader-page-img\b/.test(t)) continue;
+    const src = (t.match(/\bsrc="([^"]+)"/i) || [])[1] || '';
+    if (!/^https?:\/\//i.test(src)) continue;
+    if (seen[src]) continue;
+    seen[src] = 1;
+    out.push(src);
+  }
+  return out;
+}
+
+async function readerLectormanga(id, chapter) {
+  const slug = String(id || '').trim();
+  if (!lmSegOk(slug)) {
+    throw new Error('LectorManga 的 id 需要是作品页 /comics/<slug> 里的 slug' +
+      '（只允许字母、数字和 . _ -），收到的是「' + slug + '」');
+  }
+  const want = String(chapter || '').trim();
+  if (want && !lmSegOk(want)) {
+    throw new Error('LectorManga 的 chapter 需要是形如 capitulo-12 / chapter-3 的段落' +
+      '（只允许字母、数字和 . _ -），收到的是「' + want + '」');
+  }
+
+  /* ---- 章：清单缓存（同一 slug 10 分钟内只下 1 次作品页，见文件头的实测理由） ---- */
+  const key = slug.toLowerCase();
+  let ent = lmReaderCache.get(key) || null;
+  if (ent && (Date.now() - ent.at) > LM_READER_CACHE_MS) ent = null;
+  if (!ent) {
+    let r;
+    try {
+      r = await lmFetchPage('/comics/' + slug, LM_READER_MS);
+    } catch (e) {
+      throw new Error('LectorManga 作品页打不开（/comics/' + slug + '）：' + ((e && e.message) || e));
+    }
+    const chapters = lmReaderChapters(r.html, slug);
+    if (!chapters.length) {
+      throw new Error('LectorManga 作品页没有解析到章节列表（/comics/' + slug + '，域名 ' + r.host +
+        '）：要么这个 slug 不是作品页，要么站点改版了（找的是 #chapters-list 里 /comics/<slug>/(chapter|capitulo)-N）');
+    }
+    ent = { at: Date.now(), title: lmReaderTitle(r.html, slug), base: r.base, chapters: chapters };
+    if (lmReaderCache.size > 60) lmReaderCache.clear();
+    lmReaderCache.set(key, ent);
+  }
+
+  /* ---- 页：只要一章的 HTML（chapter 不在清单里就退回第一话，和其他源一致） ---- */
+  const ids = ent.chapters.map(c => c.id);
+  const target = (want && ids.indexOf(want) >= 0) ? want : ids[0];
+  if (!target) throw new Error('LectorManga 这个条目没有可读的章节（章节清单是空的）');
+
+  const chapPath = '/comics/' + slug + '/' + target;
+  let cr;
+  try {
+    cr = await lmFetchPage(chapPath, LM_READER_MS);
+  } catch (e) {
+    throw new Error('LectorManga 章节页「' + target + '」打不开（' + chapPath + '）：' + ((e && e.message) || e));
+  }
+  const urls = lmReaderPages(cr.html);
+  if (!urls.length) {
+    throw new Error('LectorManga 章节页「' + target + '」没有解析到正文图（' + chapPath +
+      '，域名 ' + cr.host + '）：这一话可能还没放图 / 是付费或外链话 / 站点改版了' +
+      '（找的是 class 含 reader-page-img 的 <img> 的 src）');
+  }
+  const pageRef = cr.base + chapPath;                 // 图床 Referer 用章节页自己的地址
+  const referer = cr.base + '/';
+  const pages = urls.map(u => readerPage(u, pageRef, 0, 0));
+  const out = {
+    title: ent.title || slug,
+    referer: referer,
+    chapters: ent.chapters,
+    pages: pages
+  };
+  out.note = 'LectorManga（lector-mangas.lat）：作品页 Astro SSR 的 #chapters-list 一次给全量章节清单' +
+    '（实测 naruto 700 话 / tower-of-god 1040 话，服务端渲染、无分页截断），' +
+    '章节页取 class 含 reader-page-img 的 <img src> 当页地址，图床 media.ikigaicomics.lat 必须经 /api/proxy 代取。' +
+    '本次这一话读到 ' + urls.length + ' 页。';
+  return out;
+}
+
 async function readerFetch(query) {
   const source = String(query.source || '').trim().toLowerCase();
   const id = String(query.id || '').trim();
@@ -3637,6 +5488,7 @@ async function readerFetch(query) {
   else if (source === 'copymanga') out = await readerCopymanga(id, query.chapter);
   else if (source === 'jmcomic') out = await readerJmcomic(id, query.chapter);
   else if (source === 'porncomic') out = await readerPorncomic(id);
+  else if (source === 'lectormanga') out = await readerLectormanga(id, query.chapter);
   else out = await readerDanbooru(id);
   const res = {
     ok: true,
@@ -3710,10 +5562,30 @@ const server = http.createServer(async (req, res) => {
       case '/api/ping':
         return sendJson(res, 200, {
           name: 'hs-gateway', version: GW_VERSION, time: Date.now(),
-          sources: ['jm', 'picacg', 'copymanga', 'kemono', 'porncomic', 'pixiv', 'nhentai', 'proxy'],
-          egress: process.env.HS_GW_PROXIED === '1'
-            ? ('经本地代理 ' + (process.env.HTTPS_PROXY || ''))
-            : '直连（未检测到可用本地代理）',
+          sources: ['jm', 'picacg', 'copymanga', 'kemono', 'porncomic', 'lectormanga', 'pixiv', 'nhentai', 'proxy', 'relay'],
+          /* 能力位（与 sources 分开：这一位不是「一个可检索的源」，而是网关提供的能力，
+             前端拿它决定要不要发 /api/translate 请求，省掉旧网关上的 404 往返） */
+          xlate: true,
+          /* egress 保持**字符串**（前端 filters.js 直接显示它），另给 egressDetail 供细看 */
+          egress: egressText(),
+          egressDetail: {
+            startup: process.env.HS_GW_PROXIED === '1',
+            startupProxy: envProxyUrl(),
+            liveProxy: egress.live,
+            mode: egress.live ? 'proxy' : 'direct',
+            hostPlan: planSummary()
+          },
+          doh: { servers: DOH_SERVERS.map(s => s.id), cached: dnsCache.size, pinned: pinCache.size },
+          relays: RELAYS.map(r => ({
+            id: r.id, kind: r.kind,
+            cooldownSec: Math.max(0, Math.ceil(((relayState.get(r.id) || 0) - Date.now()) / 1000))
+          })),
+          proxyCache: {
+            entries: proxyCache.size,
+            mb: Math.round(proxyCacheBytes / 1048576 * 10) / 10,
+            ttlSec: Math.round(PROXY_CACHE_MS / 1000),
+            deadHosts: deadHosts.size
+          },
           picacgLoggedIn: !!state.picacgToken,
           jmHost: state.jmHost || '', copyApi: state.copyApi || '',
           cfSolver: {
@@ -3740,27 +5612,51 @@ const server = http.createServer(async (req, res) => {
         });
 
       case '/api/diag': {
-        /* 出口自检：网关现在到底能打到哪些站（决定哪些源能用）
-           键名与前端的信息源 id 对齐，页面可以直接拿它修正「站点不可达」的误判 */
+        /* 出口自检：网关现在到底能打到哪些站（决定哪些源能用），并且**说清楚靠哪一层打通的**：
+             env   = 原路（全局 fetch，有 VPN 时就是这条）
+             doh   = 直连强化（DoH 多解析器并取 + 带 SNI 验真 + 钉 IP）
+             relay = 中继（境内可达的 Cloudflare 中继代取，不需要 VPN）
+           键名与前端的信息源 id 对齐，页面可以直接拿它修正「站点不可达」的误判。 */
         const jmHost = state.jmHost || JM_FALLBACK_HOSTS[0];
+        const eg = await probeEgress();
         const urls = {
+          mangadex: 'https://api.mangadex.org/ping',
           nhentai: 'https://nhentai.net/api/v2/search?query=test',
           ehentai: 'https://e-hentai.org/',
           wnacg: 'https://www.wnacg.com/',
           hitomi: 'https://hitomi.la/',
           kemono: 'https://kemono.cr/',
-          mangadex: 'https://api.mangadex.org/ping',
+          danbooru: 'https://danbooru.donmai.us/posts.json?limit=1',
+          pixiv: 'https://www.pixiv.net/',
+          copymanga: 'https://api.copy2000.online/api/v3/system/network2?platform=3',
           jmcomic: 'https://' + jmHost + '/'
         };
         const out = {};
         await Promise.all(Object.keys(urls).map(async k => {
           const t0 = Date.now();
           try {
-            const r = await outFetch(urls[k], { timeout: 9000 });
-            out[k] = { ok: r.status < 500, status: r.status, ms: Date.now() - t0 };
-          } catch (e) { out[k] = { ok: false, error: (e && e.message) || String(e), ms: Date.now() - t0 }; }
+            const r = await outFetch(urls[k], { timeout: 12000 });
+            out[k] = {
+              ok: r.status < 500, status: r.status, ms: Date.now() - t0,
+              via: planOf(stripHost(urls[k])) || '?'
+            };
+          } catch (e) {
+            out[k] = {
+              ok: false, error: (e && e.message) || String(e), ms: Date.now() - t0,
+              tiers: (e && e.tiers) || undefined
+            };
+          }
         }));
-        return sendJson(res, 200, { egress: process.env.HS_GW_PROXIED === '1' ? (process.env.HTTPS_PROXY || '') : '', targets: out });
+        return sendJson(res, 200, {
+          egress: egressText(),
+          egressDetail: {
+            startup: process.env.HS_GW_PROXIED === '1',
+            startupProxy: envProxyUrl(),
+            liveProxy: eg.live,
+            hostPlan: planSummary()
+          },
+          targets: out
+        });
       }
 
       case '/api/ehentai/search': {
@@ -3802,6 +5698,18 @@ const server = http.createServer(async (req, res) => {
 
       case '/api/porncomic/search':
         return sendJson(res, 200, await porncomicSearch(q));
+
+      /* LectorManga（西语站 lector-mangas.lat）：服务端渲染 HTML，?search= 检索。
+         无 CF 挑战、无 cookie、无签名 —— 但仍不返回 CORS 头，所以只能由网关代取。 */
+      case '/api/lectormanga/search':
+        return sendJson(res, 200, await lectormangaSearch(q));
+
+      /* 词语级翻译：中文关键词要打西语站（LectorManga）时用。
+         · MyMemory 免费接口，keyless；实测本机直连 1.1s 可回。
+         · 硬超时 + 进程内缓存；失败一律 ok:false，前端静默降级到离线词典，
+           绝不因为翻译失败让检索本身报错。 */
+      case '/api/translate':
+        return sendJson(res, 200, await translateText(q));
 
       case '/api/pixiv/search':
         return sendJson(res, 200, await pixivSearch(q));
@@ -3850,6 +5758,19 @@ const server = http.createServer(async (req, res) => {
 
       case '/api/copymanga/search':
         return sendJson(res, 200, await copymangaSearch(q));
+
+      /* 紳士漫畫检索（网关侧镜像竞速 + 重定向跟随 + 结果缓存，见 wnacgSearch 的注释）。
+         失败也回 200 + {ok:false,error}，前端只认 ok/items，不读 HTTP 码。 */
+      case '/api/wnacg/search': {
+        try {
+          return sendJson(res, 200, Object.assign({ ok: true }, await wnacgSearch(q)));
+        } catch (e) {
+          return sendJson(res, 200, {
+            ok: false, source: 'wnacg', items: [],
+            error: (e && e.message) || String(e)
+          });
+        }
+      }
 
       /* 在线阅读器：mangadex / nhentai / danbooru / wnacg / ehentai 的章节清单 + 已代理好的页地址
          失败也走 200 + {ok:false,error}（跟其它接口一致），前端只认 ok 字段，不读 HTTP 码 */
@@ -3902,11 +5823,15 @@ const server = http.createServer(async (req, res) => {
             log('danbooru 接口 /api/proxy 的 CF 兜底失败：' + ((e && e.message) || e));
           }
         }
+        /* 图片（封面 / 阅读器页）：允许浏览器缓存 10 分钟。
+           这一步对「无 VPN 靠中继取图」很关键 —— 中继会限流，能命中浏览器缓存就少打一次上游。
+           非图片仍然 no-store（网页/接口的内容随时会变）。 */
+        const isImg = /^image\//i.test(r.type || '') && r.status === 200;
         res.writeHead(r.status, {
           'content-type': r.type,
           'content-length': r.buf.length,
           'access-control-allow-origin': '*',
-          'cache-control': 'no-store'
+          'cache-control': isImg ? 'private, max-age=600' : 'no-store'
         });
         return res.end(r.buf);
       }
@@ -3925,7 +5850,7 @@ ensureEgress().then(mode => {
   server.listen(PORT, '127.0.0.1', () => {
     log('hentai搜索 本地网关 v' + GW_VERSION + ' 已启动');
     log('  页面：  http://127.0.0.1:' + PORT + '/');
-    log('  接口：  /api/jm/search  /api/copymanga/search  /api/kemono/search  /api/nhentai/search  /api/ehentai/search  /api/pixiv/search  /api/porncomic/search  /api/porncomic/solve  /api/reader  /api/proxy  /api/diag');
+    log('  接口：  /api/jm/search  /api/copymanga/search  /api/wnacg/search  /api/kemono/search  /api/nhentai/search  /api/ehentai/search  /api/lectormanga/search  /api/pixiv/search  /api/porncomic/search  /api/porncomic/solve  /api/reader  /api/proxy  /api/translate  /api/diag');
     log('  阅读器：/api/reader?source=' + READER_SOURCES.join('|') + '&id=…');
     log('    能用的 ' + READER_WORKING.length + ' 个源：' + READER_WORKING.join(' / '));
     log('    · mangadex / nhentai / wnacg：各 1 次上游请求；wnacg 可能退回逐页兜底' +
@@ -3955,9 +5880,15 @@ ensureEgress().then(mode => {
     log('    · E-Hentai 搜索：当前出口 IP 下上游搜索一律返回空集，网关会如实说明并退到' +
       ' /torrents.php?search= 兜底（详见 tools/gateway.js 里 ehentaiSearch 的取证记录）' +
       (state.ehCookie ? '；已配置 E-Hentai cookie' : '；未配置 E-Hentai cookie（不需要，也救不了空搜索）'));
-    log('  出口：  ' + (process.env.HS_GW_PROXIED === '1'
-      ? ('经本地代理 ' + (process.env.HTTPS_PROXY || '') + '（被墙的站点因此可用）')
-      : '直连（可用 --proxy http://127.0.0.1:7897 指定，或先设 HTTPS_PROXY）'));
+    log('  出口：  ' + egressText());
+    log('    · 出口**不再粘死**：启动时探测到的代理只是「原路」，运行期每 60 秒重判一次；' +
+      '代理挂了自动改走直连，代理在网关上之后再开也会被认出来（每次请求失败时都会重判）');
+    log('    · 直连强化：DoH 多解析器并取（' + DOH_SERVERS.map(s => s.id).join('/') + '）→ 带 SNI 逐个验真 →' +
+      ' 钉住可用 IP。专治纯 DNS 污染（实测：紳士漫畫 / hitomi 的假 IP 与真 IP 并存，' +
+      '阿里 DNS 给假的、腾讯 DoH 给真的）');
+    log('    · 中继兜底：' + RELAYS.map(r => r.id).join(' / ') +
+      '（境内实测直连可达；真被墙的站靠它把 JSON / 图片带回来，限流时冷却 ' +
+      Math.round(RELAY_COOLDOWN / 1000) + 's）。wsrv.nl 实测屏蔽成人域名、corsproxy.io 要 key，都没采用');
     {
       const why = cfUnavailableReason();
       const where = '过 Cloudflare（porn-comic，以及 danbooru 的接口与被代理的图片）';

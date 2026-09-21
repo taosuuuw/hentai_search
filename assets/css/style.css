@@ -142,8 +142,13 @@ kbd {
     linear-gradient(180deg, #0b0d1b 0%, #07070e 62%, var(--bg-2) 100%);
 }
 /* 星点层「甲」：细密小星（两层 tile 交错，避免看出网格）
-   每颗星 = 一个 radial-gradient 色标（中心高光 → 8%~10% 处衰减 → transparent）。
-   尺寸 ≥ 4px、中心 50%，所以 tile 平铺时边缘不会出现"半颗星"。 */
+   每颗星 = 一个径向色标（中心高光 → 45% 处衰减 → transparent）。
+   尺寸 ≥ 4px、中心 50%，所以 tile 平铺时边缘不会出现"半颗星"。
+   ★2026 增强（用户反馈「暗色下星光不明显」）★：
+     · 核心 alpha 一律提到 .95~1（原来是 .6~.92），衰减中段也抬高，
+       星点从「灰点」变成「亮点」；
+     · 每块 tile 从 10 颗加到 16 颗，tile 尺寸仍是质数，铺开后密度翻倍但不结网；
+     · 基座 opacity .6 → .88，闪烁区间 .34~.86 → .52~1（见 @keyframes）。 */
 .hs-bg::before,
 .hs-bg::after {
   content: ""; position: fixed; inset: 0;
@@ -152,65 +157,78 @@ kbd {
 }
 .hs-bg::before {
   background-image:
-    radial-gradient(1.4px 1.4px at 22px 34px, rgba(255,255,255,.92), rgba(255,255,255,.28) 45%, transparent 62%),
-    radial-gradient(1.1px 1.1px at 128px 92px, rgba(255,255,255,.78), rgba(255,255,255,.2) 45%, transparent 62%),
-    radial-gradient(1.7px 1.7px at 246px 48px, rgba(226,236,255,.88), rgba(226,236,255,.24) 45%, transparent 62%),
-    radial-gradient(1px 1px at 72px 176px, rgba(255,255,255,.66), rgba(255,255,255,.16) 45%, transparent 62%),
-    radial-gradient(1.5px 1.5px at 198px 214px, rgba(255,236,244,.82), rgba(255,236,244,.2) 45%, transparent 62%),
-    radial-gradient(1.2px 1.2px at 302px 148px, rgba(255,255,255,.74), rgba(255,255,255,.18) 45%, transparent 62%),
-    radial-gradient(1px 1px at 34px 268px, rgba(230,240,255,.6), rgba(230,240,255,.16) 45%, transparent 62%),
-    radial-gradient(1.6px 1.6px at 164px 306px, rgba(255,255,255,.8), rgba(255,255,255,.2) 45%, transparent 62%),
-    radial-gradient(1.1px 1.1px at 276px 262px, rgba(255,244,250,.72), rgba(255,244,250,.18) 45%, transparent 62%),
-    radial-gradient(1.3px 1.3px at 316px 22px, rgba(255,255,255,.68), rgba(255,255,255,.18) 45%, transparent 62%);
+    radial-gradient(1.6px 1.6px at 22px 34px, rgba(255,255,255,1), rgba(255,255,255,.42) 42%, transparent 64%),
+    radial-gradient(1.3px 1.3px at 128px 92px, rgba(255,255,255,.96), rgba(255,255,255,.34) 42%, transparent 64%),
+    radial-gradient(1.9px 1.9px at 246px 48px, rgba(226,236,255,.98), rgba(226,236,255,.36) 42%, transparent 64%),
+    radial-gradient(1.2px 1.2px at 72px 176px, rgba(255,255,255,.9), rgba(255,255,255,.3) 42%, transparent 64%),
+    radial-gradient(1.7px 1.7px at 198px 214px, rgba(255,236,244,.96), rgba(255,236,244,.34) 42%, transparent 64%),
+    radial-gradient(1.4px 1.4px at 302px 148px, rgba(255,255,255,.94), rgba(255,255,255,.32) 42%, transparent 64%),
+    radial-gradient(1.2px 1.2px at 34px 268px, rgba(230,240,255,.88), rgba(230,240,255,.3) 42%, transparent 64%),
+    radial-gradient(1.8px 1.8px at 164px 306px, rgba(255,255,255,.98), rgba(255,255,255,.34) 42%, transparent 64%),
+    radial-gradient(1.3px 1.3px at 276px 262px, rgba(255,244,250,.94), rgba(255,244,250,.32) 42%, transparent 64%),
+    radial-gradient(1.5px 1.5px at 316px 22px, rgba(255,255,255,.92), rgba(255,255,255,.32) 42%, transparent 64%),
+    /* —— 增强档新增的 6 颗，填掉网格里最空的几处 —— */
+    radial-gradient(1.4px 1.4px at 88px 128px, rgba(255,255,255,.9), rgba(255,255,255,.3) 42%, transparent 64%),
+    radial-gradient(1.7px 1.7px at 214px 12px, rgba(232,240,255,.96), rgba(232,240,255,.34) 42%, transparent 64%),
+    radial-gradient(1.2px 1.2px at 12px 208px, rgba(255,255,255,.86), rgba(255,255,255,.28) 42%, transparent 64%),
+    radial-gradient(1.9px 1.9px at 288px 96px, rgba(255,240,248,.96), rgba(255,240,248,.34) 42%, transparent 64%),
+    radial-gradient(1.3px 1.3px at 142px 246px, rgba(255,255,255,.9), rgba(255,255,255,.3) 42%, transparent 64%),
+    radial-gradient(1.6px 1.6px at 330px 206px, rgba(255,255,255,.94), rgba(255,255,255,.32) 42%, transparent 64%);
   /* 335px 是小于 340px 的质数，纵横向都几乎不重复；两套 tile 交错叠加等于把星点打散 */
   background-size: 335px 335px;
   background-repeat: repeat;
   background-position: 0 0;
-  opacity: .6;
+  opacity: .88;
   /* 暗色星点只做「透明度 + 亮度」呼吸；-3.6s 负延迟与乙层错开相位，避免整屏星点齐刷刷亮灭 */
   animation: hs-star-a 7.5s ease-in-out infinite;
   animation-delay: -3.6s;
 }
-/* 星点层「乙」：大而稀疏的亮星，节奏与甲层错开（这就是"不同星点不同 animation-delay"） */
+/* 星点层「乙」：大而稀疏的亮星，节奏与甲层错开（这就是"不同星点不同 animation-delay"）。
+   每颗亮星都是「大光晕 + 亮核」两段：外圈 alpha 很低但半径大，看起来像真的在发光。 */
 .hs-bg::after {
   background-image:
-    radial-gradient(2.2px 2.2px at 96px 128px, rgba(255,255,255,.95), rgba(255,255,255,.22) 42%, transparent 60%),
-    radial-gradient(1.8px 1.8px at 392px 66px, rgba(214,228,255,.85), rgba(214,228,255,.2) 42%, transparent 60%),
-    radial-gradient(2.6px 2.6px at 236px 372px, rgba(255,238,248,.82), rgba(255,238,248,.18) 42%, transparent 60%),
-    radial-gradient(1.9px 1.9px at 512px 268px, rgba(255,255,255,.8), rgba(255,255,255,.18) 42%, transparent 60%),
-    radial-gradient(2.1px 2.1px at 168px 486px, rgba(228,238,255,.78), rgba(228,238,255,.18) 42%, transparent 60%),
-    radial-gradient(1.7px 1.7px at 436px 452px, rgba(255,255,255,.7), rgba(255,255,255,.16) 42%, transparent 60%),
-    radial-gradient(2.3px 2.3px at 566px 156px, rgba(255,246,252,.74), rgba(255,246,252,.16) 42%, transparent 60%),
-    radial-gradient(1.6px 1.6px at 296px 28px, rgba(255,255,255,.64), rgba(255,255,255,.14) 42%, transparent 60%);
+    radial-gradient(3.4px 3.4px at 96px 128px, rgba(255,255,255,1), rgba(255,255,255,.34) 34%, transparent 66%),
+    radial-gradient(2.8px 2.8px at 392px 66px, rgba(214,228,255,.98), rgba(214,228,255,.3) 34%, transparent 66%),
+    radial-gradient(3.8px 3.8px at 236px 372px, rgba(255,238,248,.96), rgba(255,238,248,.28) 34%, transparent 66%),
+    radial-gradient(2.9px 2.9px at 512px 268px, rgba(255,255,255,.96), rgba(255,255,255,.28) 34%, transparent 66%),
+    radial-gradient(3.2px 3.2px at 168px 486px, rgba(228,238,255,.94), rgba(228,238,255,.28) 34%, transparent 66%),
+    radial-gradient(2.6px 2.6px at 436px 452px, rgba(255,255,255,.92), rgba(255,255,255,.26) 34%, transparent 66%),
+    radial-gradient(3.5px 3.5px at 566px 156px, rgba(255,246,252,.94), rgba(255,246,252,.26) 34%, transparent 66%),
+    radial-gradient(2.5px 2.5px at 296px 28px, rgba(255,255,255,.9), rgba(255,255,255,.24) 34%, transparent 66%),
+    /* —— 增强档新增的 4 颗 —— */
+    radial-gradient(3.1px 3.1px at 40px 300px, rgba(255,255,255,.94), rgba(255,255,255,.26) 34%, transparent 66%),
+    radial-gradient(2.7px 2.7px at 340px 540px, rgba(222,234,255,.92), rgba(222,234,255,.26) 34%, transparent 66%),
+    radial-gradient(3.6px 3.6px at 470px 40px, rgba(255,242,250,.92), rgba(255,242,250,.26) 34%, transparent 66%),
+    radial-gradient(2.4px 2.4px at 120px 590px, rgba(255,255,255,.88), rgba(255,255,255,.24) 34%, transparent 66%);
   background-size: 620px 620px;
   background-repeat: repeat;
   background-position: 0 0;
-  opacity: .5;
+  opacity: .82;
   animation: hs-star-b 11s ease-in-out infinite;
   animation-delay: -5.6s;
 }
-/* 闪烁：两层星点【只】在透明度 / 亮度上呼吸（峰值 ≤ .86 / ≤ .78，谷值 .34 / .26 ——
+/* 闪烁：两层星点【只】在透明度 / 亮度上呼吸（峰值 1 / 1，谷值 .52 / .45 ——
    明暗差比原来更大，所以"点点星光闪烁"更可感知），并且彻底删掉了原来的 background-position
    漂移动画（±14/16px）：暗色下不允许任何大面积位移，星点是原地闪，不是整片光在飘。
    两层周期 7.5s / 11s + 负延迟错相，保证屏幕不同区域的星点不会同步亮灭。 */
 @keyframes hs-star-a {
   0%, 100% {
-    opacity: .34;
-    filter: brightness(.82);
+    opacity: .52;
+    filter: brightness(.86);
   }
   50% {
-    opacity: .86;
-    filter: brightness(1.22);
+    opacity: 1;
+    filter: brightness(1.3);
   }
 }
 @keyframes hs-star-b {
   0%, 100% {
-    opacity: .26;
-    filter: brightness(.78);
+    opacity: .45;
+    filter: brightness(.84);
   }
   50% {
-    opacity: .78;
-    filter: brightness(1.28);
+    opacity: 1;
+    filter: brightness(1.34);
   }
 }
 
@@ -833,12 +851,23 @@ html.hs-blurcovers .hs-card .hs-card-reveal { opacity: 1; }
   position: absolute; top: 8px; left: 8px; z-index: 3;
   display: flex; gap: 5px; flex-wrap: wrap; max-width: calc(100% - 16px);
 }
-/* 编号直达（禁漫按编号取回的那一本）：整排角标让到**右上角**。
-   左上角那排是汉化 / R18G / AI / 源名 / 页数，两排各自靠一边、互不重叠
-   （max-width 压到一半宽，万一角标多到要换行也不会叠上去）。 */
+/* 编号直达（禁漫按编号取回的那一本）：**只有** `jm<编号>` 这一枚让到右上角，
+   其余角标（汉化 / R18G / AI / 精确 / 源名 / 分类 / 页数 / 多站）留在左上角，
+   顺序与普通小卡片完全一致（见 results.js 的 badgeNodes / cardNode）。
+   容器仍然贴着左上角（base 规则 left:8px），is-hi 时只是**铺满整条宽度** ——
+   这样那枚绝对定位的角标才能靠到卡片右上角，同时 padding-right 给它留出位子：
+   左边那批在留位处换行，窄卡片上也不会压到右上角那枚。 */
 .hs-card-badges.is-hi {
-  left: auto; right: 8px; justify-content: flex-end;
-  max-width: calc(50% - 12px);
+  right: 8px;                    /* 与 left:8px 配对 → 容器横跨整张卡片（max-width 不变） */
+  padding-right: 92px;           /* 右上角那枚 jm<编号>（约 9 个字符）的位子 + 5px 间距 */
+}
+/* 右上角**只放这一枚**：绝对定位到容器的右上角（= 卡片右上角 8px 内缩）。
+   max-width 兜住超长编号（省略号收尾，完整编号仍在 title 里），
+   保证它永远不会向左压到左上角那批。只在 is-hi 下生效 ——
+   放大视图的 [data-cm-badges] 没有 is-hi，`jm<编号>` 照旧排在左边第一位。 */
+.hs-card-badges.is-hi > .hs-badge-id {
+  position: absolute; top: 0; right: 0;
+  max-width: 86px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 编号直达标签：`jm1474541`，一眼看出这是用户点名的那一本 */
 .hs-pill-jm {
@@ -1069,6 +1098,107 @@ html[data-theme="dark"] .hs-set-ico { background: rgba(255,255,255,.05); }
 .hs-about li { display: flex; gap: 7px; }
 .hs-about li::before { content: "•"; color: var(--accent); }
 
+/* ---------- 最近浏览（recent.js） ----------
+   顶栏那枚按钮复用 .hs-icon-btn / .hs-icon-btn-label；
+   面板复用 .hs-modal 骨架，只有列表行是本功能自己的样式（前缀 .hs-rec-*）。 */
+.hs-recent-badge {
+  min-width: 16px; height: 16px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 1;
+  color: #fff; background: var(--accent);
+  box-shadow: 0 0 0 1px var(--panel-solid);
+}
+.hs-icon-btn:hover .hs-recent-badge { background: var(--accent-2); }
+
+.hs-rec-card { width: min(720px, 100%); }
+.hs-rec-count {
+  font-size: 11.5px; color: var(--fg-3);
+  padding: 2px 9px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  margin-left: 2px;
+}
+.hs-rec-clear { margin-left: auto; font-size: 11.5px; padding: 4px 10px; }
+.hs-rec-body { padding: 0; }
+.hs-rec-list { display: flex; flex-direction: column; }
+
+.hs-rec-day {
+  position: sticky; top: 0; z-index: 1;
+  padding: 9px 18px 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: .06em;
+  color: var(--fg-3); text-transform: uppercase;
+  background: var(--panel-solid);
+  border-bottom: 1px solid var(--border);
+}
+.hs-rec-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px 10px 18px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; text-align: left;
+  transition: background .14s;
+}
+.hs-rec-row:last-child { border-bottom: 0; }
+.hs-rec-row:hover, .hs-rec-row:focus-visible { background: var(--panel-2); }
+.hs-rec-row:focus-visible { box-shadow: var(--ring) inset; outline: none; }
+
+.hs-rec-thumb {
+  width: 46px; height: 64px; flex: none; overflow: hidden;
+  border-radius: 7px; background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.hs-rec-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hs-rec-thumb.is-blank::after {
+  content: ""; display: block; width: 100%; height: 100%;
+  background: repeating-linear-gradient(45deg, var(--panel-2) 0 6px, transparent 6px 12px);
+}
+.hs-rec-thumb.is-blur img { filter: blur(9px) saturate(.85); transform: scale(1.12); }
+.hs-rec-row:hover .hs-rec-thumb.is-blur img { filter: blur(2px) saturate(1); }
+
+.hs-rec-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.hs-rec-title {
+  font-size: 13px; font-weight: 620; color: var(--fg); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
+.hs-rec-sub { font-size: 11.5px; color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hs-rec-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--fg-3); }
+.hs-rec-src { color: var(--accent-2); }
+.hs-rec-src:empty { display: none; }
+.hs-rec-time { font-family: var(--mono); }
+.hs-rec-n { color: var(--fg-3); opacity: .8; }
+/* 多章节作品的阅读进度：看到第几话 / 是不是最新章。
+   三档配色：追到最新 = ok 绿；没追到最新 = warn 黄；单章只看页数 = 中性灰。 */
+.hs-rec-prog {
+  padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel-2);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.hs-rec-prog.is-last { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 42%, transparent); }
+.hs-rec-prog.is-behind { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 42%, transparent); }
+
+.hs-rec-acts { display: flex; align-items: center; gap: 6px; flex: none; }
+.hs-rec-act {
+  font-size: 11.5px; padding: 5px 10px; border-radius: var(--radius-xs);
+  border: 1px solid var(--border); color: var(--fg-2);
+  transition: color .14s, border-color .14s, background .14s;
+}
+.hs-rec-act:hover { color: var(--fg); border-color: var(--border-strong); background: var(--panel-2); }
+.hs-rec-del { padding: 5px 9px; color: var(--fg-3); }
+.hs-rec-del:hover { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+
+.hs-rec-empty {
+  padding: 46px 24px; text-align: center;
+  font-size: 13px; color: var(--fg-2); line-height: 1.9;
+}
+.hs-rec-empty span { font-size: 11.5px; color: var(--fg-3); }
+.hs-rec-hint { font-size: 11.5px; color: var(--fg-3); }
+
+@media (max-width: 560px) {
+  .hs-rec-row { gap: 9px; padding: 9px 12px; }
+  .hs-rec-thumb { width: 40px; height: 56px; }
+  .hs-rec-act { padding: 5px 8px; }
+}
+
 /* ---------- 成年人门 ---------- */
 .hs-gate {
   position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; padding: 20px;
@@ -1286,9 +1416,14 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
 .hs-seg button[aria-pressed="true"][data-v="only"] { background: linear-gradient(135deg, #fbbf24, #d97706); }
 .hs-seg button[aria-pressed="true"][data-v="exclude"] { background: linear-gradient(135deg, #f87171, #b91c1c); }
 
-/* ---------- 思维链：紧贴搜索框、折叠成一行清晰文字、旧行模糊退场 ---------- */
+/* ---------- 思维链：紧贴搜索框、折叠成一行清晰文字、旧行模糊退场 ----------
+   margin-top 由 --hs-chain-gap 驱动：联想泡泡展开时，suggest.js 把思维链往下顶，
+   在「搜索框」与「思维链」之间腾出恰好容纳泡泡的那一段 —— 于是视觉顺序是
+   搜索框 → 联想泡泡 → 思维链 → 结果，泡泡既不压思维链，也不推进结果区挡文字。
+   没有泡泡时变量为空 → 回落到 4px，与改造前完全一致。 */
 .hs-chain {
-  max-width: 1000px; margin: 4px auto 12px;
+  max-width: 1000px; margin: var(--hs-chain-gap, 4px) auto 12px;
+  transition: margin-top .2s cubic-bezier(.2,.8,.3,1);
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--panel);
@@ -1486,10 +1621,30 @@ html.hs-nomotion .hs-sage { animation: none; }
      否则内联动画一撤、类上的动画就会重新触发一次 —— 那就是"放大到最大后抖一抖"的成因。 */
   backface-visibility: hidden;
 }
+/* 关闭按钮：★常态高亮 / 悬停变暗★（用户要求：暗色底按钮在黑封面上一眼找不到）。
+   常态用「亮底 + 深色叉」，无论下面是深色封面还是浅色封面都能立刻看到；
+   鼠标移到按钮上时才翻回暗底白叉 —— 悬停态才是"次要"的观感。
+   ⚠ 必须写在 .hs-icon-btn / .hs-icon-btn:hover（367-372 行）之后：
+     两者选择器权重相同，靠顺序取胜。 */
 .hs-cm-close {
   position: absolute; top: 9px; right: 9px; z-index: 6;
-  background: rgba(8,8,14,.62); backdrop-filter: blur(6px);
+  background: rgba(255,255,255,.9);
+  color: #16161f;
+  border: 1px solid rgba(255,255,255,.55);
+  box-shadow: 0 4px 16px -6px rgba(0,0,0,.65);
+  -webkit-backdrop-filter: blur(6px);
+          backdrop-filter: blur(6px);
+  transition: background .16s, color .16s, border-color .16s, transform .16s, box-shadow .16s;
 }
+.hs-cm-close:hover,
+.hs-cm-close:focus-visible {
+  background: rgba(8,8,14,.72);
+  color: #fff;
+  border-color: rgba(255,255,255,.22);
+  box-shadow: 0 2px 10px -6px rgba(0,0,0,.5);
+  transform: none;
+}
+.hs-cm-close:active { background: rgba(8,8,14,.86); }
 /* 封面用**和卡片完全相同的 5:7 裁切**（卡片也是 aspect-ratio 5/7 + object-fit: cover），
    这样放大后只是"同一张封面变大了"，比例不会变；高度按 5:7 反推宽度，视口矮也不会顶破。 */
 .hs-cm-img {
@@ -1925,6 +2080,22 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+
+/* ---------- 放大态：按住拖动 = 平移图片（reader.js 的 panStart / panMove） ----------
+   这一块**只给出可拖的视觉与触屏语义**，位移本身由 JS 写 scrollLeft / scrollTop 完成。
+   · cursor: grab / grabbing —— 让用户一眼看出「这里能按住拖」；
+   · touch-action: none —— 只在 .is-zoom（放大态）下加：单指拖动要交给我们的指针处理，
+     否则浏览器会先拿去做原生滚动；100% 未放大时保持默认，
+     触屏依旧可以用原生滚动翻页（那里本来就不允许拖动平移）。 */
+.hs-rd.is-zoom .hs-rd-pg,
+.hs-rd.is-zoom .hs-rd-col,
+.hs-rd.is-zoom .hs-rd-img { cursor: grab; }
+.hs-rd.is-zoom .hs-rd-pg:active,
+.hs-rd.is-zoom .hs-rd-col:active,
+.hs-rd.is-zoom .hs-rd-img:active { cursor: grabbing; }
+.hs-rd.is-zoom .hs-rd-img img { -webkit-user-drag: none; user-select: none; }
+.hs-rd.is-zoom .hs-rd-col,
+.hs-rd.is-zoom[data-dir="h"] .hs-rd-pg { touch-action: none; }
 /* 自动连读插进来的章节分隔条：一次一页模式下就是当前页的标题条 */
 .hs-rd[data-dir="h"] .hs-rd-col > .hs-rd-sep {
   width: 100%; max-width: none; margin: 0;
@@ -1932,18 +2103,26 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   align-items: center; justify-content: center;
 }
 .hs-rd[data-dir="h"] .hs-rd-img {
-  width: 100%; height: 100%;
+  /* ★放大必须发生在「这个盒子」上，而不是只放大里面的 <img>★
+     旧写法是盒子固定 100%×100%、只把 <img> 乘上倍数 —— 但 .hs-rd-img 是
+     overflow:hidden（见上面那条基础规则），于是放大后的图**被裁掉**，既看不到
+     也滚不动（实测 .hs-rd-pg 的 scrollWidth − clientWidth = 0，怎么拖都是 0）。
+     现在盒子本身按倍数长大，页面 .hs-rd-pg（overflow:auto）因此获得真实的
+     横纵滚动量，「放大 → 按住拖动看图」才有东西可拖。倍数为 1 时 100%×100%，
+     与改动前逐像素一致。 */
+  width: calc(100% * var(--hs-rd-zoom, 1));
+  height: calc(100% * var(--hs-rd-zoom, 1));
   min-height: 0; max-height: none; aspect-ratio: auto;
+  overflow: hidden;                     /* 盒子自己裁；滚动交给外层 .hs-rd-pg */
   border: 0; border-radius: 0; background: transparent;
   padding: 10px 12px var(--hs-rd-pad-b);
 }
-/* 缩放：图片宽度就是「当前页宽度 × 倍数」，100% 时正好一屏（contain 适配）。
-   max-height 放到当前页高度 × 倍数，纵向也留出可滚动量 */
+/* 图片铺满「已经放大过的盒子」，等比 contain 居中。
+   flex: none 是必须的 —— .hs-rd-img 是 flex 容器，默认 flex-shrink:1 会把
+   放大后的图**缩回**容器宽度，倍数等于白给（旧写法就是一放大就被缩回去/裁掉）。 */
 .hs-rd[data-dir="h"] .hs-rd-img img {
-  width: calc(100% * var(--hs-rd-zoom, 1));
-  max-width: none;
-  height: auto;
-  max-height: calc(100% * var(--hs-rd-zoom, 1));
+  width: 100%; height: 100%; flex: none;
+  max-width: none; max-height: none;
   object-fit: contain;
 }
 /* 章末条浮层露出来时给图片让出空间，保证这一页仍然完整可见 */
@@ -1992,19 +2171,29 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
 
 /* ==========================================================================
    suggest.js — 搜索联想泡泡（前缀 .hs-sg-*，仅本功能使用）
-   · 整块只作用于自己新建的 .hs-sg-layer，绝对定位在搜索栏【下方】，
-     不占流内空间，因此不会把搜索框或结果区顶开。
+   · 宿主是 index.html 里 .hs-hero 与 #chain-panel 之间的普通流内块 #sg-slot，
+     所以泡泡是**流内**元素：排布顺序天生是
+        搜索框 → 联想泡泡 → 思维链 → 结果
+     ，既不会压在思维链上，也不会盖住结果文字。槽位空着时高度为 0。
    · 泡泡层自身 pointer-events: none（关闭时不遮挡任何东西），
      只有真正显示的泡泡 .hs-sg-item 才有 pointer-events: auto。
    · html.hs-nomotion / prefers-reduced-motion 下取消全部动画与位移，直接显示。
    · 本块不含 !important，不改动任何既有选择器。
    ========================================================================== */
 
+.hs-sg-slot {
+  max-width: 1000px;
+  margin: 0 auto;
+  /* 槽位自己永远不占位：高度由里面的 .hs-sg-layer 决定，空着就是 0 */
+  line-height: 0;
+}
+.hs-sg-slot:empty { display: none; }
+
 .hs-sg-layer {
-  position: absolute; left: 0; right: 0;
-  top: calc(100% + 10px);            /* 贴着搜索栏下沿 */
-  z-index: 8;                        /* 高于筛选面板(.hs-sheet z-index:6)，低于放大卡片 */
+  position: static;                  /* 流内块：紧跟在搜索框下面、思维链上面 */
+  z-index: 8;
   pointer-events: none;              /* 关闭/空白区域一律不吃指针事件 */
+  line-height: 1.6;                  /* 抵消槽位的 line-height: 0 */
 }
 .hs-sg-bubbles {
   display: flex; flex-wrap: wrap; align-items: flex-start;
@@ -2073,6 +2262,8 @@ html.hs-nomotion .hs-sg-layer[data-open="1"] .hs-sg-item {
   filter: none;
 }
 html.hs-nomotion .hs-sg-item[data-on="1"] { transform: none; }
+/* 思维链的「让位」位移在不动画模式下必须立刻到位，否则泡泡会压着正在挪动的面板 */
+html.hs-nomotion .hs-chain { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .hs-sg-item,
   .hs-sg-layer[data-open="1"] .hs-sg-item {
@@ -2081,6 +2272,7 @@ html.hs-nomotion .hs-sg-item[data-on="1"] { transform: none; }
     transition: none;
   }
   .hs-sg-item[data-on="1"] { transform: none; }
+  .hs-chain { transition: none; }
 }
 
 /* —— 窄屏：泡泡排得更紧凑，避免横向溢出 —— */

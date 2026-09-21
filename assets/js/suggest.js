@@ -518,7 +518,13 @@
   var formEl = u.$('#search-form');
   if (!qEl) return;                                /* 没有搜索框：不启动 */
 
-  var host = u.$('#search-wrap') || (formEl && formEl.parentNode) || qEl.parentNode;
+  /* 泡泡层的宿主：index.html 里「搜索框」与「思维链」之间的空槽 #sg-slot。
+     挂在这里，泡泡就是**流内块** —— 排布顺序天然是
+        搜索框 → 联想泡泡 → 思维链 → 结果
+     不需要再去量思维链的几何、也不需要给 #chain-panel 塞 --hs-chain-gap
+     （那套「把思维链往下顶」的绝对定位方案在思维链一出现时就会把泡泡压在它上面）。
+     槽位空着时高度为 0，不占位、不推挤任何东西。 */
+  var host = u.$('#sg-slot') || u.$('#search-wrap') || (formEl && formEl.parentNode) || qEl.parentNode;
   var panel = null, box = null, refs = [];
   var open = false;
   var items = [];
@@ -565,6 +571,7 @@
     if (!panel) return;
     panel.hidden = false;
     panel.setAttribute('data-open', '1');
+    placePanel();        /* 空实现，只为保留调用点（流内布局不需要定位） */
   }
   function hide() {
     if (!panel) return;
@@ -574,7 +581,39 @@
     items = [];
     clearBox();
     open = false;
+    releaseGap();        /* 空实现，同上 */
   }
+
+  /* —— 定位：让泡泡落在「搜索框」与「思维链」之间 ——
+     几何关系（自上而下）：.hs-searchwrap（搜索条 + 拉手）→ .hs-hero 的 16px 下外边距
+     → #chain-panel（检索过一次之后它就一直占着那一行）→ 结果区。
+     泡泡层是 .hs-searchwrap 里的**绝对定位**子元素，默认贴搜索条下沿
+     （CSS top: calc(100% + 10px)）—— 于是搜索框正下方的思维链恰好被整片压住。
+     ★这里不再把泡泡「让到思维链下面」★：那样泡泡会滑进结果区、挡住结果文字
+     （用户实测反馈）。现在反过来做：**把思维链往下顶**，在搜索框与思维链之间
+     腾出恰好容纳泡泡的一段，泡泡自身仍紧贴搜索框 —— 最终顺序就是
+       搜索框 → 联想泡泡 → 思维链 → 结果
+     位移通过 #chain-panel 的 --hs-chain-gap（CSS 里的 margin-top）实现；
+     量到的全是思维链**上方**的几何（.hs-hero 的底边），所以不会被自己的
+     margin 过渡反馈污染 —— 泡泡从一行涨到两行时也不会抖。
+     ⚠ 不能改写 .hs-searchwrap 的高度：那会把搜索框自己顶走。 */
+  /* —— 定位：泡泡已经在它该在的地方 ——
+     #sg-slot 是 .hs-hero 与 #chain-panel 之间的普通流内块，泡泡一展开就把思维链与结果
+     整体往下推 —— 视觉顺序天然就是「搜索框 → 联想泡泡 → 思维链 → 结果」。
+     ★这里不再做任何几何量算★：旧实现把泡泡绝对定位在搜索条下沿、再给 #chain-panel
+     塞一个 --hs-chain-gap 把它顶下去；只要思维链已经出现（第一次检索之后），
+     那条 margin 通道会被相邻兄弟的外边距折叠吃掉一部分，量算误差就变成整片重叠。
+     现在泡泡自己占位，误差为零，从一行涨到两行也不会抖。 */
+  function releaseGap() { /* 流内布局：无需复位 */ }
+
+  /* ⚠ 这里**必须**是空函数 ★2026-09-21 修的一个真实报错★
+     旧实现：泡泡绝对定位在搜索条下沿，再用 --hs-chain-gap 把 #chain-panel 顶下去。
+     改成流内 #sg-slot 之后，几何量算整套都删掉了 —— 但 placePanel 里那段
+     「量思维链位置」的旧函数体**漏删**，于是每次联想渲染都会抛
+     `TypeError: chainEl is not a function`（console 里能看到的异常就是它）。
+     现在这里是明确的空实现：泡泡自己占位，视觉顺序天然是
+     「搜索框 → 联想泡泡 → 思维链 → 结果」，不需要任何几何补偿。 */
+  function placePanel() { /* 流内布局：无需定位 */ }
 
   /* 同步视图：items → DOM → 定位 */
   function render() {
@@ -810,6 +849,11 @@
     setTimeout(function () { if (!suppress) { dismissed = true; hide(); } }, 120);
   }, true);
   window.addEventListener('pagehide', function () { hide(); });
+  /* ★这里**不再**监听视口变化 / 思维链高度★
+     旧实现要把泡泡绝对定位到搜索条下沿、并给思维链让位，所以 resize 与
+     ResizeObserver 都得重新量一遍。现在泡泡在文档流里自己占位
+     （#sg-slot 夹在 .hs-hero 与 #chain-panel 之间），浏览器自己会重排 ——
+     不需要任何 JS 参与，也就不会再出现「元素被删了、监听还在调用」这类异常。 */
 
   /* —— 提交即记账：只记「用户真正提交过的词」，不拦截、不影响检索 —— */
   function noteSubmit() {

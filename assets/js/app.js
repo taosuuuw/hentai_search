@@ -7,6 +7,9 @@
   const u = HS.u;
   let searching = false;
   let searchedOnce = false;
+  /* 检索代次：每提交一次搜索 +1。同一时刻只有「最新那一代」允许写界面 ——
+     被打断的旧检索里所有回调都靠它认亲，发现不是自己就安静退出（见 doSearch）。 */
+  let searchSeq = 0;
 
   /* ---------------- 主题 ---------------- */
   function applyTheme(t) {
@@ -49,25 +52,43 @@
         : '未检测到（运行 node tools/gateway.js 后可解锁禁漫官方 API、拷贝漫画）';
     }
     if (!ok) return;
-    /* 网关在的时候把「拷贝漫画」也打开，用户能在信息源里看到它 */
+    /* 网关在的时候把「拷贝漫画」「LectorManga」也打开，用户能在信息源里看到它们。
+       这两个源只能经网关取数（不返回跨域头 / 需要签名），网关不在时勾了也是白勾。
+       ★只加网关照实报了名字的那些★：`/api/ping` 的 sources 就是「这个进程实现了哪些接口」，
+       拿着旧网关（没有 lectormanga 路由）硬开，只会每次检索都多一条红字失败。 */
+    const gws = (HS.net.gateway.info && HS.net.gateway.info.sources) || [];
+    const want = gws.length ? ['copymanga', 'lectormanga'].filter(id => gws.indexOf(id) >= 0) : ['copymanga'];
     const on = HS.settings.sources || [];
-    if (on.indexOf('copymanga') < 0) {
-      HS.settings.sources = on.concat(['copymanga']);
+    const add = want.filter(id => on.indexOf(id) < 0);
+    if (add.length) {
+      HS.settings.sources = on.concat(add);
       HS.store.save(HS.settings);
       if (HS.filtersUI.refreshSources) HS.filtersUI.refreshSources();
-      if (announce !== false) HS.toast('检测到本地网关：已启用 拷贝漫画，禁漫天堂自动走官方 API');
+      if (announce !== false) HS.toast('检测到本地网关：已启用 ' +
+        add.map(id => (HS.sources.byId[id] && HS.sources.byId[id].name) || id).join('、') +
+        '，禁漫天堂自动走官方 API', 'ok', 3600);
     }
   }
 
-  /* ---------------- 网络状态 ---------------- */
+  /* ---------------- 网络状态 ----------------
+     ★探测只在「检索开始之前」发生★
+     用户要求：检索过程中不再做网络检查 —— 那一步会白白吃掉几百毫秒到几秒，
+     而且它得出的结论对这一次检索毫无用处（最慢的源照样要等）。
+     所以现在的分工是：
+       · 开机后 260ms 探一次（首屏之前就完成，这是「检索之前就完成」的那一次）；
+       · 之后只有**观测到网络情况变化**才重探：online / offline、
+         navigator.connection 的 change、本地网关上线下线、页面重新可见、
+         以及每 3 分钟一次的空闲复查（仅在没在检索时才允许跑）。
+       · doSearch 里的「网络状态」那一步只**读缓存**，一个网络请求都不发。 */
   function paintChip(probe) {
-    const chip = u.$('#vpn-chip');
-    const txt = u.$('#vpn-chip-text');
+    const chip = u.$('#net-chip');
+    const txt = u.$('#net-chip-text');
+    if (!chip || !txt) return;
     if (!probe) { chip.dataset.state = 'busy'; txt.textContent = '网络检测中…'; return; }
     const map = {
       ok: ['ok', '目标可达'],
       partial: ['warn', '部分站点受限'],
-      'vpn-needed': ['warn', '建议开 VPN'],
+      restricted: ['warn', '部分受限'],
       offline: ['err', '离线'],
       unknown: ['warn', '网络异常']
     };
@@ -78,32 +99,74 @@
   }
 
   function showBanner(probe) {
-    const b = u.$('#vpn-banner');
+    const b = u.$('#net-banner');
+    if (!b) return;
     if (!probe || probe.verdict === 'ok') { b.hidden = true; return; }
     b.hidden = false;
     b.dataset.kind = (probe.verdict === 'offline' || probe.verdict === 'unknown') ? 'err' : 'warn';
-    u.$('#vpn-banner-title').textContent =
+    /* 全程不提 VPN：本地网关自带的「原路 → DoH 钉真 IP → 境内中继」三层补偿
+       才是这里的兜底手段，文案要与探针结论一致。 */
+    const gwHelps = !!(probe.gatewayTiers && Object.keys(probe.gatewayTiers).length);
+    u.$('#net-banner-title').textContent =
       probe.verdict === 'offline' ? '当前设备离线'
-        : probe.verdict === 'partial' ? '部分目标站点不可达 —— 可能需要在浏览器之外开启 VPN'
-        : '检测到目标站点不可达 —— 可能需要在浏览器之外开启 VPN';
-    u.$('#vpn-banner-desc').textContent = probe.detail;
-    const list = u.$('#vpn-banner-list');
+        : probe.verdict === 'partial' ? '部分目标站点不可达' + (gwHelps ? '（其余已由本地网关打通）' : '')
+        : gwHelps ? '目标站点浏览器直连不通 —— 本地网关已接管'
+        : '部分目标站点取不到数据 —— 先试本地网关，再试公共 CORS 代理';
+    u.$('#net-banner-desc').textContent = probe.detail;
+    const list = u.$('#net-banner-list');
     list.innerHTML = (probe.blocked || []).slice(0, 5)
       .map(t => '<li>' + u.esc(t.label) + ' 连接失败（' + u.fmtMs(t.ms) + '）</li>').join('');
-    u.$('#vpn-proxy-enable').hidden = HS.net.hasProxy();
+    u.$('#net-proxy-enable').hidden = HS.net.hasProxy();
   }
 
+  let netWatchTimer = 0;
+
   async function probeNow(force, announce) {
-    paintChip(null);
+    /* 只有「用户主动点检测」且手上还没有任何结论时才清空状态；
+       否则（网络变化 / 空闲复查）保留上一次的结论，避免右上角无谓地闪一下「检测中」。 */
+    if (force && !HS.net.probeCached()) paintChip(null);
     const probe = await HS.net.probe(force);
     paintChip(probe);
     showBanner(probe);
     if (announce) {
       HS.toast(probe.verdict === 'ok'
-        ? '网络可达，无需 VPN'
+        ? '网络可达'
         : '检测结果：' + probe.label, probe.verdict === 'ok' ? 'ok' : 'warn', 3200);
     }
     return probe;
+  }
+
+  /** 只在「没在检索」时探测；正在检索就推到这一轮结束之后（不打断、不抢网） */
+  function probeWhenIdle(force) {
+    if (HS.busy || searching) { scheduleNetWatch(4000); return; }
+    probeNow(!!force, false);
+  }
+
+  function scheduleNetWatch(ms) {
+    clearTimeout(netWatchTimer);
+    netWatchTimer = setTimeout(() => { netWatchTimer = 0; probeWhenIdle(false); }, ms || 1500);
+  }
+
+  /**
+   * 网络情况变化监听。
+   * 这里就是用户要的「只有观测到网络情况变化才进行」：所有分支都由**事件**驱动，
+   * 没有任何一条挂在检索路径上。TTL 到期也不会自己乱探，只有上面那几种变化
+   * 或用户手动点「网络检测」才会真的发请求。
+   */
+  function initNetWatch() {
+    const on = (t, fn) => { try { window.addEventListener(t, fn); } catch (e) {} };
+    on('online', () => probeNow(true, true));
+    on('offline', () => probeNow(true, false));
+    /* 网络类型 / 有效带宽变化（Chromium 支持；不支持就静默跳过） */
+    try {
+      const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (c && c.addEventListener) c.addEventListener('change', () => probeNow(true, false));
+    } catch (e) {}
+    /* 本地网关的上线 / 下线同样是「网络情况变化」（它决定了禁漫 / 拷贝 / LectorManga 能不能取数） */
+    HS.bus.on('net:gateway', () => scheduleNetWatch(600));
+    /* 页面重新可见 / 每 3 分钟一次空闲复查：都只在不检索时执行 */
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) probeWhenIdle(false); });
+    setInterval(() => { if (!document.hidden) probeWhenIdle(false); }, 180000);
   }
 
   /* ---------------- 欢迎态 ---------------- */
@@ -352,6 +415,8 @@
     if (f.pagesMin || f.pagesMax) bits.push('页数 ' + (f.pagesMin || 0) + '–' + (f.pagesMax || '∞'));
     if (f.gore && f.gore !== 'any') bits.push('R18G ' + ({ only: '只看', exclude: '排除' }[f.gore] || f.gore));
     if (f.ai && f.ai !== 'any') bits.push('AI 绘画 ' + ({ only: '只看', exclude: '排除' }[f.ai] || f.ai));
+    if (f.fem && f.fem !== 'any') bits.push('堪美/女性向 ' + ({ only: '只看', exclude: '排除' }[f.fem] || f.fem));
+    if (f.threeD && f.threeD !== 'any') bits.push('3D ' + ({ only: '只看', exclude: '排除' }[f.threeD] || f.threeD));
     if (f.adult === 'strict') bits.push('只留已确认成人向');
     return bits.join(' · ') || '无附加条件';
   }
@@ -364,7 +429,6 @@
       return;
     }
     sageLine(null);      // 一开始检索就把底部那句名言收起来
-    if (searching) return;
     opts = opts || {};
     const page = Math.max(1, parseInt(opts.page || 1, 10) || 1);
     const append = page > 1;
@@ -372,6 +436,7 @@
     const f = HS.filtersUI.get();
     const hasFilter = f.artist || (f.tags || []).length || (f.langs || []).length ||
       (f.cats || []).length || f.pagesMin || f.pagesMax || (f.gore && f.gore !== 'any') || (f.ai && f.ai !== 'any') ||
+      (f.fem && f.fem !== 'any') || (f.threeD && f.threeD !== 'any') ||
       f.adult === 'strict';
 
     if (!q && !hasFilter) {
@@ -381,28 +446,58 @@
       return;
     }
 
+    /* ★新检索打断旧检索★
+       以前这里是 `if (searching) return;` —— 检索中再按一次回车等于什么都没发生，
+       用户只能干等最慢的源把 22 秒预算耗完（也正是「搜索似乎卡住了」的来源）。
+       现在改成**当场接管**，分两步，缺一不可：
+         ① 网络层：closeScope() 把上一次检索的整个网络作用域 abort 掉 ——
+            那一批在途请求（多源 × 多候选串 × 代理链）在同一帧内全部断掉；
+         ② 逻辑层：代次 +1，旧链路里的每个回调（思维链逐条写入、逐源胶囊、
+            流式 push、finally 里的状态复位）第一件事就是比对代次，
+            不是最新一代就 return —— 绝不会把旧结果写进新检索的界面。
+       两步都要做：只 abort 网络的话，旧链路 catch 到 AbortError 仍会去写 DOM。 */
+    const mySeq = ++searchSeq;
+    const isStale = () => mySeq !== searchSeq;
+    const superseded = searching;
+    if (superseded) {
+      try { HS.net.closeScope(); } catch (e) {}
+      HS.toast('已打断上一次检索，正在按新关键词重新检索', 'ok', 2600);
+    }
+
     /* 黑话判定第一遍：同步（核心层永远就绪）。纯旁路，不改 q、不改 intent（C1） */
     const slang = slangLookup(q);
 
     searching = true;
     HS.busy = true;
-    searchedOnce = true;
-    slangCtx = { token: slangCtx.token + 1, q: q, empty: null, hits: slang.hits, dismissed: false };
-    const mySlangToken = slangCtx.token;            /* 本次检索的提示身份，异步回调靠它认亲 */
-    slangClose();                                   /* 上一轮的提示先收起 */
-    slangRefresh(false);                            /* 主动提示档立刻出泡泡（3.8-1） */
-    slangLoadPending(slang.pending, slangCtx.token);
-    setBusy(true);
-    u.$('#vpn-banner').hidden = true;
-    if (!append) HS.results.skeletons(Math.min(HS.settings.perSource, 12));
 
-    const C = HS.chain;
-    C.begin();
-    const srcList = HS.sources.enabled();
-    C.prepareSources(srcList);
-    HS.results.streamStart(q, f, page);
-
+    /* ★从这里开始就进 try★
+       旧代码把 HS.busy = true 与下面这一串 UI 准备（slangRefresh / setBusy / chain.begin /
+       skeletons / streamStart）放在 try **之外**：其中任何一处抛错，HS.busy 就永远停在 true，
+       而 results.js 的滚动加载与底部补刀都以 HS.busy 为闸门 —— 表现就是「往下滑再也不出新作品」，
+       只能刷新页面。把它整段纳入 try，catch/finally 就一定能把它复位。 */
     try {
+      searchedOnce = true;
+      slangCtx = { token: slangCtx.token + 1, q: q, empty: null, hits: slang.hits, dismissed: false };
+      const mySlangToken = slangCtx.token;            /* 本次检索的提示身份，异步回调靠它认亲 */
+      slangClose();                                   /* 上一轮的提示先收起 */
+      slangRefresh(false);                            /* 主动提示档立刻出泡泡（3.8-1） */
+      slangLoadPending(slang.pending, slangCtx.token);
+      setBusy(true);
+      const nb = u.$('#net-banner'); if (nb) nb.hidden = true;
+      if (!append) HS.results.skeletons(Math.min(HS.settings.perSource, 12));
+
+      const C = HS.chain;
+      C.begin();
+      const srcList = HS.sources.enabled();
+      C.prepareSources(srcList);
+      HS.results.streamStart(q, f, page);
+
+      /* ★代次守卫遍布每一个 await 之后★
+         一次检索里有好几处 await（打字机、sleep）。用户中途又提交了搜索时，
+         旧链路会从 await 处**继续往下跑**——如果不在这里拦，它就会把
+         「选择信息源」「并行发起检索请求」这些行**追加到新检索的思维链上**
+         （实测过：同一条「启用：…」会重复出现两次，看起来像新检索自己发了两次）。
+         拦截点只有一个判据：代次不是最新的，就地退出，一个字都不写。 */
       /* 1. 查询解析：按意图分流（作品名 / IP 角色 / 体裁题材 → 不同检索策略） */
       const intent = u.classifyQuery(q);
       const intentExtra = intent.series ? '（' + intent.series + '）'
@@ -410,25 +505,36 @@
       const s1 = C.step(append ? '准备追加下一批结果…' : '解析查询意图…');
       await s1.typed;
       await u.sleep(90);
+      if (isStale()) return;
       s1.set('ok', intent.label,
         '意图判定：' + intent.label + intentExtra + ' · ' + describeFilters(q, f));
       C.progress(16);
 
-      /* 2. 网络探测（智能判断是否需要 VPN） */
-      const s2 = C.step('探测网络环境与可用出口…');
-      const probe = await HS.net.probe();
-      paintChip(probe);
-      if (probe.verdict !== 'ok') showBanner(probe);
-      s2.set(probe.verdict === 'ok' ? 'ok' : 'warn',
-        probe.verdict === 'ok' ? '直连可用' : probe.label,
-        probe.verdict === 'ok'
-          ? '网络可达（' + probe.targets.filter(t => t.ok).length + '/' + probe.targets.length + ' 个探测点连通），无需 VPN'
-          : '网络受限：' + probe.detail);
+      /* 2. 网络状态（★只读缓存，绝不在这里发探测请求★）
+         探测已经在「检索之前」完成（开机那一次 + 之后每次网络变化）。
+         这里只是把已知结论写进思维链，所以这一步是 0 延迟的 ——
+         既不再拖慢检索，也不会把「探测网络环境」这种与本次查询无关的工作塞进主流程。 */
+      const s2 = C.step('网络状态（已提前检测）…');
+      const probe = HS.net.probeCached();
+      if (isStale()) return;
+      if (probe) {
+        paintChip(probe);
+        s2.set(probe.verdict === 'ok' ? 'ok' : 'warn',
+          probe.verdict === 'ok' ? '直连可用' : probe.label,
+          '缓存结论：' + (probe.verdict === 'ok' ? '网络可达' : probe.label) +
+          '（' + probe.targets.filter(t => t.ok).length + '/' + probe.targets.length +
+          ' 个探测点连通）· 检测于 ' + Math.max(0, Math.round((Date.now() - probe.ts) / 1000)) + ' 秒前');
+      } else {
+        /* 缓存还没到（极少数：开机探测尚未回来就提交了搜索）：不阻塞，后台补一次 */
+        s2.set('ok', '后台检测中', '本次检索不等待网络检测；结论出来后会更新右上角状态' + '。');
+        scheduleNetWatch(400);
+      }
       C.progress(32);
 
       /* 3. 信息源选择 */
       const s3 = C.step('选择信息源（并行调度）…');
       await s3.typed;
+      if (isStale()) return;
       const plan = HS.sources.plan(srcList.length);
       s3.set('ok', srcList.length + ' 个源', '启用：' + srcList.map(s => s.name).join(' · ') +
         '｜每源最多 ' + plan.limit + ' 条' +
@@ -443,11 +549,16 @@
       const s4 = C.step('并行发起检索请求…');
       const t4 = u.now();
       let done = 0;
+      /* ★开检索作用域★：从这里往下发出的每一个网络请求都归属本次检索，
+         下一次提交搜索时会由 HS.net.closeScope() 一次性 abort（见函数顶部）。 */
+      HS.net.openScope();
       const results = await HS.sources.run({
         q, filters: f, page, intent,
         capMs: HS.sources.RUN_CAP_MS,
-        onStart: src => C.setSource(src.id, 'run'),
+        isStale: isStale,
+        onStart: src => { if (!isStale()) C.setSource(src.id, 'run'); },
         onDone: (src, r) => {
+          if (isStale()) return;                    /* 已被新的检索接管：一个字都不写 */
           done++;
           C.setSource(src.id, r.ok ? 'ok' : 'fail', r.ms, r.ok ? r.items.length : 0, r.error);
           C.progress(44 + (done / srcList.length) * 34);
@@ -461,6 +572,7 @@
           HS.results.streamPush(r);
         }
       });
+      if (isStale()) return;                        /* 旧检索：结果与界面全部作废 */
       const okList = results.filter(r => r.ok && r.items && r.items.length);
       const failList = results.filter(r => !r.ok);
       s4.set(okList.length ? 'ok' : 'fail',
@@ -472,6 +584,7 @@
       const rawTotal = results.reduce((n, r) => n + ((r.ok && r.items) ? r.items.length : 0), 0);
       const s5 = C.step('跨源比对、去重与合并…');
       await u.sleep(140);
+      if (isStale()) return;
       const items = HS.results.render(results, { q, f, page });
       s5.set('ok', rawTotal + ' → ' + items.length,
         '聚合完成：原始 ' + rawTotal + ' 条 → 跨源去重后 ' + items.length + ' 条');
@@ -480,6 +593,7 @@
       /* 6. 重排 */
       const s6 = C.step('按相关度重排、归并同系列…');
       await u.sleep(140);
+      if (isStale()) return;
       const stacks = HS.results.stackCount ? HS.results.stackCount() : 0;
       s6.set('ok', 'Top ' + Math.min(items.length, 5),
         items.length
@@ -522,14 +636,23 @@
         }
       }
     } catch (err) {
+      /* 被打断的旧检索不报错、不写界面：那不是故障，是用户自己按了新的搜索 */
+      if (isStale() || (err && (err.superseded || err.name === 'AbortError'))) return;
       console.error(err);
       C.finish({ status: '出错', ok: false, line: '检索流程异常：' + ((err && err.message) || err) });
       HS.toast('检索出错：' + ((err && err.message) || err), 'err', 4200);
       if (typeof opts.fail === 'function') opts.fail(err);
     } finally {
-      searching = false;
-      HS.busy = false;
-      setBusy(false);
+      /* ★只有最新一代才允许复位全局忙碌态★
+         旧检索的 finally 若照旧执行，会把新检索的「检索中」按钮和 HS.busy 一起清掉
+         —— 界面显示可以再点，实际还在跑，正是竞态的味道。 */
+      if (!isStale()) {
+        searching = false;
+        HS.busy = false;
+        setBusy(false);
+        /* 本次检索的网络作用域到此为止：留着只会让下一轮请求挂在一个不会再用到的 controller 上 */
+        try { HS.net.closeScope(); } catch (e) {}
+      }
     }
   }
 
@@ -574,6 +697,22 @@
         document.documentElement.classList.remove('hs-top-peek');
       }, TOP_HIDE_MS);
     }
+
+    /* ★鼠标点过顶栏按钮之后要能自动收起★（用户报：点了「目标可达」就再也不收，
+       非得点别处才行）。原因是两件事叠在一起：
+         · CSS 有一条 `html.hs-top-auto .hs-top:focus-within { transform: none; }`
+           —— 为了键盘可用性（Tab 进来时顶栏必须可见，否则焦点跑到看不见的地方）；
+         · 点 <button> 的副作用就是**给它焦点**，而且浏览器对鼠标点击的按钮会一直保留焦点，
+           于是 :focus-within 永远成立、conceal() 里那道「焦点还在里面」也永远为真。
+       解法：**鼠标这一下点完就主动 blur 掉**，焦点不再留在顶栏里 —— 之后鼠标离开、
+       或指针滑回顶栏外，就会按正常节奏收起。键盘可见性不受影响：只有 pointerdown
+       之后的 focus 才移除（Tab / 快捷键走的是 focusin，没有 pointerdown，不匹配）。 */
+    top.addEventListener('pointerdown', () => {
+      window.setTimeout(() => {
+        const ae = document.activeElement;
+        if (ae && ae !== document.body && top.contains(ae) && ae.blur) ae.blur();
+      }, 0);
+    });
 
     window.addEventListener('mousemove', e => {
       if (e.clientY <= TOP_PEEK_PX) reveal(); else conceal();
@@ -653,25 +792,30 @@
     }
 
     u.$('#theme-toggle').addEventListener('click', toggleTheme);
-    u.$('#vpn-chip').addEventListener('click', () => probeNow(true, true));
+    /* 手动重检：这是唯一「用户主动要求」的探测入口，其余全部由网络变化事件驱动 */
+    const netChip = u.$('#net-chip');
+    if (netChip) netChip.addEventListener('click', () => probeNow(true, true));
 
-    u.$('#vpn-recheck').addEventListener('click', async () => {
+    const netRecheck = u.$('#net-recheck');
+    if (netRecheck) netRecheck.addEventListener('click', async () => {
       const p = await probeNow(true, false);
       if (p.verdict === 'ok') { HS.toast('已连通，继续检索', 'ok'); HS.bus.emit('app:search'); }
-      else HS.toast('仍然不可达：' + p.label + '。请确认 VPN 已开启后再试', 'warn', 4200);
+      else HS.toast('仍然不可达：' + p.label + '。可先用本地网关代取，或改用公共 CORS 代理', 'warn', 4600);
     });
-    u.$('#vpn-proxy-enable').addEventListener('click', () => {
+    const netProxyOn = u.$('#net-proxy-enable');
+    if (netProxyOn) netProxyOn.addEventListener('click', () => {
       const preset = 'https://api.allorigins.win/raw?url={url}';
       HS.settings.proxy = preset;
       HS.store.save(HS.settings);
       HS.net._cache = null;
       HS.filtersUI.syncAll();
       HS.toast('已启用 AllOrigins 代理，重新检索中…', 'ok', 3200);
-      u.$('#vpn-banner').hidden = true;
+      const b = u.$('#net-banner'); if (b) b.hidden = true;
       HS.bus.emit('app:search');
     });
     /* 自动竞速挑选一个可用的公共代理 */
-    u.$('#vpn-auto-proxy').addEventListener('click', async e => {
+    const netAutoProxy = u.$('#net-auto-proxy');
+    if (netAutoProxy) netAutoProxy.addEventListener('click', async e => {
       const btn = e.currentTarget;
       btn.disabled = true; btn.textContent = '正在挑选…';
       try {
@@ -682,15 +826,16 @@
           HS.store.save(HS.settings);
           HS.filtersUI.syncAll();
           HS.toast('已选用 ' + picked.name + '（' + u.fmtMs(picked.ms) + '），重新检索中…', 'ok', 3600);
-          u.$('#vpn-banner').hidden = true;
+          const b = u.$('#net-banner'); if (b) b.hidden = true;
           HS.bus.emit('app:search');
         } else {
-          HS.toast('没有可用的公共代理。请在浏览器之外开启 VPN，或自建一个代理', 'err', 5200);
+          HS.toast('没有可用的公共代理。可以启动随附的本地网关（node tools/gateway.js），它自带 DoH 与境内中继', 'err', 5600);
         }
       } finally { btn.disabled = false; btn.textContent = '自动挑选可用代理'; }
     });
-    u.$('#vpn-continue').addEventListener('click', () => { u.$('#vpn-banner').hidden = true; });
-    u.$('#vpn-dismiss').addEventListener('click', () => { u.$('#vpn-banner').hidden = true; });
+    const hideNet = () => { const b = u.$('#net-banner'); if (b) b.hidden = true; };
+    const netGo = u.$('#net-continue'); if (netGo) netGo.addEventListener('click', hideNet);
+    const netSkip = u.$('#net-dismiss'); if (netSkip) netSkip.addEventListener('click', hideNet);
 
     /* 成年门 */
     const gate = u.$('#gate');
@@ -723,8 +868,12 @@
   function wire() {
     HS.bus.on('app:search', p => doSearch(p));
     HS.bus.on('net:recheck', () => probeNow(true, true));
+    /* net:probe 会广播两次：浏览器探针出结果时的**临时结论**（≤3.5s），
+       以及 /api/diag 跑完的最终结论。两次都刷状态，用户不必等网关自检跑完。 */
+    HS.bus.on('net:probe', p => { paintChip(p); showBanner(p); });
     HS.bus.on('theme:set', applyTheme);
     HS.bus.on('blurcovers:set', applyBlurCovers);
+    /* 代理设置变了 = 网络出口变了，属于「网络情况变化」，重探一次 */
     HS.bus.on('proxy:change', () => probeNow(true, false));
     HS.bus.on('settings:change', d => {
       if (d && d.key === 'sources' && HS.filtersUI.refreshSources) HS.filtersUI.refreshSources();
@@ -751,6 +900,8 @@
     HS.results.init();
     HS.panic.init();
     if (HS.fav && HS.fav.init) HS.fav.init();
+    /* 最近浏览：必须在 results.js / reader.js 之后初始化 —— 它包装这两个模块的入口记账 */
+    if (HS.recent && HS.recent.init) HS.recent.init();
     HS.settingsUI.init();
     bind();
     bindHotkeys();
@@ -761,7 +912,10 @@
     renderWelcome();
     HS.sources.loadTags();
 
-    /* 首次网络探测：不阻塞界面，探测完更新状态与提醒 */
+    /* ★网络检测：在检索之前完成★
+       开机 260ms 就探一次（用户还没输完关键词，界面也不阻塞），
+       之后交给 initNetWatch()：只有观测到网络情况变化才重探，检索流程一律读缓存。 */
+    initNetWatch();
     setTimeout(() => probeNow(true, false), 260);
     /* 本地网关探测（有就跑，没有也不影响） */
     setTimeout(() => probeGateway(false), 680);

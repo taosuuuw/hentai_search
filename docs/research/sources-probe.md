@@ -105,9 +105,14 @@ No 'Access-Control-Allow-Origin' header is present on the requested resource.
 
 ---
 
-## 2. LectorManga（lectormanga.com）
+## 2. LectorManga（TMO 系 / 现役 lector-mangas.lat）
 
-### 2.1 结论先行：原站已被警方查封，源已不可用
+> 【4.0 更正】本节原来的结论是「源已不可用，建议下线」。**上游事实仍然成立**
+> （`visortmo.com` / `zonatmo.com` 确实随 2026-04 西警方查封下线，DNS 都不解析了），
+> 但结论过期了：西语圈这一支换了域名继续运营，现役可用端点是 **`lector-mangas.lat`**。
+> 4.0 已按新端点接入为信息源（见 2.7），下面 2.1–2.6 保留原始调研记录以备追溯。
+
+### 2.1 结论先行（原记录）：TMO 原站已被警方查封
 
 - 西班牙《EL PAÍS》2026-04-22：[《Cae Tumangaonline: la Policía Nacional desmantela la mayor plataforma de piratería de manga en español》](https://elpais.com/cultura/2026-04-22/cae-tumangaonline-la-policia-nacional-desmantela-la-mayor-plataforma-de-pirateria-de-manga-en-espanol.html) —— 西警方捣毁 TMO。
 - Reddit r/AnimeEspanol 2026-03：[zonatmo.com 已倒](https://www.reddit.com/r/AnimeEspanol/comments/1s3r63j/zonatmocom_se_convirti%C3%B3_a_zonatmoto/)、[TMO 复活了吗](https://www.reddit.com/r/AnimeEspanol/comments/1s314ah/revivio_tmo/)。
@@ -163,7 +168,61 @@ Cache-mode: no-cache
 | `zonatmo.net` | ⚠️ HTTP 200 但为 JS SPA；浏览器访问被 McAfee WebAdvisor 拦截，**未能确认**其 API |
 | `visortmo.ws` | 🚨 **仿冒站**：内容为模板假数据（"El Monarca de las Sombras"、"Academia de Magia" 等），**不要接入** |
 
-**最终判定：LectorManga 源当前不可用；现役可用检索端点「未能确认」。** 建议在聚合器里标记为下线，或改用 zonatmo 系列但需人工确认其真实 API。
+**原判定：TMO 系旧域名（lectormanga.com / visortmo.com / zonatmo.com）全部不可用。**
+（4.0 更正：同名的现役站换了域名，见 2.7。）
+
+---
+
+### 2.7 【4.0 新增】现役端点实测：`lector-mangas.lat`
+
+| 项 | 实测结果 |
+|---|---|
+| `lector-mangas.lat` | ✅ **HTTP 200**，Cloudflare 前置但有完整服务端渲染（列表 / 详情 / 标签 / 排行） |
+| `lectormangass.com` | 301 → `https://lector-mangas.lat/` |
+| `lectormangaa.com` | 301 → `lectormangass.com` → `lector-mangas.lat` |
+| `lectormangas.com` | 🚨 **域名停放页**（parklogic 广告路由，`router.parklogic.com`），**不是漫画站** |
+| `lectormanga.com` | ❌ DNS 无解析 |
+| `lectormanga.net` | ❌ 301 → `choto.click/vx/...`（停放/跳转） |
+| `zonatmo.net` | ⚠️ HTTP 200 但是另一套 SPA，与 TMO 无关，未采用 |
+| `visortmo.net` | ❌ DNS 无解析 |
+
+**检索端点（实测推导，务必照抄）**
+
+```
+GET https://lector-mangas.lat/comics?search=<关键词>&page=<页码>       ✅ 真的过滤
+GET https://lector-mangas.lat/comics?q=<关键词>                        ❌ 被忽略，返回全库第一页
+```
+
+- 🚨 **站点自己的 JSON-LD 里写的是 `SearchAction: /comics?q={search_term_string}`，那是错的。**
+  实测 `?q=naruto` 与不带参数**返回完全相同的 24 张卡片**；`?search=fate` 则 24 条全是 Fate 系。
+  接源时只认 `search=`。
+- 无关键词时 `GET /comics` 也能用（返回最新列表）。
+- 空结果：`?search=<不存在的词>` 返回一张正常渲染、只是没有卡片的列表页（无「no result」标题，
+  所以**不能**把「真页面 + 0 条」当成解析失败）。
+
+**列表解析（已实测的 DOM 结构）**
+
+```html
+<div id="directory-results"><div class="row manga-grid">
+  <div class="col-md-6 col-lg-6 col-xl-4 col-12">      <!-- 每张卡片 -->
+    … "8 Capítulos" …                                   <!-- 章节数（不是页数） -->
+    <a href="/comics/<slug>" class="card-cover-link" title="标题">
+      <img src="https://api.zerocomics.net/storage/series/portadas/<id>.webp" …>
+```
+
+- **必须只在 `#directory-results` 这一段里抓**：页面顶部还有整块「Clasificación」排行，
+  用的也是 `/comics/<slug>` 链接；不切范围会把排行当成检索结果。
+- 封面图在 `api.zerocomics.net`（独立 CDN，不带 CF 挑战）。
+- 详情页 `/comics/<slug>`；分类入口 `/comics/genre/<slug>`、`/comics/status/<slug>`。
+
+**请求头与 CORS**
+
+- 常规浏览器请求头即可（实测无 cookie、无 Referer 要求、无 CF 挑战）。
+- ❌ **不返回 `Access-Control-Allow-Origin`**（带 `Origin` 实测）⇒ 浏览器 `fetch` 直连必被拦，
+  只能经本地网关或公共代理，与 kemono / porn-comic 同一类。
+
+**落地**：网关 `/api/lectormanga/search`（三个域名轮换）→ 前端 `lectormanga` 适配器；
+网关在线时自动启用。
 
 ---
 
@@ -284,7 +343,7 @@ No 'Access-Control-Allow-Origin' header is present on the requested resource.
 | 源 | 返回体 | CORS `Access-Control-Allow-Origin` | 纯浏览器 `fetch` 直连 | 结论 |
 |---|---|---|---|---|
 | **Kemono**（`kemono.cr`） | JSON | ❌ **无**（实测拦截） | ❌ 不可用 | **必须走本地网关** |
-| **LectorManga**（TMO） | HTML | ❌ 无（第三方脚本需 CORS 扩展佐证） | ❌ 不可用 | **源已查封下线**；即便复活也须走网关 |
+| **LectorManga**（现役 `lector-mangas.lat`） | HTML | ❌ 无（实测） | ❌ 不可用 | **必须走本地网关**；无 CF 挑战、无 cookie，网关一次请求即回（4.0 已接入） |
 | **porn-comic**（`porn-comic.com`） | HTML | ❌ **无**（实测拦截） | ❌ 不可用 | **必须走本地网关**；搜索另有 Cloudflare 挑战 |
 
 **三个源没有一个能纯浏览器直连** —— 全部缺失 `Access-Control-Allow-Origin`。纯前端聚合器若想直接 `fetch`，只能：
@@ -298,8 +357,266 @@ No 'Access-Control-Allow-Origin' header is present on the requested resource.
 **各源可用性再评级**
 
 - **Kemono** — 唯一「端点完整、JSON 规整、当场验证成功」的源。`/api/v1/posts?q=&o=` 可直接照抄。注意 `count` 恒为 50000（用 `true_count`）、列表无 tags/无作者名、封面需拼 `/data` + 相对路径且会重定向到 `n2.kemono.cr`。
-- **porn-comic** — 站点活着，但**只有 HTML**，且**搜索被 Cloudflare 挑战挡住**。实用做法是抓列表页/标签页/语言页（这些无挑战），用 `a.thumb` 解析；关键词搜索不可靠。
-- **LectorManga** — **建议直接下线**。原站已被西班牙警方查封，`lectormanga.com` / `visortmo.com` 全部 `ERR_CONNECTION_CLOSED`；标称的继任域名要么是仿冒站（`visortmo.ws`），要么被安全软件判黑（`zonatmo.*`），现役可用端点**未能确认**。
+- **porn-comic** — 站点活着，但**只有 HTML**，且 `/q/` 会 302 到 `search.porn-comic.com`（CF 挑战）。
+  网关用「直连 → 本机 Chrome 过验证 → 境内中继」三条通路取页（4.0 起顺序如此，见 3.7），
+  拿到页面后用 `a.thumb` 解析。**关键词搜索是可用的**（前提是本机 Chrome 起得来），
+  只是无结果的关键词会先撞一次挑战再落到 `/tags/` 的「no result」页。
+- **LectorManga** — 4.0 起**已接入**。旧结论（TMO 系被查封、建议下线）对旧域名成立，但现役站换了域名：
+  `lector-mangas.lat` 实测 200、服务端渲染、无 CF 挑战，检索参数是 **`?search=`**（站点 JSON-LD 写的 `?q=` 无效）。
+  不返回 CORS 头 ⇒ 走本地网关。详见第 2.7 节。
+
+---
+
+## 3.7 【4.0 新增】porn-comic「经常超时无返回」的归因与通路顺序修正
+
+**症状**：porn-comic 经常整源超时、界面报「超过 22s 未返回」，用户看不到任何结果。
+
+**逐层实测（2026-09-21，本机出口，`tools/gateway.js` 打点日志）**
+
+| 通路 | 实测 | 耗时 |
+|---|---|---|
+| 直连 | HTTP 403（CF 挡），一次就够 | **< 1s** |
+| 境内中继（allorigins / allorigins-get） | 两个中继**都超时**；而中继内部是「每个中继各给一份 timeout」⇒ 总开销 = timeout × 中继条数 | **16–20s（纯浪费）** |
+| 本机 Chrome 过验证 | 能出真页面；`/q/fate-1.html` → 25 个 `a.thumb`、`/q/naruto-1.html` → 25 个 | **6–9s** |
+
+旧顺序是「直连 → 中继 → Chrome」，于是**一次成功检索** = 0.5s + 20s + 6s ≈ **26.5s**，
+而前端聚合器的硬上限是 22 秒（`assets/js/sources.js` 的 `RUN_CAP_MS`）——
+结果被砍掉，表现就是「经常超时无返回」。**毛病不在 Chrome 慢，在于每次都先把 20 秒喂给了中继。**
+
+**修正（4.0）**
+
+1. 通路顺序改为 **直连 → 本机 Chrome → 境内中继**（中继退到最后当兜底）；
+2. 中继超时 20s → 6s，且**人均一份剩余预算**（`floor((left-1000)/中继数)`），不再吃满全线；
+   中继失败冷却 60s → 3 分钟（整条链在超时，不是偶发 522）；
+3. **通路记忆**：记住上次走通的那条，10 分钟内先走它（Chrome 通了一次，后续直接 6–7 秒）；
+4. **总预算**：单次取页 ≤20s，挑战页 4.5s 判死（不再空转到 timeout），
+   `cfRender` 也吃剩余预算（旧版它自带 40s，实测跑出过「预算 19s、实际 45s」的破口）；
+5. **无结果只认站点自述**：`/tags/<词>.html` 渲染后的 `<title>` 就是 `"<词> no result"`，
+   认到它才回「0 条」；「真页面 + 0 个 a.thumb」不算（可能是骨架页或改版），继续试下一个入口；
+6. **渐进渲染**：列表页的网格是异步补上的，1s 时 `innerHTML=13509B` 却 **0 个作品链接**，
+   而页面标题已经是 "naruto comics Page 1"。所以新增「就绪判据 + 稳定判据」：
+   条目数/正文规模连续 1.2 秒不变才抓（只判「有没有列表」会抓到只含 1 条的真页面）。
+
+**改后实测**
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| `fate` 冷启动 | 26.5s（常被 22s 上限砍掉） | **6–7s，24 条** |
+| `fate` 二次（同 URL） | 26.5s | **2ms（CF 缓存）** |
+| `中文` 关键词 | 5.7s | 7–8s，24 条 |
+| 无结果 `zzqqxxqqzz` | **60.5s → HTTP 502** | **18s → HTTP 200 + `empty: true`（站点自述 no result）** |
+| 无结果之后紧接一次检索 | 被残留冷却堵死 | 6.5s，24 条（冷却绕行） |
+
+**仍未解决（已知）**：`/tags/<词>.html` 这类标签页在 headless Chrome 里渲染出**零个作品锚点**
+（标题正常，如 `"hiten comics Page 1"`），所以像 `hiten` 这种「`/q/` 也 302 到标签页」的词，
+本站就是取不到结果 —— 这是站点行为，不是解析器的问题。真页面 + 0 条 + 无 no result 时
+上层如实报「结构里没有作品链接」，**不谎报 0 条**。
+
+---
+
+## 5. 无 VPN 环境的可达性分层实测（2026-09-21，本次修复的全部依据）
+
+> 调研工具：`node tools/netprobe.js`（分层体检）、`node tools/netprobe.js --relay`（中继池实测）、
+> `node tools/netprobe.js --url <地址>`（单地址直取）、`node tools/proxy-selftest.js`（出口自愈回归）。
+> 环境：本机**没有**运行任何 VPN / 本地代理（`7897` 等端口全部关闭、系统代理关闭），
+> 因此这一节量到的就是「无 VPN」的真实链路。
+
+### 5.1 「打不开」有四种死法，修法完全不同
+
+`netprobe` 把每一站拆成四层量：**系统 DNS → DoH 候选 → TCP 握手 → 带 SNI 的 TLS+HTTP**。
+
+| 站点 | 系统 DNS | 真 IP（DoH 来源） | 判定 | 可修 |
+|---|---|---|---|---|
+| `api.copy2000.online`（拷贝漫画 API） | ✅ 真 IP | 171.244.199.189（dnspod） | 直连可用 | 本来就通 |
+| `www.cdnbea.net` / `www.cdnhjk.net`（禁漫 APP 接口） | ✅ 真 IP | 172.67.168.110 | 直连可用 | 本来就通 |
+| `cdn-msp*.jmapiproxy*.cc`（禁漫图床） | ✅ 真 IP | Cloudflare | 直连可用 | 本来就通 |
+| `sf.mangafunb.fun`（拷贝漫画图床） | ✅ 真 IP | Cloudflare | 直连可用 | 本来就通 |
+| `www.wnacg.com`（紳士漫畫） | ❌ 污染 | 104.20.44.182 / 172.66.175.138（dnspod/墙外） | **DNS 污染** | ✅ DoH |
+| `hitomi.la` | ❌ 污染 | 185.165.169.231（dnspod） | **DNS 污染** | ✅ DoH |
+| `www.wn03.ru`（紳士镜像） | ✅ 真 IP | Cloudflare | 直连可用 | 本来就通 |
+| `nhentai.net` | ❌ 无解析 | 172.67.74.203（dnspod / 墙外 Google） | 混合 | ✅ DoH 或中继 |
+| `e-hentai.org` | ❌ 污染 | 172.66.132.196（墙外 Google） | **SNI 阻断** | ✅ 中继 |
+| `danbooru.donmai.us` | ❌ 污染 | 104.26.10.39（墙外 Google） | **SNI 阻断** | ✅ 中继 |
+| `kemono.cr` | ✅ 真 IP | 190.115.31.240 | **SNI 阻断**（TCP 通、TLS 被重置） | ✅ 中继 |
+| `www.wnacg01.cc` / `wnacg02.cc` | ✅ 真 IP | — | **SNI 阻断** | 只能中继（且中继回的是垃圾） |
+| `i.pximg.net` / `porn-comic.com` | ❌ | — | 整段不可达 | ✅ 中继（图片另需 Referer，仍可能失败） |
+
+**结论 1（最重要）**：禁漫 / 拷贝漫画的**接口与图床本来就直连可用** —— 无 VPN 下它们之所以全废，
+根因是网关的**出口在进程启动时被粘死**（见 5.3），不是站点被墙。
+
+**结论 2**：`hitomi.la` 同一个域名，**阿里 DNS 给 202.160.128.14（假的）、腾讯 DoH 给 185.165.169.231（真的，✓200）**，
+而且同一个解析器前后两次的答案也会变（`hitomi.la` 第二次两边都给污染值）。
+⇒ DoH 必须**多解析器并取候选**，且候选**必须用「带 SNI 能否握手」验真**，不能信任何单一解析器。
+
+**结论 3**：验真必须用**证书校验打开**的口径。反例：墙外 DNS 把 `api.copy-manga.com` 解析到
+`api.copy2000.online` 的 IP 上，宽松验真会「成功」并钉住这个 IP，之后每一次真实请求都必然 TLS 失败。
+
+### 5.2 中继池实测（`--relay`，全部为境内**直连可达**的中继）
+
+被墙站的内容可以由墙外的中继带回来，前提是**中继自身在境内可达**：
+
+| 中继 | 文字 / JSON | 图片 | 实测结论 |
+|---|---|---|---|
+| `api.allorigins.win/raw?url=` | ✅ nhentai API 真回 JSON、e-hentai 首页 63KB | ✅ e-hentai favicon / nhentai 缩略图 | **采用**（会限流 → 429，必须带冷却） |
+| `api.allorigins.win/get?url=` | ✅（包在 `contents` 里，慢 4–7s） | — | 备用 |
+| `i0.wp.com/<host>/<path>` | ❌ | ✅ nhentai 缩略图 112KB jpeg | **采用**（仅图片） |
+| `wsrv.nl` / `images.weserv.nl` | ❌ | ❌ `400 Domain or TLD blocked by policy` | **不采用**（屏蔽成人域名） |
+| `corsproxy.io` | ❌ `401`（改成要 API key） | ❌ | **不采用** |
+| `api.codetabs.com` | ❌ SNI 阻断（TCP 通、TLS 重置） | ❌ | **不采用** |
+| `cors.isomorphic-git.org` | ❌ `403` 拒绝代取 | ❌ | **不采用** |
+| `thingproxy.freeboard.io` | ❌ 连不上 | ❌ | **不采用** |
+| `corsproxy.org` / `whateverorigin` | ⚠️ 返回的是自己的包装页（内容不可信） | ❌ | **不采用** |
+
+**结论 4**：中继是**限流资源**。一次「镜像竞速」式检索（绅士 10 个域名 × 3 条路径）会把
+AllOrigins 打成 `429`，之后**整条中继腿对所有人失效**（网关日志：
+`中继取回 www.wnacg01.cc ← allorigins（13B）` → 紧接着 `429`）。
+因此最终实现里加了三道闸：**响应缓存（5 分钟 / 64MB 上限）+ 双档冷却（限流 45s、真不可达 3 分钟）
++ 网关在线时前端不再叠加公共 CORS 代理链**。
+
+### 5.3 根因取证：出口粘死
+
+旧实现在 `ensureEgress()` 里探测本地代理端口，命中就把 `HTTPS_PROXY` 写进环境变量**重启自己**，
+此后**再不重判**。用 `tools/proxy-selftest.js` 复现（起一个本机 CONNECT 代理，再把它关掉）：
+
+```
+场景 A：启动时锁定的代理端口是死的（--proxy http://127.0.0.1:7897）
+  → 旧实现：每一次请求都先撞那个没人监听的端口，日志里是 ms=5 的 fetch failed
+            （连本来直连就通的禁漫 APP 接口 / 拷贝漫画 API 一起被废）
+  → 新实现：自动改走直连强化，10 个源全部可达，禁漫检索 11s 内出结果
+```
+
+### 5.4 http → https：同一个地址、两种协议、两种结果
+
+绅士漫画的正文图给的是 **`http://img5.qy0.ru/...?verify=...`**：
+
+```
+node tools/netprobe.js --url "http://img5.qy0.ru/data/3863/81/0001.jpg?verify=…"
+  FAIL http://img5.qy0.ru/…   → ECONNRESET            229ms
+  OK   https://img5.qy0.ru/…  → HTTP 200 image/jpeg   150802B
+```
+
+**结论 5**：明文 HTTP 的 Host 头会被拦成 `ECONNRESET`，而**同一 URL 换 https 就正常**。
+所以 `outFetch` 在三层都失败后**必须再试一次 https 变体**（这不是猜，是同地址的对照实测）。
+
+### 5.5 修复后：无 VPN 端到端实测（前端 UI + 网关接口双验证）
+
+| 能力 | 禁漫天堂 | 拷贝漫画 | 紳士漫畫 | nhentai | E-Hentai |
+|---|---|---|---|---|---|
+| 检索 | ✅ `total=5683` items=80 | ✅ `total=216` items=10 | ✅ 前端「紳士漫畫 9 条」 | ✅ `total=23881` items=25 | ✅ items=25（经中继，**不再退化成 torrents**） |
+| 在线阅读 | ✅ 275 页，正文 webp 72KB | ✅ 24 页，正文 jpeg 221KB | ✅ 90 页，正文 jpeg 150KB / webp 163KB | ✅ 16 页，正文 webp 267KB | 逐页 N+1（本机只验证到搜索层） |
+| 封面 | ✅ `cdn-msp.jmapiproxy3.cc` 直连 200 | ✅ `sf.mangafunb.fun` 200 | ✅ `t1/t3/t4.qy0.ru` 200 | ✅ 经网关中继 200 | 经中继 |
+
+一次真实界面检索：**35 条结果 / 成功源 4→5（7 个源）/ 首次 36.8s、第二次 10.7s**
+（第二次变快来自「通路记忆 + 响应缓存 + 死镜像长冷却」；会话内首次仍会付 DoH/中继的探测成本）。
+
+**仍未打通（如实记录，不粉饰）**：`www.wnacg01/02/03/05.cc`、`wnacg.ru`、`wn04.ru` 这几个镜像是
+**SNI 阻断**，中继取回来的是垃圾页（13B / 985B），所以它们永远是失败的候选 ——
+绅士漫画实际靠 `www.wnacg.com`（DoH 打通）与 `www.wn03.ru`（直连就通）撑着。
+danbooru 的**接口**在当前出口仍被 Cloudflare 403（网关侧要本机 Chrome 过验证，
+沙箱里 Chrome 起不来），只有图片 CDN 直连可用。
+
+---
+
+## 6. 第二轮实测：四个「老是失败」的真因（2026-09-21 深夜）
+
+> 这一轮全部结论都有对照实验，不是推测。工具同上（`netprobe.js` / `proxy-selftest.js`），
+> 网关为 `tools/gateway.js` v1.2.x。
+
+### 6.1 E-Hentai：上游回「HTTP 200 + content-length: 0」的空壳（最隐蔽的一处）
+
+网关日志里抓到原始响应头（这是判断依据，不是猜的）：
+
+```
+↑ 上游回空正文（HTTP 200）：{"date":"Mon, 21 Sep 2026 04:45:21 GMT",
+ "content-type":"text/html; charset=UTF-8","content-length":"0","connection":"keep-alive",
+ "server":"cloudflare","x-varnish":"842344983","age":"0","via":"1.1 varnish (Varnish/6.0)",
+ "accept-ranges":"bytes","strict-transport-security":"max-age=31536000; preload;","cf-cache-status":"D…"}
+```
+
+- 响应来自 **E-Hentai 自己的 Varnish**（`via: 1.1 varnish`、`x-varnish`），
+  `content-length: 0` 是上游**明确决定不发正文**。
+- 触发条件是**出口 IP 的请求频率**：同一个出口连着请求几次之后开始回空壳，停一两分钟又恢复。
+  对照实验（同一网关、同一查询方式，只改 cookie）：
+
+  | 请求 | 结果 |
+  |---|---|
+  | `?q=fate&cookie=nw=1` | `ok=false`（空壳） |
+  | `?q=naruto&cookie=nw=1` | `ok=false`（空壳） |
+  | `?q=bleach&cookie=nw=1` | `ok=false`（空壳） |
+  | `?q=onepiece`（不带 cookie） | `ok=false`（空壳） |
+  | `?q=gundam`（不带 cookie） | `ok=false`（空壳） |
+
+  ⇒ **和 cookie / 请求头无关，就是按出口限流**。恢复后同一条链路实测能拿到
+  `/` 62746B 真页面、`?f_search=fate` **25 条真结果**（`via=search`，不需要中继）。
+- 另外发现一个会加重它的细节：网关原来给所有 `node:https` 请求写死
+  `accept-encoding: identity`（图省事）。改成如实协商 `gzip, deflate, br` 后，
+  同一个出口第一次请求就拿到了 62746B 真页面 —— 不再把自己伪装成"不接收压缩的异常客户端"。
+
+**修法（三层）**：① `outFetch` 里 **200 + 0 字节 = 失败**（`guardEmpty`），绝不再当成
+"成功但没内容"；② 识别到空壳就给这台主机记 **60 秒空壳冷却**，冷却期直接换中继出口（另一个 IP），
+不再硬撞；③ 文案如实说明「① 出口 IP 被搜索侧限制 ② 限流软封锁」两种原因与该等多久/该做什么。
+
+> 这一条正是「E-Hentai 老是说搜不到」的主因：旧代码把空壳当成**成功返回的空结果**，
+> 于是页面显示「搜索侧在当前出口 IP 下返回空集」—— 一个听起来很确定、其实是误判的结论。
+
+### 6.2 通用坑：301/302 不跟随，等于把源判死
+
+`node:http(s)` 不像 `fetch` 那样自动跟重定向，而这两个站的**正常应答就是 3xx**：
+
+| 实测 | 结果 |
+|---|---|
+| `www.wn03.ru/` | `301 → https://www.wn07.ru/`（而 wn07.ru 又被 SNI 阻断 → 死路） |
+| `www.wnacg.date/search/?…` | `301 → www.wnacg.com/…`（**跟过去就是好页面**） |
+| `porn-comic.com/q/fate-1.html` | `302 →` 规范化地址（跟过去是 39833B 的真检索页） |
+
+不跟的后果不只是"少一个候选"：`/api/proxy` 会把 301 原样回给浏览器，浏览器再去请求
+`Location` 里的上游地址（跨域必失败），整个源就表现为"取不到"。修法：`hsRequest` 与中继层
+都自己跟随（上限 5 跳 / 3 跳，只跟 GET），并把每一跳记进日志。
+
+### 6.3 porn-comic：中继能取到**真**页面，之前的「CF 挑战」是误判
+
+早期用 `challenge-platform` 这个字符串判断"是不是 CF 挑战页"，实测**正常页面里也会引用这个脚本**，
+于是把真页面误判成挑战页。改判据（先认列表特征 `a.thumb` / `/h/<id>.html`，都没有再谈挑战）之后：
+
+| 入口 | 经中继的结果 |
+|---|---|
+| `/language/chinese.html` | HTTP 200，30720B，title 正常，38 个 `/h/` 链接、24 个 thumb，**挑战标记全 0** |
+| `/tags/fate.html` | HTTP 200，18273B，真页面（但该页只是标签索引，几乎没有作品链接） |
+| `/q/fate-1.html` | 302 → 跟随 → HTTP 200，39833B，25 个 thumb |
+
+⇒ porn-comic **不需要 Chrome 也能取**：中继（境内直连可达、出口在墙外）就能拿到真页面。
+所以三条通路的顺序改成 **直连 → 中继 → 本机 Chrome**，任一条失败只罚自己
+（直连 5 分钟、中继 60 秒），不影响另外两条。CF 首次失败也改成只罚 15 秒（环境性失败才 90 秒）。
+开着 VPN 实测（用户环境）：`/api/porncomic/search?q=fate` → **24 条**。
+
+### 6.4 紳士漫畫：镜像池的真实状态与「网关侧检索」
+
+`netprobe` 逐域名实测（无 VPN 环境）：
+
+| 域名 | 判定 |
+|---|---|
+| `www.wnacg.com` | DNS 污染，**DoH 给真 IP → ✓200**（最可靠的一个入口） |
+| `www.wnacg.date` | ✓301 → `www.wnacg.com`（跟随即可用） |
+| `www.wn03.ru` | ✓301 → `www.wn07.ru`，而 **wn07 被 SNI 阻断** → 死路 |
+| `www.wnacg01/02/03/05.cc`、`wnacg.ru`、`wn04.ru`、`wnacg.com`（不带 www） | SNI 阻断 / 全 IP 不可达 |
+| 经中继取回 `www.wnacg01.cc` → 13B；`www.wnacg02.cc` → 985B | **垃圾页，等于白烧中继配额** |
+
+⇒ 前端原来「10 镜像 × 3 路径全量竞速」的做法，一次检索最多 30 个上游请求、还要烧中继配额。
+改成网关侧 `/api/wnacg/search`：**分批竞速（每批 3 个）**、跟随重定向、记住最近成功的镜像、
+失败主机冷却、结果缓存 5 分钟。实测 `q=fate → host=www.wnacg.com, 24 条`（首次 16s，冷 DoH；
+第二次 1.5s；缓存命中 24ms），封面全部拿到（`t4.qy0.ru`，直连 ✓200）。
+
+> 顺带记一个正则坑：检索结果页会把命中词高亮成 `<em>`，而**高亮写在 `alt` 属性里** ——
+> `alt="…(<em>Fate</em>)…"` 中的 `>` 会让 `<img[^>]*src="…"` 提前收尾，封面永远空。
+> 必须直接找资源地址本身（要求以 `//` 或 `http` 开头，借以排除站点 logo 的 `data:` URI）。
+
+### 6.5 界面：联想泡泡盖住思维链
+
+实测几何（1386×725 视口）：搜索条容器 `#search-wrap` y=358 高 61（底边 419），
+思维链 `#chain-panel` y=435 高 70（底边 505），而泡泡层默认 `top: calc(100% + 10px)`
+落在 y≈429 —— 正好压住思维链第一行。修法：思维链**底边**仍在泡泡默认位置之下时，
+把泡泡整体让到它下面（并用 `ResizeObserver` 跟随思维链长高）；思维链不可见时清掉内联样式、
+完全回到 CSS 默认。实测修复后泡泡 y=512.95 > 思维链底边 504.75，不再重叠。
 
 ---
 

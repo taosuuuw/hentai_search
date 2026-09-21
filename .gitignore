@@ -26,3 +26,9 @@ dist/
 
 # 词典内部索引：由维护者本地生成，只作离线查阅，不入库（用户要求）
 DICTIONARY-INDEX.md
+
+# 工作区长期记忆（memory/）：只在本机存在，绝不提交。同时写在 .git/info/exclude 里做双保险。
+memory/
+
+# 图标设计草稿（Univer 草稿容器，本机迭代用，不入库）
+icon-draft/

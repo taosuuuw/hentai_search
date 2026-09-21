@@ -109,6 +109,29 @@
      ==================================================================== */
   const SEG_HIT = 13;   // 每命中一段（进 _score）
   const SEG_ALL = 9;    // 全部段都命中，_score 上再抬一档
+  /* 已知角色名的命中加分（见 relevance() 里那段注释）。
+     ★本轮修正★ 旧版只有一个 CHAR_HIT=16，判据是「条目正文里出现该角色的任何写法」，
+     而中日文写法走的是**包含匹配** —— 于是标题里任何含「年」字的东西
+     （2026年7月号 / 年上 / 年代印痕 / 十年）都拿到和「这一本真的就是年」一模一样的分。
+     一档分不出「真的年」与「只是含年字」，而 _score 又是最末位的排序键，
+     所以这个分给得再高也压不住名字档 / 系列加分 —— 这就是用户报的
+     「明日方舟标签顶到前面、真的年反而在后面」。现在拆成两档：
+       · CHAR_STRONG：**结构化命中** —— 拉丁 / 假名写法按词边界命中标题（`Nian's Sex Addiction
+         (Arknights)`），或标签里整段等于角色名，或中日文名字在标题里独立成段。
+       · CHAR_WEAK：**只有包含匹配**（「年」出现在 2026年 / 年上 / 去年 里）。
+     这两个数值只影响 _score（末位排序键）；真正的先后由 applyView() 出口的
+     角色档稳定分区 charFirst() 决定（见那边的注释），不靠分数硬拼。 */
+  const CHAR_STRONG = 20;
+  const CHAR_WEAK = 5;
+  /* 角色档（写进 item._charTier，供 charFirst() 分区用）：
+       3 = 真·角色命中（这一本就是这个角色）
+       2 = 系列命中（「明日方舟」这个系列的泛内容，与这个角色无关）
+       1 = 只是字面含这个名字（年下 / 年上 / 2026年…）
+       0 = 都不是
+     期望次序（用户原话）：真角色 > 名字就叫「年」的作品 > 系列命中 > 只是含「年」字。 */
+  const CHAR_T_STRONG = 3;
+  const CHAR_T_SERIES = 2;
+  const CHAR_T_WEAK = 1;
 
   /** 排序主键之一：命中段数（非多关键词查询一律 0） */
   function segKey(it) { return (it && it._segHit) || 0; }
@@ -122,6 +145,25 @@
   function itemBlob(it) {
     return [it.title, it.artist, it.series, (it.tags || []).join(' '), it.note]
       .filter(Boolean).join(' ').toLowerCase();
+  }
+
+  /**
+   * 这件作品属不属于某个**系列**（别名口径）。
+   * 为什么不能直接用 `item.series === intent.series`：同一个系列在各源里写法不同 ——
+   * 实测同一次「年」的检索里 `item.series` 同时出现 `明日方舟` / `arknights` / `アークナイツ`
+   * 三种（nhentai 给 arknights、禁漫给 アークナイツ、绅士给 明日方舟），严格相等只认其中一种。
+   * 别名集只读 core.js 现成的 u.seriesAliases（数据来自 NS.SERIES / TAG_ZH），不新增词表。
+   */
+  function seriesHit(item, series) {
+    const s = String(series == null ? '' : series).toLowerCase().trim();
+    if (!s) return false;
+    let names = [];
+    try { names = (typeof u.seriesAliases === 'function' ? u.seriesAliases(s) : null) || []; } catch (e) { names = []; }
+    if (!names.length) names = [s];
+    const ser = String(item.series == null ? '' : item.series).toLowerCase().trim();
+    if (ser && names.indexOf(ser) >= 0) return true;
+    const blob = itemBlob(item);
+    return names.some(n => n && aliasHit(blob, n));
   }
 
   /** 别名命中：纯 ASCII 别名要求**词边界**（否则 'ol' 会命中 'loli' / 'college'），
@@ -138,6 +180,31 @@
       const pre = at > 0 ? blob.charAt(at - 1) : '';
       const post = at + a.length < blob.length ? blob.charAt(at + a.length) : '';
       if (!/[a-z0-9]/.test(pre) && !/[a-z0-9]/.test(post)) return true;
+      from = at + 1;
+    }
+  }
+
+  /**
+   * 中日文名字是否在标题里**独立成段**（前后都不是中日文 / 假名 / 数字 / 拉丁字母）。
+   * 为什么必须单独判：单字角色名（「年」）用包含匹配时，
+   *   `年`        → 独立成段 ⇒ 这一本真的可能是那个角色；
+   *   `年液饭`    → 后面粘着汉字 ⇒ 不算；
+   *   `2026年7月号` / `年上` / `年代印痕` / `辰年` → 同样不算。
+   * 前一次修复只做了包含匹配，所以「搜年出一堆 2026年10月号 的杂志」才会出现。
+   * 数字也算「粘着」—— `25年12月` / `10年間` 这种「年份 / 年数」写法必须留在弱档里。
+   */
+  const GLUE_RE = /[\u3400-\u9fff\u3040-\u30ff0-9a-z]/;
+  function standaloneCJK(text, name) {
+    const t = String(text == null ? '' : text);
+    const n = String(name == null ? '' : name).trim();
+    if (!t || !n) return false;
+    let from = 0;
+    for (;;) {
+      const at = t.indexOf(n, from);
+      if (at < 0) return false;
+      const pre = at > 0 ? t.charAt(at - 1) : '';
+      const post = at + n.length < t.length ? t.charAt(at + n.length) : '';
+      if (!GLUE_RE.test(pre) && !GLUE_RE.test(post)) return true;
       from = at + 1;
     }
   }
@@ -240,6 +307,18 @@
     /* ① 同一概念的其它语言写法（core.js 已经算好了） */
     if (c) (c.aliases || []).forEach(push);
     if (intent && intent.genre) (intent.genre.aliases || []).forEach(push);
+    /* ①b ★已知角色名★：把角色自己的拉丁 / 假名写法也当作「译名」参与标题贴合度判定。
+       没有这一步，标题写 `Nian's Sex Addiction (Arknights)` 的条目在名字档（_nameKey）上
+       和毫不相干的作品一样是 0 档 —— 因为查询词是「年」，而标题里是拉丁写法
+       （u.normTitle 又把 `[...]` / `(...)` 整段剥掉，`年` 更是找不到）。
+       于是「真的年」只能靠在正文里做包含匹配的弱命中活着，永远被「标题里含年字」的
+       年份噪声压住。这一支只读 NS.CHARACTERS 的现成别名，不新增词表；
+       push 里已经过滤掉「长度 <2」与「等于查询原词」的串。 */
+    if (intent && intent.character) {
+      const ch = intent.character;
+      push(ch.en); push(ch.ja);
+      (ch.aliases || []).forEach(push);
+    }
     /* ② 中文 → 英文 / 罗马字（整串与残余词都查） */
     const lookup = tok => {
       const t = String(tok || '').toLowerCase();
@@ -485,7 +564,17 @@
       item._nameKey = tierOf(nf.fit, nf.xfit);
       s += Math.max(DIRECT_BONUS[nf.fit] || 0, XLANG_BONUS[nf.xfit] || 0);
     }
-    if (it && it.kind === 'character') {
+    /* 系列命中（明日方舟泛内容）。
+       ★本轮降档★ 旧值是 tags 命中 +9 / series 相同 +6 / 标题含系列名 +4（最高 +19）——
+       和「这一本真的有年」(旧 CHAR_HIT=16) 同一量级，于是「只要是明日方舟的」就能拿到
+       和「这一本就是这个角色」差不多的分；再叠上标签量 / 页数 / 汉化，系列泛内容就能
+       反超真角色（用户反馈的「明日方舟标签顶到前面」）。
+       现在整体压到 CHAR_WEAK(5) 与 CHAR_STRONG(20) 之间，只当同档内的次序微调。
+       守卫收紧为 `!it.character`：**没有解析出具体角色**的 character 意图
+       （`明日方舟` 本身、以及 `年上` / `年下` / `去年` / `三年` 这些字面兜底段）
+       走这一支，数值与原版逐字节一致 —— 这一档是回归红线，一个字都没动。
+       解析出具体角色的查询（`年` / `夕` / `令` / `陈` / `凯尔希`）走下面的角色档。 */
+    if (it && it.kind === 'character' && !it.character) {
       const key = String(it.series || q || '').toLowerCase();
       if (key) {
         if ((item.tags || []).some(x => String(x).toLowerCase().indexOf(key) >= 0)) s += 9;
@@ -527,6 +616,80 @@
       item._segHit = hit;
       s += hit * SEG_HIT;
       if (hit === it.segments.length) s += SEG_ALL;   // 全部关键词都满足：_score 再抬一档
+    }
+
+    /* ★已知角色名（本轮重写）★ 例如「年」→《明日方舟》的 年 / Nian / ニェン。
+       为什么必须单独一档：上面那段「按命中段数加分」**只在多关键词（段数 ≥2）时**才算，
+       而「年」是单字查询 —— 走不到那里。可这个字本身又极常见（年上 / 少年 / 去年 / 三年 /
+       2026年7月号），所以这一档同时承担「抬真角色」和「压字面噪声」两件事。
+
+       用户报告（原文）：搜「年」出来的应该是明日方舟的角色年，但「是明日方舟标签的顶到前面了
+       而不一定是年这个角色，而且明日方舟的无关年的内容占用了过多」；期望次序是
+       「前面是年这个角色的结果，后面是其他可能（如年下之类的）的作品」。
+
+       旧口径只有一条 `aliasHit(blob, 名字)` 的**包含匹配** + 固定 16 分，两个毛病：
+         ① 中日文包含匹配 ⇒ `2026年7月号` / `年代印痕` / `年上` 与「这本就是年」同分；
+         ② 16 分只进 _score，而 cmpHit() 的主键次序是 段数 → 名字档(_nameKey) → _score ——
+            名字档由 u.titleFit 决定，**标题里含一个「年」字就是 1 档**，含「Nian」拉丁写法
+            反而是 0 档（查询词是「年」，u.normTitle 又把括号整段剥掉）⇒
+            真角色永远排在「标题里恰好有年字」的东西后面。
+       现在分两步修：
+         · 判据分档（下面算出的 item._charTier）：结构化命中 = 真角色；只有包含匹配 = 弱命中；
+           二者都不中但系列命中 = 系列档；再不然 = 无关档；
+         · 次序不再靠分数硬拼 —— applyView() 出口新增 charFirst() 稳定分区，
+           按 _charTier 分段（见那里的注释）。这里给的 CHAR_STRONG / CHAR_WEAK 只负责
+           让 _score 与档位口径一致（同档内仍是「更贴合名字的在前」）。
+       与 segHit 一样**只加分、只分区、不过滤**，一条结果都不会被删掉。 */
+    if (it && it.character) {
+      const ch = it.character;
+      item._charTier = 0;                               // 先归零，后面按判据抬档
+      const names = u.uniq([ch.zh, ch.en, ch.ja].concat(ch.aliases || []).map(x => String(x == null ? '' : x).trim()));
+      const lower = names.map(n => n.toLowerCase());
+      const title = String(item.title || '');
+      const titleLow = title.toLowerCase();
+      const fields = titleFields(item).map(f => String(f).toLowerCase());
+      const tags = (item.tags || []).map(x => String(x).toLowerCase().trim());
+      const serHit = seriesHit(item, it.series || ch.series);
+      /* ③ 系列命中（明日方舟泛内容）—— 降档：旧值是 tags +9 / series +6 / 标题含 +4 */
+      if (serHit) {
+        const key = String(it.series || ch.series || '').toLowerCase();
+        if (key && (item.tags || []).some(x => String(x).toLowerCase().indexOf(key) >= 0)) s += 4;
+        s += 3;                                        // 系列别名命中（arknights / アークナイツ / 明日方舟）
+        if (key && titleLow.indexOf(key) >= 0) s += 2;
+      }
+      /* ① 结构化角色命中（真·角色） */
+      let strong = false;
+      /* ① a 标签里**整段等于**角色名或别名：站点自己标的，最硬 */
+      if (tags.some(t => t && lower.indexOf(t) >= 0)) strong = true;
+      /* ① b 拉丁别名按**词边界**命中标题 / 中译名标签（只有 ASCII 别名走这一支；
+            中日文别名用 ①c 的独立成段，不做包含匹配） */
+      if (!strong) {
+        const ascii = lower.filter(n => n && ASCII_ONLY.test(n));
+        if (ascii.length && fields.some(f => ascii.some(n => aliasHit(f, n)))) {
+          /* ★还要系列佐证★：`chen` / `ling` / `dusk` 这些拉丁词本身也是画师名、日常词，
+             光「标题里有这个词」不足以下结论 —— 搜「陈」把标题里带 Chen（画师）的本子
+             全顶到最前是有害的。佐证 = 系列命中，或标题里还出现该角色的中日文写法。 */
+          const cjkInTitle = names.some(n => n && !ASCII_ONLY.test(n) && title.indexOf(n) >= 0);
+          if (serHit || cjkInTitle) strong = true;
+        }
+      }
+      /* ① c 中日文名字在标题里**独立成段**（`年` / `[年] …` / `年 (arknights)`；
+             `2026年7月号` / `年上` / `年代印痕` / `辰年` 都不算） */
+      if (!strong) strong = names.some(n => n && !ASCII_ONLY.test(n) && standaloneCJK(title, n));
+      /* ② 只是字面含名字（弱命中）：任意写法包含匹配 —— 保留旧口径的召回，
+            但只给弱档、只加小分，不再和真角色平起平坐 */
+      const chHit = names.some(n => n && aliasHit(itemBlob(item), n.toLowerCase()));
+      item._charHit = chHit ? 1 : 0;
+      item._charStrong = strong ? 1 : 0;
+      if (strong) {
+        item._charTier = CHAR_T_STRONG;
+        s += CHAR_STRONG;
+      } else if (serHit) {
+        item._charTier = CHAR_T_SERIES;
+      } else if (chHit) {
+        item._charTier = CHAR_T_WEAK;
+        s += CHAR_WEAK;
+      }
     }
     return s;
   }
@@ -582,6 +745,9 @@
          否则继续加载（追加）时新条目会拿着上一轮的名字档参与比较。 */
       it._segHit = 0;
       it._nameKey = 0; it._nameFit = 0; it._xFit = 0;
+      /* 角色档同理：换查询后必须由本次 relevance 重算，否则「年 → 年上」时
+         上一轮留下的档位会把这一轮的条目分错区（追加加载也会带着旧档位参与比较）。 */
+      it._charTier = 0; it._charHit = 0; it._charStrong = 0;
       it._score = relevance(it, (q || '').toLowerCase(), f || {});
     });
     /* 多关键词：先命中段数、再名字档 / 贴合度，最后旧分数 */
@@ -678,9 +844,86 @@
     const sunk = sinkLastSources(ordered);
     /* 真正最后一道：编号直达项置顶（在末位源分区之后 → 「拷贝漫画排最后」也挤不掉它）。
        所有排序模式 / 追加模式下都成立：这里是唯一的出口。 */
-    const out = liftDirectHits(keepDirect.concat(sunk));
+    const lifted = liftDirectHits(keepDirect.concat(sunk));
+    /* ★角色档稳定分区（本轮修正）★ 已知角色名（年 / 夕 / 令 / 陈 / 凯尔希）的检索里，
+       把条目按「和这个角色是什么关系」硬性分段（见 relevance() 里 item._charTier 的算法）：
+         3 真·角色命中（这一本就是这个角色，或名字就叫「年」）
+         2 系列命中（明日方舟里与这个角色无关的泛内容）
+         1 只是字面含这个名字（年下 / 年上 / 2026年10月号…）
+         0 都不是
+       为什么用**稳定分区**而不是改比较器 / 加权重（LESSONS 第 7 条）：
+         · cmpHit() 的主键是「段数 → 名字档 → 分数」，而名字档由 u.titleFit 决定 ——
+           「标题里恰好含一个年字」就是 1 档，「标题里写 Nian」反而是 0 档，
+           单纯抬分数永远翻不过来（分数只是最末位的键）；
+         · 比较器只覆盖部分排序模式（页数 / 源名 / 标题 A→Z 都不是 cmpHit），
+           分区放在**唯一出口**则对所有模式都成立，且与 liftDirectHits / zhFirst 同款写法；
+         · 分区是**次序偏好不是过滤**：一条结果都不会被删掉，只是挪位置。
+       ★位置与「汉化置顶」的关系（本轮按用户原话调整过一次，别改回去）★
+        用户原话：「**前面是年这个角色的结果**，后面是其他可能（如年下之类的）的作品」。
+        先前的写法是 charFirst() 之后**再**套一层 zhFirst()，等于「所有汉化条目整体
+        先于所有非汉化条目」，于是**汉化的系列泛内容 / 含字噪声会压过非汉化的真·角色**
+        ——实测就是这样：汉化的《2026年7月号》《年代印痕》排在英文的
+        《Nian's Sex Addiction》前面，用户点名要的第 1 名反而不是年。
+        所以这里把两级优先级的**次序固定为**：
+          ① 角色档（真·角色 → 系列 → 只是含字 → 都无关）
+          ② 每一档**内部**再「有汉化/中文的排前面」
+        即 zhFirst 降为**档内**次级键，而不再跨档覆盖。
+        理由：用户的点名诉求是「第 1 个结果是年这个角色」，这是本轮要修的东西；
+        而「汉化置顶」原本要解决的是「别让日文原版压过汉化版」——那是**同一批候选之间**
+        的次序问题（见 PROJECT.md 的排序管道），在**档内**继续生效就完全保住了原意，
+        没有必要让它跨过「这本到底是不是用户要找的那个角色」。
+        ★注意★ 非角色查询（含 `明日方舟` / `年上` / `年下` 这种没解析出具体角色的意图）
+        **一个字节都不走这条路**：charFirst() 直接原样返回（不分配数组），
+        随后仍是纯 zhFirst()，排序与本轮修改前逐字节一致。 */
+    /* ★追加模式：到此为止★（用户要求：下滑加载新作品时不许影响已加载的作品）
+       appendOrder 已经把「老条目按原顺序」排在最前、新条目按当前规则接在后面，
+       这**本身就是**最终次序。后面几道（末位源 / 编号直达 / 角色档 / 汉化置顶）都是
+       **稳定分区**：它们只会在整表上重新分组，等于把**新来的**汉化条目插进老卡片中间
+       → 已加载的卡片整体下移，用户看到的就是「页面在跳」。
+       所以追加模式下直接在这里返回：老顺序 + 新条目接末尾，一个节点都不动。
+       非追加（新检索 / 换筛选 / 换排序）走的仍是原来那套完整分区，逐字节未改。 */
+    if (R.appendMode) {
+      R.order = ordered.map(keyOf);
+      return ordered;
+    }
+    const out = zhFirst(charFirst(lifted));
     R.order = out.map(keyOf);
     return out;
+  }
+
+  /** 角色档稳定分区（**只对角色查询生效**）：按 item._charTier 分段，
+      每档内部再「有汉化 / 中文的排前面」，档内与档间的其它相对顺序一个字都不动。
+
+      ★为什么把 zhFirst 收进**档内**★（见上面 applyView() 那一段的完整理由）
+      用户原话要的是「前面是年这个角色的结果，后面是其他可能」；若先分区再整体套
+      zhFirst，所有汉化条目会整体跨过非汉化的真·角色 —— 实测汉化的《2026年7月号》
+      就排在了英文的《Nian's Sex Addiction》前面。所以固定为
+      「先生效角色档，汉化置顶在**档内**继续生效」。
+      非角色查询（没有 intent.character）**原样返回**：一次数组分配都不做。 */
+  function charFirst(list) {
+    const qi = R.intent;
+    if (!qi || !qi.character) return list;
+    const seg = [[], [], [], []];
+    (list || []).forEach(it => {
+      const t = (it && it._charTier) || 0;
+      seg[t >= 3 ? 0 : (t === 2 ? 1 : (t === 1 ? 2 : 3))].push(it);
+    });
+    /* 三段都是空的（这一轮一条都没判出角色档）：不折腾，交回给纯 zhFirst */
+    if (!seg[0].length && !seg[1].length && !seg[2].length) return list;
+    const out = [];
+    seg.forEach(g => {
+      const yes = [], no = [];
+      g.forEach(it => { (it && it.zh ? yes : no).push(it); });
+      yes.concat(no).forEach(x => out.push(x));
+    });
+    return out;
+  }
+
+  /** 稳定分区：item.zh 为真的排前面，其余保持原有相对顺序 */
+  function zhFirst(list) {
+    const yes = [], no = [];
+    (list || []).forEach(it => { (it && it.zh ? yes : no).push(it); });
+    return yes.length ? yes.concat(no) : (list || []);
   }
 
   /* ---------------- 同系列堆叠布局 ----------------
@@ -725,8 +968,12 @@
       .trim();
     return cleaned || s.trim();
   }
-  /* 尾部卷号 / 上下卷标记：要连着剥好几层（"…2 完" / "…vol3 上"） */
-  const TAIL_VOL = /(?:\d{1,3}|[ivx]{1,4}|vol|volume|part|pt|no|chapter|ch|ep|episode|上|下|中|前|後|后|前編|後編|前篇|后篇|完|総集編|总集篇|上巻|下巻)$/;
+  /* 尾部卷号 / 上下卷标记：要连着剥好几层（"…2 完" / "…vol3 上"）。
+     ★必须认「数字 + 单位」与「第N話/巻」这两种成对写法★（用户点名的例子：
+       「上班不要太认真 1话 / 2话」「xxx 上 / 下」）。旧表只有裸数字和裸「上/下」，
+       于是 `…认真1话` 先被剥掉「话」→ `…认真1` 又匹配不上裸数字以外的规则 → 卡在带尾巴的
+       「…认真1」上，两条话数不同的标题就永远对不上（实测就是漏判的主因）。 */
+  const TAIL_VOL = /(?:(?:第\s*)?\d{1,3}|[ivx]{1,4}|vol|volume|part|pt|no|chapter|ch|ep|episode|上|下|中|前|後|后|前編|後編|前篇|后篇|完|総集編|总集篇|上巻|下巻)(?:[话話章集巻卷期冊册編篇]|巻)?$/;
   function stripVol(s) {
     let t = String(s || '');
     for (let i = 0; i < 4; i++) {
@@ -736,25 +983,49 @@
     }
     return t;
   }
+  /** 「干掉尾巴」专用：剥离全部括号块（社团 / 作者 / 译者 / 语言标记都不算标题）。
+      ★入参既可以是标题字符串，也可以是条目对象★ —— 之前只吃字符串，
+     而 nameAlike 传的是条目对象，于是两边都被归一化成空串、判据**静默失效**（实测踩到）。 */
+  function bareOf(t) {
+    const s = (t && typeof t === 'object') ? t.title : t;
+    return String(s == null ? '' : s)
+      .replace(/\[[^\]]*\]|\([^)]*\)|【[^】]*】|（[^）]*）/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  /** 去掉头尾括号块之后归一化（保留一个「本体」语义，供名字比较用） */
+  function bareKeyOf(t) {
+    return u.normTitle(bareOf(t) || titleBody(t));
+  }
+  /** 去掉整个尾部标记后的正文主干（不设长度门槛，调用方自己判） */
+  function stemRaw(t) {
+    return stripVol(bareKeyOf(t));
+  }
   /** 纯「文件类别」词：光靠它自己不成系列，别把两本同名的不同作品叠起来 */
   const TITLE_STOP = ['同人志', '同人誌', '漫画', '漫畫', '本', '作品', '合集', '短篇', '单行本', '單行本',
     '总集篇', '総集編', '画集', '畫集', '插画集', '本子', 'cg集', '杂图', '雜圖', '合订本', '合訂本'];
-  /** 中日文标题的结构接近：公共前缀够长，多出来的尾巴只是卷号 / 第 N 话这类标记 */
+  /**
+   * 命名结构高度相同（用户点名的第二类）：**差异只出现在「作品名的尾部标记」上**，
+   * 而正文主干一致 —— 也就是「这样的结构是整个作品名的一部分」。
+   *   例：上班不要太认真 1话 / 上班不要太认真 2话 ✓；xxx 上 / xxx 下 ✓；
+   *       某系列 第3话 / 某系列 ✓；Seed of Ruin 1 / Seed of Ruin 2 ✓
+   * 判定只看**字面主干**（不含译文），所以不会把「人妻猎人」和别的作品混起来。
+   * 门槛：主干 ≥2 字（用户例子里的「xxx」就是两三字），且不能是纯类别词。
+   * 短标题（≤2 字）不走这条 —— 「年上 / 年下」这种会把不相干的两本叠在一起。
+   */
   function cjkShape(a, b) {
-    const x = u.normTitle(titleBody(a)), y = u.normTitle(titleBody(b));
+    const x = bareKeyOf(a), y = bareKeyOf(b);
     if (!x || !y || x === y) return false;
-    if (!/[\u3400-\u9fff]/.test(x) || !/[\u3400-\u9fff]/.test(y)) return false;
-    const sx = stripVol(x), sy = stripVol(y);
-    /* 剥掉尾部卷号 / 上下卷后完全一致 → 同一系列的连载、上下卷（3 字起，纯类别词不算） */
-    if (sx && sx === sy && sx.length >= 3 && TITLE_STOP.indexOf(sx) < 0) return true;
-    const short = x.length <= y.length ? x : y;
-    const long = x.length <= y.length ? y : x;
-    if (short.length < 4 || TITLE_STOP.indexOf(short) >= 0) return false;
+    const sx = stemRaw(a), sy = stemRaw(b);
+    if (!sx || !sy) return false;
+    /* 主干一致 + 主干本身够长 + 不是纯类别词 → 两条只差尾部标记，同一部作品的第 N 话 / 上下卷 */
+    if (sx === sy && sx.length >= 2 && TITLE_STOP.indexOf(sx) < 0) return true;
+    /* 主干是另一个的前缀（「某作品 后篇」这类前后篇共用主干） */
+    const short = sx.length <= sy.length ? sx : sy;
+    const long = sx.length <= sy.length ? sy : sx;
+    if (short.length < 2 || TITLE_STOP.indexOf(short) >= 0) return false;
     if (long.indexOf(short) !== 0) return false;
-    const tail = long.slice(short.length).trim();
-    if (!tail) return true;
-    if (tail.length <= 2) return true;
-    return /^(?:\d+|[ivx]+|vol\.?\s*\d*|上|下|中|前|後|后|前編|後編|前篇|后篇|完|総集編|总集篇|第[一二三四五六七八九十百\d]+[话話章集篇]?)$/.test(tail);
+    return stripVol(long.slice(short.length)).length === 0;
   }
 
   /* 卷号 / 上下卷这类「只差一个标记」的词，允许命名结构判定时忽略 */
@@ -771,11 +1042,17 @@
   /**
    * 命名结构接近：词数相差 ≤1、至少 3 个词、≥70% 的词相同，且差异词全是卷号类。
    * 例：`Seed of Ruin 1` / `Seed of Ruin 2` ✓；`Fate Grand Order A` / `… B` ✗（单个字母不算卷号）。
+   * ★这里的「完全相同」必须带长度门槛★（本轮修掉的误叠）：
+   *   `titleParts` 会把「年上」「人妻猎人」这种中日文标题切成**一个 token**，
+   *   于是原来那句 `if (ta.join('') === tb.join('')) return true` 对**任何两段 CJK 文本**
+   *   都成立 —— 实测「年上」/「年上」被判相似（正常），但这条也让标题完全不同却都只有
+   *   一个 token 的两条互相命中。现在改成：短标题（<4 字）一律不走「完全相同」这条，
+   *   交给调用方（sameish 的 nameAlike 有自己的 ≥4 门槛）。
    */
   function titleShape(a, b) {
     const ta = titleParts(a), tb = titleParts(b);
     if (!ta.length || !tb.length) return false;
-    if (ta.join('') === tb.join('')) return true;
+    if (ta.join('') === tb.join('') && ta.join('').length >= 4) return true;
     if (Math.abs(ta.length - tb.length) > 1) return false;
     const setA = {}, setB = {};
     ta.forEach(x => { setA[x] = 1; });
@@ -821,12 +1098,93 @@
      判据（命中任一即叠，不再死卡画师 —— 有时候画师名其实是上传者名）：
        ⓪ 封面指纹相同：同一张封面就是同一本书，最硬，连系列词典都不需要
        ① 命名结构接近（只差卷号 / 上下卷），也不依赖系列词典
+       ①b 名字完全相同（归一化后逐字相等，长度 ≥4）—— 用户明确要求「名字完全相同的作品要重叠」
+       ①c 标签高度重合（见 tagsAlike）：用户明确要求「标签完全相同的作品要重叠」，
+           但通用标签（同人志 / 短篇 / 无修正…）任何两本都共有，必须先把它们剔除再算重合度
        ② 同名——宽松标题指纹一致（含语言 / 汉化变体）
        ③ 同画师——画师串切成 token 后至少共享一个（过滤 Circle / Artist 这类通用词与单字母）
        ④ 标题主干相同——去掉尾部卷号后一致
      ②③④ 仍要求两边命中同一个系列词典。
-     ★不要用「共同标签数」★（Doujinshi / Oneshot / Loli 这类通用标签谁都有，实测会把 14 本画师各异的
-     FGO 同人志叠成一摞）；★也不要用「标题互相包含」★（'fategrandorder' 会被任何 'Fate/Grand Order - xxx' 命中）。 */
+     ★不要直接用「共同标签数」★（Doujinshi / Oneshot / Loli 这类通用标签谁都有，实测会把 14 本画师各异的
+     FGO 同人志叠成一摞）—— 所以 ①c 只在**剔除通用标签之后**还算高度重合时才成立。 */
+  /* 无区分度的标签：任何两本同人志都可能共有，不能拿来判定「同一本」。
+     ★只收「文件类别 / 语言 / 版本」这类真正的元信息★ —— 像「巨乳 / 美少女 / loli / school」
+     这种是**内容标签**，两本的内容标签高度重合恰恰是「很可能同一本」的证据（用户要求
+     「标签完全相同的作品要重叠」）。把它们当作无区分度会把这个判据废掉（实测：
+     5 个标签里 4 个共享却一个都不算数）。 */
+  const TAG_GENERIC = ['同人志', '同人誌', 'doujinshi', 'doujin', 'manga', '漫画', '漫畫', 'comic',
+    'oneshot', 'one-shot', '短篇', '単篇', '单篇', '短編', '本', '本子', '无修正', '無修正',
+    'uncensored', 'censored', 'translated', 'translation', '翻译', '翻譯', '汉化', '漢化',
+    '中文', 'chinese', 'english', 'japanese', '日本語', '日本語版', 'dl版', 'digital',
+    'full color', 'fullcolor', '全彩', 'カラー', 'sample', 'preview', 'r-18', 'r18', 'adult',
+    '成人', 'erotic', 'hentai', 'series', 'collection', 'anthology', 'artbook', 'cg集',
+    '杂图', '雜圖', '单行本', '單行本', '合集', '总集篇', '総集編', '画集', '畫集', '杂志', '雜誌'];
+  const TAG_GENERIC_SET = (() => {
+    const s = {};
+    TAG_GENERIC.forEach(x => { s[u.normTitle(x)] = 1; s[String(x).toLowerCase()] = 1; });
+    return s;
+  })();
+  /** 有区分度的标签集合（归一化 + 去通用词） */
+  function tagSet(it) {
+    const s = {};
+    (it && it.tags || []).forEach(t => {
+      const a = String(t || '').toLowerCase().trim();
+      const b = u.normTitle(t);
+      if (!a && !b) return;
+      if (TAG_GENERIC_SET[a] || TAG_GENERIC_SET[b]) return;
+      if (a.length < 2 && b.length < 2) return;
+      s[b || a] = 1;
+    });
+    return s;
+  }
+  /** 标签高度重合：共享 ≥3 个有区分度的标签，且共享数 / 较少一方 ≥ 0.6 */
+  function tagsAlike(a, b) {
+    const sa = tagSet(a), sb = tagSet(b);
+    const ka = Object.keys(sa), kb = Object.keys(sb);
+    if (ka.length < 3 || kb.length < 3) return false;
+    let shared = 0;
+    ka.forEach(k => { if (sb[k]) shared++; });
+    if (shared < 3) return false;
+    return shared / Math.min(ka.length, kb.length) >= 0.6;
+  }
+  /**
+   * 名字相同（用户点名的第一类，含三种情况）：
+   *   ① 中文名相同 —— 归一化后逐字相等（「人妻猎人」/「人妻猎人」）
+   *   ② 外语名相同 —— 同上（「Seed of Ruin」/「Seed of Ruin」）；两条其实走同一段代码，
+   *      归一化不区分语种，所以这两种天然都覆盖。
+   *   ③ 中文与外语**互为译文** —— 离线词典把中文标题翻成外语（`X.offline`），
+   *      与另一条的标题比。例：`巨乳人妻` → `big breasts casada` / `big breasts`。
+   * 门槛（都要满足）：
+   *   · 长度 ≥4（3 字以下太泛 —— 实测「年上」/「年上」会把不相干的两本叠起来）；
+   *   · 双方**都不是纯中日文**才算「互为译文」（两条中文标题没有译文关系可言）；
+   *   · 译名必须与另一条标题**整串相等**（不取子串！否则 `big breasts` 会命中任何一本
+   *     带这个标签的长标题，那是灾难性的误叠）；
+   *   · 只有词典真能翻出来才算 —— 整句话（「上班不要太认真」）翻不出，那就走 ① / 命名结构这一路。
+   */
+  function titleCopies(it) {
+    const x = bareKeyOf(it && it.title);
+    if (!x) return [];
+    const out = [x];
+    (HS.xlate && HS.xlate.offline ? (HS.xlate.offline(x) || []) : []).forEach(c => {
+      const t = (c && (c.text || c.q)) || '';
+      if (t) out.push(u.normTitle(t));
+    });
+    return out.filter(Boolean);
+  }
+  function nameAlike(a, b) {
+    const x = bareKeyOf(a), y = bareKeyOf(b);
+    if (!x || !y) return false;
+    const cjkX = /[\u3400-\u9fff]/.test(x), cjkY = /[\u3400-\u9fff]/.test(y);
+    /* ① / ② 同名（同语种或跨语种逐字相同） */
+    if (x === y) return x.length >= 4;
+    /* ③ 互为译文：只有「一边中日文、一边非中日文」才可能是译文关系 */
+    if (cjkX !== cjkY) {
+      const target = cjkX ? y : x;
+      const cands = cjkX ? titleCopies(a) : titleCopies(b);
+      if (cands.some(c => c === target && c.length >= 4)) return true;
+    }
+    return false;
+  }
   function sameish(a, b) {
     /* ⓪ 封面指纹相同：同一张封面就是同一本书（换个标题 / 换个源再传），最硬 */
     const ca = coverKey(a.cover), cb = coverKey(b.cover);
@@ -836,14 +1194,26 @@
        「Seed of Ruin 1 / 2」这种取名格式高度相似的就该合在一起。 */
     if (titleShape(a.title, b.title)) return true;
     if (cjkShape(a.title, b.title)) return true;
+    /* ①b / ①c：用户点名的两条「必须叠」—— 名字完全相同、标签高度重合。
+       同样不依赖系列词典（不同站点常常一个标了系列、一个没标）。 */
+    if (nameAlike(a, b)) return true;
+    if (tagsAlike(a, b)) return true;
     /* 下面几条要求两边命中同一个系列词典 */
     if (!a.series || !b.series || a.series !== b.series) return false;
     if (a.baseKey && b.baseKey && a.baseKey === b.baseKey) return true;
-    if (sameArtist(a.artist, b.artist)) return true;
-    /* ④ 标题主干相同：拉丁标题 ≥6 字符，中日文 ≥4 字（汉字信息密度更高） */
+    /* ③ 同画师：★仅凭同画师不再算同一本★（本轮按用户要求收紧）
+       旧行为是「同系列 + 同画师 ⇒ 叠」，实测那会把同一个画师在同一个系列里的
+       **不同作品**叠成一摞（用户要的恰恰是「重名 / 重标签 / 命名格式一致」才叠，
+       而不是「同一个画师画的所有本子」）。现在同画师只有在标题主干也一致时才算 ——
+       也就是下面第 ④ 步。 */
+    /* ④ 标题主干相同：拉丁标题 ≥6 字符，中日文 ≥4 字（汉字信息密度更高）
+       ★先挡空主干★：stripVol 会连着剥尾部卷号，极端情况下能把整个标题剥成空串
+       （「マシュ本」→「マシュ」→「マ」→ 空）—— 两条空主干相等会被判成同一本。
+       所以长度门槛必须在相等判断**之前**生效（本轮修掉的一处误叠）。 */
     const sa = titleStem(a.title), sb = titleStem(b.title);
-    if (!sa || sa !== sb) return false;
-    return sa.length >= 6 || (/[\u3400-\u9fff]/.test(sa) && sa.length >= 4);
+    const saOk = sa.length >= 6 || (/[\u3400-\u9fff]/.test(sa) && sa.length >= 4);
+    if (!saOk || sa !== sb) return false;
+    return true;
   }
 
   /* ---------------- 追加时的重复剔除：已铺开的是中文版，新来的只是同一本的其它语言版本 ----------------
@@ -1016,28 +1386,69 @@
 
   function buildLayout(list) {
     if (R.seriesOnly) {
-      return list.filter(i => i.series === R.seriesOnly).map(i => ({ type: 'single', item: i }));
+      const so = R.seriesOnly;
+      /* byKey 的那一路用 sameish(ref, ·) 重算，而不是比 baseKey 字符串：
+         「人妻猎人 xx话」这类是靠命名结构（titleShape / cjkShape）成叠的，
+         它们的 baseKey 各不相同，用字符串比会把同组的大部分条目漏掉。 */
+      return list.filter(i => (so.byKey ? sameish(so.ref, i) : i.series === so.v))
+        .map(i => ({ type: 'single', item: i }));
     }
-    const out = [];
-    list.forEach(it => {
-      if (!it.series) { out.push({ type: 'single', item: it }); return; }
-      /* 并进第一个「高度相符」的堆叠，否则自己开一叠 */
-      const hit = out.find(n => n.type === 'stack' && sameish(n.ref, it));
-      if (hit) {
-        hit.total++;
-        if (hit.items.length < STACK_MAX) hit.items.push(it);
-        else hit.rest.push(it);
-        return;
-      }
-      out.push({ type: 'stack', key: it.series + '|' + (it.baseKey || it.key), ref: it, items: [it], rest: [], total: 1 });
+    /* ★追加模式的「老卡片冻结」★（用户要求：下滑加载新作品时不许影响已加载的作品）
+       list 在追加模式下已经是「老条目按原顺序 + 新条目按相关度接在后」的形态（见 applyView）。
+       分组时再补一条关键约束：新来的条目**优先并进已经存在的同一叠**，而不是另开一叠 ——
+       沿用旧的「新条目另开一叠」写法会让同一系列在页面上出现两叠卡片（用户看到重复），
+       而且新叠只能插在末尾、老叠还留在原位，视觉上就是「同一组被拆开了」。
+       并进老叠只改 total/items，不改它在 final 里的位置 ⇒ 老节点的 id 序列完全不变，
+       paintList 的「纯追加」快路因此一定命中（不重建、不重排、不动滚动位置）。 */
+    const prevIds = {};
+    (R._layout || []).forEach(n => { prevIds[layoutId(n)] = 1; });
+    const nodeOf = it => ({
+      type: 'stack',
+      /* 系列词典命中就用系列名当组键（可与「展开全部」联动）；没命中就用标题指纹。
+         '~' 前缀保证两种组键不会撞在一起。 */
+      key: (it.series ? it.series : '~' + (it.baseKey || it.key)) + '|' + (it.baseKey || it.key),
+      ref: it, items: [it], rest: [], total: 1
     });
-    /* 只有一本的「系列」降级为普通卡片；超出平铺上限的补在堆叠后面，一张都不丢 */
+    const out = [];
+    /* 把一条并进某一叠：★超过平铺上限的也留在这叠里★（进 rest，不另立单卡）
+       —— 用户要求「上限 5~6 张，但同一组要一路叠下去，直到不存在可叠的一对」。
+       旧实现把溢出的条目**摊成单卡**补在这一叠后面，于是页面上看起来是「叠了一摞
+       又跟着冒出一堆散卡」，正是他要修的现象。
+       注意 rest 只承载「逻辑上属于这一叠」的条目，不再渲染成卡片 —— 它们通过
+       「展开全部 N」（`R.seriesOnly`）看到，按 sameish 重算，一条都不会丢。 */
+    const joinStack = (n, it) => {
+      n.total++;
+      if (n.items.length < STACK_MAX) n.items.push(it);
+      else n.rest.push(it);
+    };
+    list.forEach(it => {
+      /* ★不再要求「命中系列词典」★
+         旧实现在这里有一道 `if (!it.series) 单张平铺` 的早退，而 sameish() 里
+         真正与系列词典无关的判据（⓪ 封面指纹相同、① 命名结构高度相似 / 同名同标签
+         —— 也就是「人妻猎人 01话 / 02话」这类）被它挡在门外，等于死代码。
+         现在一律交给 sameish() 判：它的系列分支仍要求两边命中同一个系列，
+         不命中系列的条目只可能靠「同封面」「同命名结构」「同名同标签」入叠。
+         ★一条一条往下比 ⇒ 天然成链★：第 k 条只要与前面任何一叠的 ref 相符就并进去，
+         并按顺序接在同一叠里；不会出现「A 叠一个、B 叠一个、同一个系列分两摞」。 */
+      const hit = out.find(n => n.type === 'stack' && sameish(n.ref, it));
+      if (hit) { joinStack(hit, it); return; }
+      /* 追加模式：新条目若能并进「上一轮就存在的叠」，按老叠的组键找回去并进去 */
+      if (R.appendMode) {
+        const cand = nodeOf(it);
+        const old = cand.key && prevIds['S:' + cand.key]
+          ? out.find(n => n.type === 'stack' && n.key === cand.key) : null;
+        if (old) { joinStack(old, it); return; }
+      }
+      out.push(nodeOf(it));
+    });
+    /* 只有一本的「系列」降级为普通卡片。
+       ★溢出的条目不再补成单卡★（见 joinStack 的说明）：它们属于这一叠，
+       展开全部时按 sameish 重算，仍然是完整的一组。 */
     const final = [];
     out.forEach(n => {
       if (n.type !== 'stack') { final.push(n); return; }
       if (n.total >= 2) final.push(n);
       else final.push({ type: 'single', item: n.items[0] });
-      (n.rest || []).forEach(it => final.push({ type: 'single', item: it }));
     });
     return final;
   }
@@ -1064,8 +1475,9 @@
     host.innerHTML = '';
 
     if (R.seriesOnly) {
+      const so = R.seriesOnly;
       const chip = u.el('button', { class: 'hs-tag hs-tag-series', type: 'button', 'data-on': '1' },
-        '系列：' + u.esc(R.seriesOnly) + ' <small>✕</small>');
+        (so.byKey ? '同一组：' : '系列：') + u.esc(so.label) + ' <small>✕</small>');
       chip.addEventListener('click', () => { R.seriesOnly = null; R.appendMode = false; renderHead(); renderGrid(); });
       host.appendChild(chip);
     }
@@ -1102,7 +1514,7 @@
   }
 
   /* ---------------- 卡片 ---------------- */
-  /* ---------------- 封面加载：失败必须可恢复 ----------------
+  /* ---------------- 封面加载：失败必须可恢复，而且**换腿**再试 ----------------
      小卡片的 <img> 是**长生命周期**节点（继续加载时按 layoutId 复用，不重建），
      放大器却是每次打开都新建一个 <img> 重新请求同一个 URL —— 这就是两者唯一的结构差异。
      所以封面**不能**「一失败就把 src 一次性换成占位图并摘掉监听」：只要这一发请求失败过
@@ -1110,41 +1522,65 @@
      那张小卡片此后就永远只剩占位图（= 用户说的"没有封面"），而点开放大器又看得到真封面。
      规则：
        ① 原图地址记在 img.dataset.cover 上，任何时候都能回到它；
-       ② error 后先按退避重试原图（最多 COVER_TRIES 次），全失败才落到占位图；
-       ③ restoreCover() 在重绘 / 打开放大器时把占位图换回原图（自愈）。
+       ② error 后先在**当前这条腿**上按退避重试（最多 COVER_TRIES 次）；
+       ③ 这条腿彻底不行 → 换下一条腿（见 u.coverCandidates：直连 ↔ 本地网关，
+          网关那边有 DoH 钉 IP 与境内中继，所以"直连不通时图也能出来"）；
+       ④ 所有腿都失败才落到占位图；restoreCover() 在重绘 / 打开放大器时把占位图换回原图（自愈）。
      ★不要退回「一次性降级」★ —— 那正是「小卡片没有封面、放大后正常」的成因。 */
   const COVER_TRIES = 2;
   const COVER_BACKOFF = 700;          // ms：第 1 次重试等 700，第 2 次 1400
 
+  /** 去掉 wireCover 加的查询尾巴（判断「现在指着的是不是候选链里的那条」时要还原） */
+  function stripBust(s) {
+    return String(s || '').replace(/[?&]hs(?:retry|alt|repaint)=[^&]*/g, '').replace(/\?$/, '');
+  }
+
   function wireCover(img, it, force) {
     const want = (it && it.cover) ? String(it.cover) : '';
     const key = (it && (it.key || it.id)) || '';
+    /* 候选链：防盗链主机是「网关 → 直连」，其余是「直连 → 网关」 */
+    let list = want ? u.coverCandidates(want) : [];
+    if (!list.length && want) list = [want];
+    img.__cands = list;
+    img.__ci = 0;
     img.__tries = 0;
     img.__ok = 0;
     img.dataset.cover = want;
     if (!img.__coverBound) {
       img.__coverBound = 1;
       img.addEventListener('error', function onerr() {
-        const w = img.dataset.cover || '';
-        if (!w) return;
+        const cur = img.__cands || [];
+        if (!cur.length) return;
         const n = img.__tries || 0;
         if (n < COVER_TRIES) {
+          /* ② 同一条腿退避重试 */
           img.__tries = n + 1;
-          const url = bust(w, 'hsretry=' + (n + 1));
+          const url = bust(cur[img.__ci || 0], 'hsretry=' + (n + 1));
           window.setTimeout(() => {
-            if ((img.dataset.cover || '') === w) img.src = url;
+            if (img.__cands === cur) img.src = url;      // 期间被重写过就丢弃这个定时器
           }, COVER_BACKOFF * (n + 1));
           return;
         }
+        const next = (img.__ci || 0) + 1;
+        if (next < cur.length) {
+          /* ③ 换下一条腿（直连 ↔ 网关） */
+          img.__ci = next;
+          img.__tries = 0;
+          img.src = bust(cur[next], 'hsalt=' + next);
+          return;
+        }
+        /* ④ 所有腿都不行才用占位图（同值重设不再触发 error） */
         const ph = u.placeholder(it && it.title, key);
-        if (img.getAttribute('src') !== ph) img.src = ph;   // 真的拿不到才用占位图（同值重设不再触发 error）
+        if (img.getAttribute('src') !== ph) img.src = ph;
       });
       img.addEventListener('load', () => { img.__tries = 0; img.__ok = 1; });
     }
     if (!want) { img.src = u.placeholder(it && it.title, key); return; }
-    /* force=true：即使 src 已经指着原图也**强制重取一次**（浏览器对同一个失败过的 URL
-       直接重设同值往往不会重新请求，得带一个一次性的查询尾巴） */
-    img.src = force ? bust(want, 'hsrepaint=' + Date.now()) : want;
+    if (force) { img.src = bust(list[0], 'hsrepaint=' + Date.now()); return; }
+    /* 已经指着候选链里的某一条（正在加载 / 已加载）就不重复触发请求 */
+    const nowSrc = img.getAttribute('src') || '';
+    if (nowSrc && stripBust(nowSrc) === list[0]) return;
+    img.src = list[0];
   }
 
   /** 给 URL 加一个查询尾巴（原来有 query 就用 & 拼） */
@@ -1152,18 +1588,24 @@
     return url + (url.indexOf('?') >= 0 ? '&' : '?') + tag;
   }
 
-  /** 把某张卡片的封面从占位图 / 旧地址换回原图（it.cover）。
+  /** 把某张卡片的封面从占位图 / 旧地址换回候选链的起点（it.cover）。
       重绘（paintList）和打开放大器（openCard）各走一次 —— 所以「点开过的那张卡片」
-      一定会和放大器显示同一张封面。已经指着原图且确认取到了的直接跳过，不产生额外请求。 */
+      一定会和放大器显示同一张封面。已经指着候选链里的某条且确认取到了就直接跳过，
+      不产生额外请求。 */
   function restoreCover(card) {
     if (!card || !card.__item) return;
     const img = u.$('.hs-card-img img', card);
     if (!img) return;
     const want = card.__item.cover ? String(card.__item.cover) : '';
     if (!want || want.indexOf('data:') === 0) return;
+    if (img.__ok && img.dataset.cover === want) return;         // 已经确认取到原图
     const cur = img.getAttribute('src') || '';
-    if (cur === want) return;                             // 已经指着原图（加载中 / 已加载）
-    if (cur && cur.indexOf('data:') !== 0) return;         // 重试地址之类，不去打断
+    if (cur && cur.indexOf('data:') !== 0) {
+      /* 还指着候选链里的某一条（加载中 / 已加载）→ 不去打断它 */
+      const now = stripBust(cur);
+      const list = img.__cands || [];
+      for (let i = 0; i < list.length; i++) if (list[i] === now) return;
+    }
     wireCover(img, card.__item);
   }
 
@@ -1193,9 +1635,12 @@
   function badgeNodes(it) {
     const out = [];
     /* 编号直达：用户点名要的那一本，标签就是它的编号本身（`jm1474541`）。
-       容器加 is-hi（见 cardNode）→ 样式把整排角标挪到**右上角**，与左上角那排不重叠。 */
+       它是**唯一**让到右上角的角标（多一个 hs-badge-id 类，见 style.css：
+       `.hs-card-badges.is-hi > .hs-badge-id` 绝对定位到卡片右上角）。
+       其余角标照旧留在左上角那排、顺序不动；容器加 is-hi（见 cardNode）只为
+       「给右上角留位 + 换行」——不再把整排挪到右边。 */
     if (isDirectHit(it)) out.push(u.el('span', {
-      class: 'hs-pill hs-pill-jm',
+      class: 'hs-pill hs-pill-jm hs-badge-id',
       title: '编号直达：按禁漫编号取回的这本作品（' + (it.jmDirectId || '') + '）'
     }, u.esc(it.jmBadge || ('jm' + (it.jmDirectId || it.id || '')))));
     if (it.zh) out.push(u.el('span', {
@@ -1242,14 +1687,33 @@
       'data-flag': (it.isGore || it.isAI) ? '1' : '0'
     });
 
+    /* ★不要给卡片封面加 loading="lazy"★（本轮修正）
+       症状（用户报「有些作品加载不上封面，大小卡片都有」）：卡片上的封面有一部分
+       永远停在占位图上 —— src 指着真地址、请求也真的发出去了（网络面板里 200），
+       但**浏览器把 load 事件推迟了**，于是 `img.__ok` 永远是 0、`naturalWidth` 也是 0；
+       wireCover 的错误重试与换腿逻辑全都建立在 load / error 事件上，事件不来它就
+       永远不动作，用户看到的就是「这张卡没有封面」。
+       Chrome 自己的原话（console，本机实测）：
+         "Images loaded lazily and replaced with placeholders. Load events are deferred."
+       这条路径**只在文档被判定为「不在前台 / 被遮挡」时触发**（本项目最常见的场景：
+       开了应急遮蔽、切到别的标签页、把窗口盖住、自动化窗口 noFocus）——
+       所以它表现为「有时有、有时没有」，特别难复现。
+       阅读器早就把同一条坑堵过了（reader.js 的 loadImg 用 loading="eager"，注释同上），
+       卡片封面漏掉了。这里改成 eager：
+         · 请求时机没有变化（卡片建立时 wireCover 本来就立刻挂 src）；
+         · 只是不再让浏览器「推迟 load 事件」；
+         · 于是「文档不在前台」时封面也能正常解码显示。 */
     const img = u.el('img', {
-      alt: it.title, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer'
+      alt: it.title, loading: 'eager', decoding: 'async', referrerpolicy: 'no-referrer'
     });
     wireCover(img, it);         // 封面：失败可重试、可自愈（见 wireCover 的注释）
 
     const imgBox = u.el('div', { class: 'hs-card-img' });
     imgBox.appendChild(img);
 
+    /* is-hi 只表示「这是编号直达的那张卡片」：角标容器仍在左上角正常流动，
+       样式只在 is-hi 下给容器铺满整条宽度 + 右侧留位，让 jm<编号> 那一枚
+       （badgeNodes 的第一枚，带 .hs-badge-id）绝对定位到右上角。 */
     const badges = u.el('div', { class: 'hs-card-badges' + (isDirectHit(it) ? ' is-hi' : '') });
     badgeNodes(it).forEach(n => badges.appendChild(n));
     imgBox.appendChild(badges);
@@ -1391,7 +1855,12 @@
       '展开全部 <small>' + group.total + '</small>');
     tag.addEventListener('click', ev => {
       ev.preventDefault(); ev.stopPropagation();
-      R.seriesOnly = group.key;
+      /* 命中系列词典 → 按系列展开（原来那条路，行为一字未改）；
+         没命中（「人妻猎人 xx话」这种纯命名结构叠出来的）→ 按这一叠的标题指纹展开，
+         否则 R.seriesOnly 会拿一个不存在的系列名去过滤，展开后是空白。 */
+      R.seriesOnly = group.ref.series
+        ? { v: group.ref.series, label: group.ref.series, byKey: false }
+        : { v: group.key, label: group.ref.title || '同名组', byKey: true, ref: group.ref };
       R.appendMode = false;                    // 只看该系列 = 整体重排
       renderHead(); renderGrid();
       u.$('#results-grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1436,7 +1905,11 @@
     }
     const it = n.item;
     return 'C|' + (it.key || it.id) + '|' + String(it.cover || '').length + '|' + (it.zh ? 1 : 0) +
-      '|' + ((it.alsoOn || []).length) + '|' + (it.pages || 0);
+      '|' + ((it.alsoOn || []).length) + '|' + (it.pages || 0) +
+      /* 编号直达：角标结构不一样（左上角那批之外，右上角**多一枚** jm<编号>）——
+         必须进签名。否则同一个 key 的卡片被复用时，__sig 不变 → 角标不重建，
+         从直达切到普通（或反过来）就会残留 / 丢失那枚右上角角标。 */
+      '|' + (isDirectHit(it) ? 'D' + (it.jmBadge || it.jmDirectId || '') : 'N');
   }
 
   /**
@@ -1576,6 +2049,17 @@
 
   /* 供自测与调试：堆叠判定与布局 */
   R.sameish = sameish;
+  /* 供自测与调试：sameish 的子判据（新增判据必须有单独可测的入口，
+     否则「为什么这两本叠在一起 / 没叠」只能靠猜 —— 见 LESSONS 的验证套路） */
+  R.tagsAlike = tagsAlike;
+  R.tagSet = tagSet;
+  R.nameAlike = nameAlike;
+  R.titleCopies = titleCopies;
+  R.bareKeyOf = bareKeyOf;
+  R.stemRaw = stemRaw;
+  R.titleShape = titleShape;
+  R.cjkShape = cjkShape;
+  R.sameArtist = sameArtist;
   R.buildLayout = buildLayout;
   /* 供自测与调试：展示顺序（含末位源分区） */
   R.applyView = applyView;
@@ -1624,6 +2108,13 @@
       R.seriesOnly = null;
       R.exhausted = false;
       R.loadingMore = false;
+      /* ★必须一起清掉 pageBusy★
+         旧代码只清 loadingMore，pageBusy 全靠「追加检索的 after / fail 回调」复位。
+         可一旦这次追加检索被新搜索打断（app.js 的 isStale 早退），两个回调都不会执行，
+         pageBusy 就永远留在 true —— loadMore() 第 3 行 `if (R.exhausted || R.pageBusy)`
+         直接把滚动加载锁死到页面刷新为止。这里与 R.reset()、看门狗一起把它兜住。 */
+      R.pageBusy = false;
+      R.clearMoreWatch();
       R._shown = 0;
       R._dryRounds = 0;
       R._zhDupDropped = 0;      // 全新检索从零开始数「追加去重丢了几条」（仅用于自测 / 调试）
@@ -1688,11 +2179,18 @@
     const fresh = flatten(results);
     const hadBefore = R.items.length;
     if (page > 1) {
-      /* 追加：先剔掉「与已经铺开的中文版重复的语言变体」，再进池子（第一页 / 全新检索不受影响）。
-         拿 fresh（源实际返回的条数）判「这一批是不是太少」，口径与原来一致。 */
+      /* 追加：先剔掉「与已经铺开的中文版重复的语言变体」，再进池子（第一页 / 全新检索不受影响）。 */
       const kept = dropZhLangDup(fresh, flatten(R._pages));
       R._pages = R._pages.concat([{ ok: true, items: kept, src: { id: '__page' } }]);
-      if (fresh.length < Math.max(4, pageSize() * 0.15)) R.exhausted = true;
+      /* ★不再用「原始返回条数」判到底★
+         旧口径是 `fresh.length < Math.max(4, pageSize() * 0.15)`（默认 pageSize=60 → 阈值 9）：
+         它量的是「各源这一页总共回了多少条**原始**行」，既没扣掉跨源去重、也没扣掉语言变体，
+         更与「有没有拿到**新**作品」无关。很多源每页本来就只回 5~8 条，
+         于是第二页一到就被判成「已经到底」，之后滚动加载再也发不出请求 ——
+         这正是用户报的「向下滑不刷新新作品」。
+         真正的判据只有两个：① 这一页原始返回就是空的；② 连续几轮去重后一条新的都没多
+         （下面的 _dryRounds）。两个都不成立就不许判到底。 */
+      if (!fresh.length) R.exhausted = true;
     } else {
       R._pages = [{ ok: true, items: fresh, src: { id: '__page' } }];
     }
@@ -1754,22 +2252,54 @@
    *   本地铺完了但还没到底   → 向各源再要一批，回来接着铺
    * 所有结果都在同一面，不再有上一页 / 下一页。
    */
+  /**
+   * 追加批次看门狗。
+   * 为什么必须有它：R.loadingMore / R.pageBusy 原来只由 app.js 交回的 after / fail
+   * 两个回调复位；而 app.js 的「新检索打断旧检索」会在每个 isStale() 处直接 return
+   * （既不 after 也不 fail），于是这两个标志永远停在 true —— 之后每一次滚动到底
+   * 都在 loadMore() 的第一行被挡回去，用户看到的就是「往下滑不再出新作品」，只能刷新页面。
+   * 看门狗按「整轮检索上限 + 余量」到点强制复位，用代次号防止把新一轮的状态误清。
+   */
+  R.clearMoreWatch = function () {
+    if (R._moreTimer) { clearTimeout(R._moreTimer); R._moreTimer = 0; }
+  };
+  R._moreGen = 0;
+
   R.loadMore = function () {
     if (R.streaming || HS.busy || R.loadingMore || !R.items.length) return false;
     const layoutN = (R._layout || []).length;
-    if (R._shown < layoutN) { R._shown += pageSize(); paintList(); return true; }
+    /* 本地还有没铺开的候选：直接铺，并且立刻再检查一次底部哨兵。
+       旧代码在这里直接 return，不调 kickFoot() —— 如果这一批没把哨兵顶出预取带
+       （卡片矮 / 视口高 / 这一批大多被去重吃掉），IntersectionObserver 的相交状态
+       没有变化就不会再回调，滚动加载停在原地。 */
+    if (R._shown < layoutN) {
+      R._shown += pageSize();
+      paintList();
+      R.kickFoot();
+      return true;
+    }
     if (R.exhausted || R.pageBusy) { paintFoot(); return false; }
     R.loadingMore = true;
     R.pageBusy = true;
     paintFoot();
+    const gen = ++R._moreGen;
+    R.clearMoreWatch();
+    R._moreTimer = setTimeout(() => {
+      if (R._moreGen !== gen) return;
+      R.loadingMore = false; R.pageBusy = false;
+      paintFoot();
+      /* 这一轮没等到任何回调（被打断 / 请求悬挂）：直接把状态放开，让下次滚动能再来一轮 */
+      R.kickFoot();
+    }, u.clamp((HS.sources && HS.sources.RUN_CAP_MS) || 22000, 8000, 60000) + 8000);
     HS.bus.emit('app:search', {
       page: (R.page || 1) + 1, append: true,
       after: () => {
+        R.clearMoreWatch();
         R.loadingMore = false; R.pageBusy = false;
         R._shown += pageSize(); paintList();
         R.kickFoot();
       },
-      fail: () => { R.loadingMore = false; R.pageBusy = false; paintFoot(); }
+      fail: () => { R.clearMoreWatch(); R.loadingMore = false; R.pageBusy = false; paintFoot(); }
     });
     return true;
   };
@@ -1781,18 +2311,29 @@
    * 再也不会回调 —— 滚动加载就卡死在第一批，用户看到的是「滚到底了却没有新作品」。
    * 所以这里手动再踢一脚；真没进展的轮次由 R._dryRounds 兜底收手，不会无限请求。
    */
-  R.kickFoot = function () {
+  R.kickFoot = function (tries) {
     const foot = u.$('#results-foot');
-    if (!foot || R.exhausted || R.loadingMore || R.streaming || HS.busy) return;
-    if (foot.getBoundingClientRect().top < window.innerHeight + 700) {
-      setTimeout(() => { if (!R.exhausted && !R.loadingMore) R.loadMore(); }, 140);
-    }
+    if (!foot || R.exhausted || R.loadingMore || R.streaming) return;
+    if (foot.getBoundingClientRect().top >= window.innerHeight + 700) return;
+    const n = typeof tries === 'number' ? tries : 0;
+    setTimeout(() => {
+      if (R.exhausted || R.loadingMore || R.streaming || !R.items.length) return;
+      /* 首屏结果是在主流程收尾之前就画出来的（app.js 在第 5 步 render，finally 才清 HS.busy），
+         所以这一脚经常正好踩在 HS.busy = true 上。旧代码看到 HS.busy 就直接放弃，
+         哨兵又因为相交状态没变化而不再回调 → 卡死在第一批。
+         现在改成「等它跑完再来」，最多重试 12 次（≈3s）；真忙不过来也不会无限重试。 */
+      if (HS.busy) { if (n < 12) R.kickFoot(n + 1); return; }
+      const f2 = u.$('#results-foot');
+      if (f2 && f2.getBoundingClientRect().top < window.innerHeight + 700) R.loadMore();
+    }, 140);
   };
 
   R.reset = function () {
     R.items = []; R.raw = []; R._pages = []; R._partial = [];
     R.sourceFilter = null; R.seriesOnly = null; R.zhOnly = false;
-    R.page = 1; R.exhausted = false; R.loadingMore = false; R._dryRounds = 0; R._zhDupDropped = 0;
+    R.page = 1; R.exhausted = false; R.loadingMore = false; R.pageBusy = false;
+    R.clearMoreWatch();
+    R._dryRounds = 0; R._zhDupDropped = 0;
     R._layout = []; R._shown = 0; R._nodes = []; R._rendered = 0; R._dirty = false; R._dom = {};
     R.order = []; R.appendMode = false;
     u.$('#results-grid').innerHTML = '';
@@ -1882,7 +2423,7 @@
       const it = cm.__item;
       if (!it || !it.series) return;
       closeCard();
-      R.seriesOnly = it.series;
+      R.seriesOnly = { v: it.series, label: it.series, byKey: false };
       R.appendMode = false;                      // 只看该系列 = 整体重排
       renderHead(); renderGrid();
       u.$('#results-grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1949,6 +2490,9 @@
     cmTimer = window.setTimeout(() => { if (gen === cmGen) settleClose(); }, 340);
   }
   R.closeCard = closeCard;
+  /* 「放大 / 详细信息」对外开口：recent.js 的「最近浏览」列表点开某条时直接调它
+     （第二个参数 card 传 null = 不是从某张卡片长出来的，走无 FLIP 的居中弹出）。 */
+  R.openCard = openCard;
 
   /**
    * 从「卡片所在位置」长成放大器（而不是从屏幕正中弹出来）：
@@ -2035,7 +2579,16 @@
     restoreCover(card);
 
     const img = u.$('.hs-cm-img img', cm);
-    img.src = it.cover || u.placeholder(it.title, it.key || it.id);
+    /* ★先把上一本的像素清掉★（用户报「大卡片点开时会先显示上一本的封面」）
+       放大器只有一个 <img> 节点，所有卡片共用它 —— 而浏览器在「新 src 已设、新图还没解码完」
+       这段时间里会**继续显示旧图**（这是替换元素的标准行为，不是 bug）。于是点开第二本时，
+       第一本的封面会一直挂在放大器里，直到新封面取回来才被换掉。
+       解法：在挂新地址之前把 src 摘掉 —— 旧像素立刻消失（盒子里是一片自己的底色，
+       不是别人的作品），紧接着 wireCover 挂上本作地址，图到了就直接出现，中间不会闪占位图。 */
+    img.removeAttribute('src');
+    /* 放大卡片与小卡片**共用同一条候选链**（直连 ↔ 网关，见 u.coverCandidates）：
+       所以「小卡片出不来、点开却能看」这种两边不一致的情况不会再出现 */
+    wireCover(img, it, true);
     img.alt = it.title || '';
 
     const badges = u.$('[data-cm-badges]', cm);
@@ -2106,6 +2659,12 @@
   }
 
   R.init = function () {
+    /* ★默认排序 = 智能排序★
+       旧代码只在用户手动改过下拉框时才写 R.sort，于是首次渲染 R.sort === undefined，
+       applyView 里 `R.sort === 'rank'` 分支不成立（中文版优先那一步也不生效）。
+       这里初始化成与 <select> 的默认值（option value="rank"）一致，避免"界面显示智能排序、
+       实际走的是无名字的兜底比较器"这种不一致。 */
+    if (!R.sort) R.sort = 'rank';
     u.$('#results-sort').addEventListener('change', e => {
       R.sort = e.target.value; R.page = 1; R._shown = 0;
       R.appendMode = false;      // 用户主动改排序 = 整体重排，不是追加
@@ -2121,14 +2680,18 @@
       }, { rootMargin: '700px 0px' });
       io.observe(foot);
       R._io = io;
-    } else {
-      /* 兜底：没有 IntersectionObserver 就用滚动事件 */
-      window.addEventListener('scroll', u.debounce(() => {
-        if (!R.items.length || R.loadingMore) return;
-        const box = foot && foot.getBoundingClientRect();
-        if (box && box.top < window.innerHeight + 700) R.loadMore();
-      }, 160), { passive: true });
     }
+    /* ★滚动兜底（两条路都接）★
+       IntersectionObserver 只在「相交状态发生变化」时回调：如果渲染出来的卡片没把
+       哨兵顶出预取带，状态一直保持 intersecting，就再也不会回调 —— 表现为「滑到底不动了」。
+       所以这里无条件再挂一个滚动监听（节流 200ms），只要哨兵在预取带里就补一脚。
+       它只是把 IO 漏掉的那次补回来，真正的去重/到底判断仍由 loadMore() 自己做，
+       所以不会重复发请求（loadingMore / pageBusy 两道闸门拦着）。 */
+    window.addEventListener('scroll', u.throttle(() => {
+      if (!R.items.length || R.loadingMore || R.exhausted || R.streaming || HS.busy) return;
+      const box = foot && foot.getBoundingClientRect();
+      if (box && box.top < window.innerHeight + 700) R.loadMore();
+    }, 200), { passive: true });
 
     /* 点卡片 = 单击一次就放大（不再需要"先揭示、再点开"两步）。
        封面揭示：桌面靠 hover，触屏/想固定看就点卡片上的「点击显示」按钮（那是显式操作，会保持）。
@@ -2144,7 +2707,10 @@
         card.setAttribute('data-reveal', on ? '0' : '1');
         return;
       }
-      openCard(card.__item, card);
+      /* ★走对外的 R.openCard，而不是闭包里的 openCard★
+         recent.js 的「最近浏览」是在模块外**包装** R.openCard 来记账的；
+         这里若直接调闭包，包装层就被绕过，点开卡片不会留下浏览记录（实测踩过）。 */
+      R.openCard(card.__item, card);
     });
 
     /* 放大视图开着时，Esc 只关它（不要顺带关掉筛选面板 / 思维链）；

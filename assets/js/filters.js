@@ -44,7 +44,7 @@
       hint: '连判不出来的也剔除，只保留被明确分级为成人向的作品 —— 结果会明显变少，但更干净。'
     }
   ];
-  const SEG_DEFAULT = { gore: 'any', ai: 'any', adult: 'yes' };
+  const SEG_DEFAULT = { gore: 'any', ai: 'any', fem: 'any', threeD: 'any', adult: 'yes' };
 
   function renderSeg(host, key) {
     const list = key === 'adult' ? SEG_ADULT : SEG;
@@ -151,9 +151,10 @@
         HS.bus.emit('settings:change', { key: 'sources', val: cur });
       });
       const flags = src.flags.map(f => {
-        const t = /VPN/i.test(f) ? 'vpn'
-          : (/代理|网关/.test(f) ? 'proxy'
-            : (/离线|直连|中文|多镜像|画师向/.test(f) ? 'ok' : ''));
+        /* 徽标配色只按「这个源怎么取数」分档：经网关/代理的走 proxy 色，
+           直连可用的走 ok 色。不再有 vpn 这一档（本项目不依赖任何 VPN / 隧道）。 */
+        const t = /代理|网关/.test(f) ? 'proxy'
+          : (/离线|直连|中文|多镜像|画师向/.test(f) ? 'ok' : '');
         return '<span class="hs-flag" data-t="' + t + '">' + u.esc(f) + '</span>';
       }).join('');
       lab.appendChild(cb);
@@ -356,6 +357,12 @@
     u.$$('#f-ai button').forEach(b => {
       b.setAttribute('aria-pressed', (HS.filters.ai || 'any') === b.dataset.v ? 'true' : 'false');
     });
+    u.$$('#f-fem button').forEach(b => {
+      b.setAttribute('aria-pressed', (HS.filters.fem || 'any') === b.dataset.v ? 'true' : 'false');
+    });
+    u.$$('#f-3d button').forEach(b => {
+      b.setAttribute('aria-pressed', (HS.filters.threeD || 'any') === b.dataset.v ? 'true' : 'false');
+    });
     u.$$('#f-adult button').forEach(b => {
       b.setAttribute('aria-pressed', (HS.filters.adult || 'yes') === b.dataset.v ? 'true' : 'false');
     });
@@ -389,6 +396,8 @@
     n += (f.langs || []).length + (f.cats || []).length;
     if (f.gore && f.gore !== 'any') n++;
     if (f.ai && f.ai !== 'any') n++;
+    if (f.fem && f.fem !== 'any') n++;
+    if (f.threeD && f.threeD !== 'any') n++;
     if ((f.adult || 'yes') !== 'yes') n++;   // 默认就是「只要成人向」，改过才算筛选条件
     if (f.order && f.order !== 'relevance') n++;
     if (f.pagesMin) n++;
@@ -453,6 +462,8 @@
     renderChips(u.$('#f-langs'), HS.LANGS, () => HS.filters.langs || [], v => { HS.filters.langs = v; });
     renderSeg(u.$('#f-gore'), 'gore');
     renderSeg(u.$('#f-ai'), 'ai');
+    renderSeg(u.$('#f-fem'), 'fem');
+    renderSeg(u.$('#f-3d'), 'threeD');
     renderSeg(u.$('#f-adult'), 'adult');
     renderSources();
 
@@ -572,7 +583,7 @@
         HS.net._cache = null;
         HS.toast(picked
           ? '已选用 ' + picked.name + '（' + u.fmtMs(picked.ms) + '）'
-          : '没有可用的公共代理，请改用自建代理或开启 VPN',
+          : '没有可用的公共代理，可改用自建代理，或启动随附的本地网关',
           picked ? 'ok' : 'err', 3800);
         HS.bus.emit('proxy:change');
         return;

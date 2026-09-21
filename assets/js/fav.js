@@ -979,7 +979,9 @@
     } else {
       if (n.image && n.image.url) {
         var img = u.el('img', {
-          alt: '', loading: 'lazy', decoding: 'async',
+          /* eager：同 results.js 的卡片封面 —— loading="lazy" 在「文档不在前台」时
+             会被 Chrome 推迟 load 事件（请求照发、就是不绘制），收藏列表就会整片空白。 */
+          alt: '', loading: 'eager', decoding: 'async',
           referrerpolicy: 'no-referrer', src: String(n.image.url)
         });
         img.addEventListener('error', function () {
