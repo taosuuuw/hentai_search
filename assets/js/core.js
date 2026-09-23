@@ -5,7 +5,7 @@ window.HS = (function () {
   'use strict';
 
   const NS = {};
-  NS.VERSION = '3.2.0';
+  NS.VERSION = '3.3.0';
   NS.STORAGE_KEY = 'hs.settings.v2';
   NS.FILTER_KEY = 'hs.filters.v2';
 
@@ -992,6 +992,8 @@ window.HS = (function () {
     ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/></svg>',
     user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"/></svg>',
     chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>',
+    /* 回顶按钮用：一支带竖杆的向上箭头（纯 chevron 旋转在圆钮里显得太小、不易辨认） */
+    up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19.2V5.4"/><path d="M5.8 11.4L12 5.2l6.2 6.2"/></svg>',
     /* ---- v2.4：设置项与功能图标 ---- */
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="10.8" cy="10.8" r="6.2"/><path d="M15.4 15.4L21 21"/></svg>',
     image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4.6" width="18" height="14.8" rx="2.6"/><circle cx="8.6" cy="10" r="1.7"/><path d="M4 17l4.6-4.4 3.4 3.2 3-2.8L20 17.4"/></svg>',

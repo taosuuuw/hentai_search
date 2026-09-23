@@ -10,7 +10,7 @@ project:    hentai搜索 · 绅士聚合搜索
 owner:      taosuuuw
 repository: https://github.com/taosuuuw/hentai_search
 branch:     main
-version:    3.2.0（tag v3.2.0）
+version:    3.3.0（tag v3.3.0）
 entry:      index.html          # 唯一入口；scripts 传统顺序加载，非 ES Module
 runtime:    浏览器静态页面 + 本地 Node 网关（tools/gateway.js，零依赖）
 build:      无。零依赖、零构建
@@ -23,10 +23,12 @@ license:    专有 · 保留所有权利（见 LICENSE）
 
 ### 📦 版本与发布
 
-- 当前版本 **3.2.0**（tag `v3.2.0`），默认分支 **main**；逐版变更见 [CHANGELOG.md](CHANGELOG.md)。
+- 当前版本 **3.3.0**（tag `v3.3.0`），默认分支 **main**；逐版变更见 [CHANGELOG.md](CHANGELOG.md)。
 - 发布页与源码包：https://github.com/taosuuuw/hentai_search/releases
-- 历史标签 `v2.0.0`；旧分支 `1.0` / `1.9` / `2.0` 仍保留在仓库中，仅作对照，不再更新。
+- 历史标签 `v3.2.0` / `v2.0.0`；旧分支 `1.0` / `1.9` / `2.0` 仍保留在仓库中，仅作对照，不再更新。
 - 3.2.0 是**在 3.0 分支上完成、并把该分支更名为 `main`** 后发布的首个版本，内容以 3.0 分支的工作树为准。
+- 3.3.0 是 3.2.0 之后的迭代归档：主线是「**启动即可观测**」（一进页面就让网关跑出口自检 / DoH / 中继）、
+  「**封禁与限流讲清楚并共享记忆**」、以及「**阅读器首屏更快**」（首屏预热 + 批量预取）；详见 [CHANGELOG.md](CHANGELOG.md) 的 v3.3.0 一节。
 
 ---
 
@@ -39,7 +41,7 @@ DeepSeek Harness 是本次开发所使用的 AI 编程代理（agent）运行环
 | 项 | 说明 |
 | --- | --- |
 | 用途 | 参与全仓库的编码与文档工作 |
-| 本仓库中可核对的产出 | 版本 1.0 / 1.9 / 2.0 / 3.0 / 3.2.0 的 README 与其全部批注；`.gitignore`；以及各次提交与分支（`1.0`、`1.9`、`2.0`、`main`）的整理 |
+| 本仓库中可核对的产出 | 版本 1.0 / 1.9 / 2.0 / 3.0 / 3.2.0 / 3.3.0 的 README 与其全部批注；`.gitignore`；`tools/` 下的回归校验套件（`node tools/check-all.js`）；以及各次提交与分支（`1.0`、`1.9`、`2.0`、`main`）的整理 |
 | 说明 | 凡本文档中标为【已核对】的批注，都是在源码中逐行定位后给出的结论；标为【待实测】的则是明确标注**未经验证**的部分 |
 
 > 各版本、各文件未必出自同一工具或同一人之手；如需精确到文件的署名，请以 `git log` 为准。
@@ -109,6 +111,9 @@ start-engine.cmd -Port 8899         :: 换端口
 start-engine.cmd -NoBrowser         :: 启动后不自动开浏览器
 start-engine.cmd -Foreground        :: 不新开窗口，日志留在当前窗口（Ctrl+C 停止）
 start-engine.cmd -KeepOpen          :: 引擎就绪后不自动关掉启动器窗口
+start-engine.cmd -RelaySetup        :: 重新走一遍「自建中继」一次性向导（打通 e-hentai / pixiv）
+start-engine.cmd -NoRelaySetup      :: 本次跳过那个向导
+start-engine.cmd -ResetRelaySetup   :: 清掉「已完成」状态并重新问一遍
 ```
 
 启动器只终结**占用该端口的 node 进程**（其它进程一律不碰），随后用当前代码起新引擎，并真的打一遍接口自检：
@@ -118,6 +123,23 @@ start-engine.cmd -KeepOpen          :: 引擎就绪后不自动关掉启动器�
 > 启动脚本以 **ASCII-only** 编写是刻意的：cmd.exe 解码非 ASCII 字节时可能在解析阶段就崩掉，
 > 于是窗口一闪而过（`pause` 都来不及执行）——旧版启动器正是栽在这里。
 > 另外 `tools/start-gateway.ps1` 的头部注释里提到的 `start-gateway.cmd` 是过时名字，实际入口是 `start-engine.cmd`。
+
+#### 一次性设置：自建中继（打通 e-hentai / pixiv）
+
+`e-hentai` 与 `pixiv` 在**本机出口**上没有任何通路（连 15 条公共中继都全部失败，取证见 `tools/relay-deploy.md`），
+只有你自己的一台**墙外中继**能解决。**这是一次性动作**：第一次启动引擎时，向导会问一次
+（`[1]` 自动部署到 Cloudflare Pages · `[2]` 粘贴已有中继地址 · `[3]` 自己的 VPS / 软路由 ·
+`[4]` 本机自测中继 · `[5]` 稍后再说 / 不再提醒），做完之后状态记在 `tools/.relay-setup.json`，
+**以后每次启动都自动跳过这一步**。
+
+- 非交互式启动（被脚本/任务调用、输入被重定向）**绝不弹向导、绝不阻塞**，只记一笔「稍后再说」。
+- 看状态：`node tools/relay-setup.js --status`；重跑：`start-engine.cmd -RelaySetup`；恢复提问：`start-engine.cmd -ResetRelaySetup`。
+- 引擎就绪后启动器会读 `/api/ping` 的 `relays` 打印一行「自建中继：已启用（private…）」或「未配置 ⇒ e-hentai / pixiv 搜不到」，
+  所以不用猜它到底认没认出来。
+- macOS / Linux 目前没有这个向导（向导是 Windows 的 PowerShell 脚本），等价的手动命令是
+  `node tools/relay-setup.js --set-relay=<地址> --key=<key>`，之后照常 `./start-engine.sh`。
+- 向导做**任何网络判断都走 node**：本机实测 PowerShell 5.1 的 `Invoke-WebRequest` 连不上任何外网 HTTPS
+  （npm 源 / Cloudflare 全部报「基础连接已经关闭」），而同一时刻 Node 全部 200 —— 用它判断可达性会得出错误结论。
 
 ### 启动方式（Windows / macOS / Linux）
 
@@ -189,11 +211,13 @@ venera 走 `dio` + `rhttp` 原生 socket，原生环境压根没有同源策略�
 | `/api/proxy` | 通用中转（自动补 Referer/UA），给 wnacg / Hitomi / 自定义源这类 HTML 源用；三层都打不通的域名进冷却（限流 45s / 真不可达 3 分钟），成功的响应进进程内缓存（5 分钟 / 64MB 上限）；**自动跟随 301/302**（绅士的 `www.wnacg.date → www.wnacg.com`、porn-comic 的检索页 302 都靠它） |
 | `/api/wnacg/search` | 紳士漫畫检索（3.2.0 新增）：**分批竞速**镜像（每批 3 个，先到先得）、跟随镜像重定向、记住最近成功的镜像 + 失败主机冷却、结果缓存 5 分钟。前端拿它当第一优先，取不到才退回浏览器那套 HTML 竞速 |
 | `/api/diag` | 出口自检：网关现在到底能打到哪些站，**并注明每一站是靠哪一层打通的**（`via: env / doh / relay`），页面用它修正「站点不可达」的误判 |
+| `/api/warm` | 预热（3.3.0 新增）：把上面那份出口自检**提前到弹出网页时**跑掉，顺手把阅读器要用的图片主机钉好 IP（只做 DNS + TLS 验真，不取内容），并复用 `/api/diag` 的结论缓存 —— 这笔钱付在开窗时，而不是用户第一次搜索时。刻意**不**对 e-hentai 发检索（取证显示它的封禁窗口正是重试刷出来的） |
+| `/api/prefetch` | 阅读器批量预取（3.3.0 新增）：前端把「接下来几页」的取图地址一次性交上来，网关按并发上限取回并**填进与 `/api/proxy` 完全同一份缓存**，用户真滑到那页就是毫秒级命中。逐条吞错，绝不因预取失败影响主流程 |
 
 > <details>
 > <summary>📌 批注：网关接口表（2 条）</summary>
 >
-> 【已核对】表中 7 条路由与 tools/gateway.js 的路由分发一致；`/api/picacg/*` 确实只是保留（前端已无调用点，与第 10 节及「已知限制」的说法一致）。
+> 【已核对】表中 12 条路由与 tools/gateway.js 的路由分发一致；`/api/picacg/*` 确实只是保留（前端已无调用点，与第 10 节及「已知限制」的说法一致）。
 > 【风险】本节列出了 `/api/diag` 出口自检，但页面上的可用性判断「以网关自检结果为准」这一条只在「已知限制」里提了一句；排查「明明能上却说不可达」时，应当先跑 `/api/diag` 而不是只看页面提示。
 >
 > </details>
@@ -586,6 +610,27 @@ tools/netprobe.js           出口可达性分层体检：系统 DNS / DoH / TCP
                             （`--relay` 体检中继池、`--url <地址>` 单地址直取、`--json` 机器可读）
 tools/proxy-selftest.js     出口自愈回归测试：起一个本机 CONNECT 代理验证「代理隧道可用」，
                             再把它关掉验证「死代理会被自动绕过」（在不挂代理的环境复现那套时序）
+tools/check-all.js          回归总入口：`node tools/check-all.js` 一次跑完下面 9 套断言（全绿 = 退出码 0），
+                            只打印「每套 通过 N / 失败 M + 失败行」
+tools/concept-check.js      套件：词义 / 信息源 / 回归红线
+tools/cardtags-check.js     套件：卡面标签（含「不许打成请求风暴」那几条约束）
+tools/scroll-check.js       套件：滚动到底 + 回顶按钮
+tools/glass-check.js        套件：液态玻璃材质
+tools/reader-check.js       套件：阅读器缩放 / 拖动 / 退出
+tools/recent-check.js       套件：最近浏览记账 + 角标
+tools/dict-check.js         套件：黑话词典 + 打字提示泡泡
+tools/gateway-check.js      套件：网关出口 / 断路器 / 路由 / 注释吞代码
+tools/relay-check.js        套件：自建中继（协议 / 转发头 / 鉴权 / SSRF / 网关接入 / 一次性设置向导）
+tools/reader-src-check.js   在线阅读「逐源体检」harness：分别验 `/api/reader` 给不给得出 `pages[]`、
+                            `/api/proxy` 能不能真把那张图的字节取回来（两段都必须成立）
+tools/query-send-check.js   检查「这一次检索给每个源到底发了什么词」：直连路径与网关路径各测一遍
+tools/live-probe.js         零依赖真机探针（Chrome headless + CDP over Node 内置 WebSocket）：
+                            `--eval` / `--file=<脚本>` / `--shot=<png>`，用来跑 tools/*-steps.js 场景
+tools/alias-probe.js        检索词召回 / 命中质量探针：改词表前先量出各上游的真实条数与前几条标题
+tools/cors-probe.js         E-Hentai「不靠代理」通路取证（cors.eu.org 路径式中继：直连 / 中继 /
+                            稳定性 / 假 200 陷阱 / 经网关的等效路径）
+tools/eh-relay-probe.js     E-Hentai 取图通路取证（图集页 / ptoken 页 / hath.network 大图
+                            × 直连 / AllOrigins / i0.wp.com）
 assets/css/style.css        主题变量 + 全部样式（向上拉出的面板、卡片堆叠与置顶、单页加载哨兵、设置项图标）
 assets/js/core.js           命名空间 / 默认配置 / 持久化 / 工具 / 汉化判定 / 词典 / 查询意图分类 + 跨语言同义词 / 标签中文化 / 封面候选链 / 图标
 assets/js/dict.js           纯数据：401 条标签中文对照（TAG_ZH）+ 121 组跨语言同义词（CONCEPTS）
@@ -593,13 +638,29 @@ assets/js/net.js            超时请求 / 多级代理链 / 网关客户端与�
 assets/js/sources.js        12 个信息源适配器 + 并行聚合器（按意图分流 / 同义词按源换写法 / 动态分配每源条数 / 全局时间上限 / 逐源预算 / 被打断即静默退出）
 assets/js/filters.js        向上拉出的筛选面板、类型、语言、标签、信息源、结果数量、网关检测
 assets/js/chain.js          思维链：折叠+模糊、点击展开、打字机、逐源进度
+assets/js/cardtags.js       卡片 / 放大器的「从原站取回完整标签」（3.3.0 新增）：只对进入视口的卡片取、
+                            同一时刻最多 2 个在飞、同源两次请求 ≥280ms、结果落 localStorage 30 天、
+                            某源一旦 403/429/超时则整源冷却 5 分钟；取回的结果只进 `it.srcTags`，
+                            **不写回 `it.tags`**，因此不参与同系列堆叠与跨源去重判定
 assets/js/results.js        去重 / 按意图重排 / 汉化优先 / 同系列堆叠（严格判定）/ 卡片标签与 R18G·AI 角标 / 单页无限滚动 / 封面换腿重试 / 打开阅读器
 assets/js/reader.js         在线阅读器：章节下拉 / 自动连读与预取 / 上下连续与左右单页 / 缩放 50–300% / 禁漫 canvas 还原（944 行）
 assets/js/panic.js          极速遮蔽、状态图标、快捷键录制与匹配
 assets/js/recent.js         最近浏览：本机浏览足迹（进详情 / 开在线阅读时记账）、顶栏入口与条数角标、按时间倒序的分组列表、点任意一条回到详细信息
 assets/js/settings.js       设置弹窗（带图标的设置项、初始模糊、本地网关、Pixiv、代理、快捷键录制）
+assets/js/totop.js          右下角「迅速回顶」（3.3.0 新增）：滑动超过 max(480px, 视口高度×0.6) 才出现，
+                            点击走自绘 rAF 340ms 补间（比原生 smooth 快），用户一滚立刻交还控制权，
+                            动效关闭时直接瞬移；写在 #hs-app 内，遮蔽时随内容一起失效
 assets/js/app.js            引导、主题、模糊范围、网络状态、网关探测、搜索主流程（含追加加载）、全局快捷键
-tools/start-gateway.ps1     引擎一键启动器（停旧进程 / 起新引擎 / 自检 /api/reader / 开浏览器；支持 -Stop -Status -Port 等）
+tools/start-gateway.ps1     引擎一键启动器（停旧进程 / 起新引擎 / 自检 /api/reader / 开浏览器；
+                            首次启动会问一次「自建中继」；支持 -Stop -Status -Port -RelaySetup -NoRelaySetup -ResetRelaySetup）
+tools/relay-setup.ps1       自建中继一次性向导（菜单式；自动部署 CF Pages / 粘贴地址 / VPS / 本机自测 / 稍后再说）
+tools/relay-setup.js        向导的判据与落盘（零依赖 CommonJS，可被断言测试）：状态机、地址校验、
+                            key 生成、中继连通性验证、托管前置检查；也是 macOS / Linux 的手动入口
+tools/relay-server.js       零依赖 Node 中继（VPS / 软路由 / 本机自测）：--port --host --key [--allow-private]
+tools/relay-worker.mjs      Cloudflare Workers / Pages 版中继（部署时改名为 _worker.js）
+tools/relay-deno.ts         Deno Deploy 版中继
+tools/relay-check.js        中继套件（73 条断言）：协议 / 转发头 / 鉴权 / SSRF / 网关接入 / 一次性设置向导
+tools/relay-deploy.md       中继部署说明书（为什么非自建不可 + 三种部署 + 验证 + 网关接线 + 实测记录）
 start-engine.cmd            启动器的双击入口（ASCII-only，转调 start-gateway.ps1）
 docs/research/              接口调研笔记（venera / jasmine 等现役实现的确切端点与密钥来源；
                             sources-probe.md 为三站点实测报告 + 第 5 节「不挂代理时的可达性分层实测」）

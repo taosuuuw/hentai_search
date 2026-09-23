@@ -51,7 +51,8 @@ try {
         <span id="net-chip-text">网络检测中…</span>
       </button>
 
-      <!-- 最近浏览：图标 + 条数角标由 recent.js 注入；点开是本机浏览足迹（时间倒序） -->
+      <!-- 最近浏览：纯图标按钮（图标由 recent.js 注入；第 9 轮按用户要求去掉文字与条数角标），
+           点开是本机浏览足迹（时间倒序） -->
       <button id="recent-btn" class="hs-icon-btn" type="button" title="最近浏览" aria-label="最近浏览"></button>
 
       <button id="theme-toggle" class="hs-icon-btn" type="button" title="切换深色/浅色模式" aria-label="切换深色/浅色模式"></button>
@@ -86,6 +87,9 @@ try {
       <!-- 搜索框 + 浮层拉出式筛选面板 -->
       <div class="hs-searchwrap" id="search-wrap">
       <form id="search-form" class="hs-searchbar" autocomplete="off" role="search">
+        <!-- 第 10 轮：测光阴影层（灯的对侧变暗）。纯装饰、绝对定位、不吃指针；
+             只能放在 .hs-searchbar 里才能盖住整条框（见 style.css 的 .hs-sb-shade）。 -->
+        <span class="hs-sb-shade" aria-hidden="true"></span>
         <span class="hs-sb-ico" aria-hidden="true"></span>
         <input id="q" name="q" type="search" enterkeyhint="search"
                placeholder="搜索标题、社团、画师、标签…  例:  [Karaage]  fate" aria-label="搜索关键词">
@@ -314,6 +318,11 @@ try {
     <span aria-hidden="true">·</span>
     <span>请确认你已成年且所在地法律允许访问此类内容</span>
   </footer>
+
+  <!-- 右下角回顶按钮：滑过一段距离才出现（阈值逻辑见 assets/js/totop.js）。
+       放在 #hs-app 之内 → 遮蔽（panic）时随整页一起模糊且 pointer-events 失效。 -->
+  <button id="to-top" class="hs-totop" type="button" data-show="0"
+          aria-label="回到顶部" aria-hidden="true" tabindex="-1"></button>
 </div>
 
 <!-- ========== 遮蔽遮罩（位于 #hs-app 之外，确保不被一起模糊） ========== -->
@@ -360,12 +369,15 @@ try {
 <script src="assets/js/sources.js"></script>
 <script src="assets/js/filters.js"></script>
 <script src="assets/js/chain.js"></script>
+<script src="assets/js/cardtags.js"></script>
 <script src="assets/js/results.js"></script>
 <script src="assets/js/reader.js"></script>
 <script src="assets/js/panic.js"></script>
 <script src="assets/js/fav.js"></script>
 <!-- 最近浏览：包装 HS.results.openCard / HS.reader.open 记账，所以排在它们之后 -->
 <script src="assets/js/recent.js"></script>
+<!-- 右下角回顶按钮：独立模块，只依赖 HS.u / HS.icon，由 app.js 的 boot() 初始化 -->
+<script src="assets/js/totop.js"></script>
 <script src="assets/js/settings.js"></script>
 <!-- 封面加载诊断面板：只在 ?coverdiag=1 时生效，平时从第一行 return（零影响）。
      面板会数「当前结果区有多少张卡片真的把封面取回来了」，用来验证

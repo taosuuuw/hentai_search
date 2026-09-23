@@ -148,7 +148,6 @@
       }
     }
     sync();
-    paintBadge();
     if (isOpen()) render();
     HS.bus.emit('recent:change', { count: count() });
     return rec;
@@ -161,7 +160,6 @@
     if (i >= 0) db.items.splice(i, 1);
     delete index[key];
     sync();
-    paintBadge();
     if (isOpen()) render();
     HS.bus.emit('recent:change', { count: count() });
     return true;
@@ -171,7 +169,6 @@
     db.items = [];
     index = {};
     sync();
-    paintBadge();
     if (isOpen()) render();
     HS.bus.emit('recent:change', { count: 0 });
   }
@@ -387,14 +384,6 @@
     opener = null;
   }
 
-  function paintBadge() {
-    const b = u.$('#recent-badge');
-    if (!b) return;
-    const n = count();
-    b.textContent = n > 99 ? '99+' : String(n);
-    b.hidden = n === 0;
-  }
-
   /* ---------------- 挂钩 ---------------- */
   /* 用「包装」而不是改实现：两个入口各自的参数、返回值、异常语义原样保留，
      记账失败也绝不影响原有流程（包在 try/catch 里）。 */
@@ -437,14 +426,14 @@
     hook();
     const btn = u.$('#recent-btn');
     if (btn) {
-      if (!btn.querySelector('svg')) {
-        btn.innerHTML = HS.icon.clock + '<span>最近浏览</span>' +
-          '<b class="hs-recent-badge" id="recent-badge" hidden>0</b>';
-      }
-      btn.classList.add('hs-icon-btn-label');
+      /* 第 9 轮（用户原话：「最近浏览不需要紫点，就有一个按钮就可以」）：
+         只留一个**纯图标按钮** —— 不再注入「最近浏览」文字与条数角标，
+         也不再挂 .hs-icon-btn-label（那个 class 是带文字/紫色底的顶栏按钮用的，
+         设置入口还在用它）。名字仍由 title / aria-label 给出，浮上去就能看到。 */
+      if (!btn.querySelector('svg')) btn.innerHTML = HS.icon.clock;
+      btn.classList.remove('hs-icon-btn-label');
       btn.addEventListener('click', e => { opener = e.currentTarget; if (isOpen()) close(); else open(); });
     }
-    paintBadge();
     window.addEventListener('keydown', e => {
       if (e.key === 'Escape' && isOpen()) { e.stopPropagation(); close(); }
     });

@@ -32,3 +32,41 @@ memory/
 
 # 图标设计草稿（Univer 草稿容器，本机迭代用，不入库）
 icon-draft/
+
+# 真机取证 / 探针临时产物（tools/live-probe.js 的截图、探针脚本、Chrome profile）
+.tmp/
+
+# 自建中继配置：含访问 key（等同凭据），绝不入库
+tools/relay.txt
+
+# 自建中继「一次性设置」的本机状态与自动部署产物（只在本机有意义，不入库）
+tools/.relay-setup.json
+tools/_relay-deploy/
+tools/_relay-deploy.log
+tools/_relay-deploy.err
+
+# ---------------------------------------------------------------------------
+# 本机记录（3.3.0 起显式忽略）：这些是**本机状态与本机工具链的产物**，
+# 只对某一台机器 / 某一次会话有意义，放进仓库只会变成噪音，也会泄漏本机信息。
+# ---------------------------------------------------------------------------
+
+# DeepSeek Harness 的技能与会话；Mnemon 记忆库；wrangler 本地缓存
+.dsh/
+.mnemon/
+.wrangler/
+
+# 真机取证 / 压测的**原始产物**（探针脚本、控制台输出、截图、压缩包）
+# 结论请写进 tools/*.md 或 docs/，原始机器可读文件一律不入库
+tools/_*
+tools/stability-run/
+
+# 一次性轮次探针（第 10 轮的可达性 / 镜像取证脚本，已被 gateway.js 与 netprobe.js 取代）
+tools/r10-*.js
+
+# 压测与 UI 取证的机器可读报告（同一轮的人读结论在对应的 .md 里）
+tools/stability-report*.json
+tools/ui-diag.json
+tools/ui-truth-*.json
+tools/glow-truth-*.json
+tools/reader-zoom-*.json
+

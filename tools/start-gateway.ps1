@@ -13,11 +13,19 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\start-gateway.ps1
   或者直接双击项目根目录的 start-gateway.cmd
 
+  启动前还会做一件一次性的事：
+     自建中继向导（tools\relay-setup.ps1）—— e-hentai / pixiv 在本机出口上没有通路，
+     必须有一台墙外中继。这一步只问一次：配置好（或明确选「不再提醒」）之后，
+     以后启动会自动跳过（状态在 tools\.relay-setup.json，绝不入库）。
+
   常用参数：
     -Port 8788            换端口
     -Stop                 只停引擎，不启动
     -Status               只看状态（是否在跑、是不是新版本）
     -NoBrowser            启动后不自动开浏览器
+    -NoRelaySetup         本次不要问中继设置（自动化/脚本调用时用）
+    -RelaySetup           强制重跑中继设置向导（即使已经配置过）
+    -ResetRelaySetup      先清掉中继设置状态，再走向导（＝恢复「重新问一遍」）
     -GatewayArgs @(...)   透传给网关的额外参数，例如 "--ehentai-cookie=..."
   本脚本按 Windows PowerShell 5.1 语法写（不使用 7.x 专有语法）。
 #>
@@ -31,6 +39,10 @@ param(
   [switch]$Foreground,
   # -KeepOpen：引擎就绪后不要自动关闭启动器窗口（默认会自动关，只留下引擎那个窗口）
   [switch]$KeepOpen,
+  # 自建中继「一次性设置」向导的三个开关（见上方说明）
+  [switch]$NoRelaySetup,
+  [switch]$RelaySetup,
+  [switch]$ResetRelaySetup,
   [string[]]$GatewayArgs = @()
 )
 
@@ -147,6 +159,35 @@ if (-not $nodeCmd) {
 }
 Say ('Node：' + $nodeCmd.Source)
 
+# ---- 一次性：自建中继设置（网关只在启动时读 tools\relay.txt，所以必须放在起引擎之前）----
+$RelaySetupScript = Join-Path $PSScriptRoot 'relay-setup.ps1'
+if (-not $NoRelaySetup -and (Test-Path $RelaySetupScript)) {
+  # 双保险：向导脚本若被写文件工具/编辑器剥掉了 UTF-8 BOM，PS 5.1 会按 GBK 解码它 ⇒ 整份 ParserError。
+  # 这里只补 3 个字节、内容一字不改，幂等。
+  try {
+    $rb = [IO.File]::ReadAllBytes($RelaySetupScript)
+    if ($rb.Length -gt 3 -and -not ($rb[0] -eq 0xEF -and $rb[1] -eq 0xBB -and $rb[2] -eq 0xBF)) {
+      [IO.File]::WriteAllBytes($RelaySetupScript, ([byte[]](0xEF, 0xBB, 0xBF) + $rb))
+      Say '（已为 relay-setup.ps1 补回 UTF-8 BOM）' 'DarkGray'
+    }
+  } catch { }
+  try {
+    # ⚠ 这里必须用「哈希表 splat」而不是数组 splat：PS 5.1 把数组 splat 当位置参数传，
+    #   实测 & $script @('-Auto','-Port','8788') 会把 '-Auto' 塞给 [int]$Port
+    #   （Cannot convert value "-Auto" to type "System.Int32"）。哈希表是按名字绑定的，可靠。
+    $rsArgs = @{ Auto = $true; Port = $Port }
+    if ($RelaySetup) { $rsArgs['Force'] = $true }
+    # -ResetRelaySetup 的语义是「恢复重新问一遍」：既清状态，也强制进向导
+    #（只清状态的话，relay.txt 还在，按「配好就不再问」的规则仍然会自动跳过）
+    if ($ResetRelaySetup) { $rsArgs['Reset'] = $true; $rsArgs['Force'] = $true }
+    & $RelaySetupScript @rsArgs
+  } catch {
+    Say ('中继设置向导出错（不影响引擎启动）：' + $_.Exception.Message) 'Yellow'
+  }
+} elseif ($NoRelaySetup) {
+  Say '（-NoRelaySetup：本次跳过自建中继设置向导）' 'DarkGray'
+}
+
 if (-not (Stop-Engine -P $Port)) { exit 1 }
 
 if ($Stop) {
@@ -194,6 +235,21 @@ if ($isNew) {
   Say '版本：异常，刚启动的应该是新版本，请检查是否真的换成了新进程' 'Red'
 }
 Say ('出口：' + $ping.egress) 'Gray'
+
+# 自建中继状态（这一次性步骤到底生效没有：看 /api/ping 的 relays 里有没有 private）
+try {
+  $priv = @($ping.relays | Where-Object { $_.private }) | Select-Object -First 1
+  if ($priv) {
+    Say ('自建中继：已启用（' + $priv.id + '，排在全部公共中继之前）') 'Green'
+  } else {
+    $relayFile = Join-Path $Root 'tools\relay.txt'
+    if (Test-Path $relayFile) {
+      Say '自建中继：配了 tools\relay.txt 但网关没认出来 —— 通常是配置文件写错或网关没重启。' 'Yellow'
+    } else {
+      Say '自建中继：未配置 ⇒ e-hentai / pixiv 搜不到。配置方法：tools\start-gateway.ps1 -RelaySetup' 'Yellow'
+    }
+  }
+} catch { }
 
 $checks = @(
   @{ name = 'nhentai 在线阅读'; url = '/api/reader?source=nhentai&id=682396' },

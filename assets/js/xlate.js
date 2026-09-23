@@ -53,7 +53,11 @@
     '猫娘': 'chica gato', '魔法少女': 'chica mágica', '吸血鬼': 'vampiro', '恶魔': 'demonio',
     '天使': 'ángel', '校园': 'escuela', '公司': 'oficina', '电车': 'tren',
     '温泉': 'onsen', '足': 'pies', '口交': 'sexo oral', '肛交': 'sexo anal',
-    '全彩': 'color', '无修': 'sin censura', '调教': 'entrenamiento', '学校': 'escuela'
+    '全彩': 'color', '无修': 'sin censura', '调教': 'entrenamiento', '学校': 'escuela',
+    /* ★词形修正（第 16 轮实测）★ 机器译名给的是**名词** `capitalismo`，而 LectorManga 的
+       检索是 LIKE %q%（实测 capitalismo → 0 条），站点上的作品叫《Harem Capitalista》
+       —— 用的是同词根的**形容词**。这里直接收形容词那个词形，命中 1 条、0ms。 */
+    '资本主义': 'capitalista'
   };
   const ZH_FR = {
     '人妻': 'femme mariée', '熟女': 'femme mûre', '巨乳': 'gros seins', '萝莉': 'loli',
@@ -62,7 +66,7 @@
     '百合': 'yuri', '耽美': 'yaoi', '扶她': 'futanari', '触手': 'tentacules',
     '催眠': 'hypnose', '纯爱': 'romance', '出轨': 'infidélité', '怀孕': 'grossesse',
     '校园': 'école', '魔法少女': 'magical girl', '全彩': 'couleur', '无修': 'non censuré',
-    '女仆': 'servante', '学校': 'école', '姐妹': 'soeurs'
+    '女仆': 'servante', '学校': 'école', '姐妹': 'soeurs', '资本主义': 'capitaliste'
   };
 
   /* ---------------- 词干变体（本轮新增） ----------------
@@ -81,11 +85,17 @@
   const STEM_PAIRS = [
     ['ismo', 'ista'], ['ismo', 'ist'], ['ismo', 'isme'],
     ['ista', 'ismo'], ['ista', 'ist'], ['iste', 'ista'], ['iste', 'ism'],
-    ['istica', 'istico'], ['istico', 'istica']
+    ['istica', 'istico'], ['istico', 'istica'],
+    /* ★第 16 轮补的英/法词形★：-ism ↔ -ist 是同一词根的两种词性，而且这一组原来漏了 ——
+       实测 X.stems('capitalism') 返回 **[]**（'ism' 既不在对表里、也不在后缀表里），
+       于是「en: Capitalism」这条机器译名整条浪费掉（es 恰好译对才没暴露）。
+       socialism→socialist、feminism→feminist 同理。 */
+    ['ism', 'ist'], ['ism', 'ista'], ['ism', 'isme']
   ];
   const STEM_SUFFIX = [
     'isticamente', 'istico', 'istica', 'mente', 'ciones', 'cione', 'dades', 'dad',
-    'ismos', 'istas', 'ismo', 'ista', 'iste', 'icos', 'icas', 'ico', 'ica', 'ales', 'es', 's'
+    'ismos', 'istas', 'ismo', 'ista', 'iste', 'ism',
+    'icos', 'icas', 'ico', 'ica', 'ales', 'es', 's'
   ];
 
   X.stems = function (word) {
@@ -94,7 +104,10 @@
     const push = v => { if (v && v !== s && v.length >= 5 && out.indexOf(v) < 0) out.push(v); };
     /* 只处理单个纯拉丁词：多词短语 / 含数字 / 含中日文的都不碰 */
     if (!s || s.indexOf(' ') >= 0 || !/^[a-zà-öø-ÿ]+$/.test(s) || s.length < 6) return out;
-    STEM_PAIRS.forEach(p => { if (s.length > p[0].length && s.slice(-p[0].length) === p[0]) push(s.slice(0, -p[0].length) + p[1]); });
+    /* ★通用词干排在**最前**★（第 16 轮改序）：站点是 LIKE %q%，一个词干一次覆盖它所有词形
+       （capital → capitalismo / capitalista / capitalism 全中）。
+       顺序有意义：LectorManga 只发前 4 条候选，排在最前的必须是最可能命中的那个。
+       实测：capitalismo → ['capital','capitalista','capitalist']；capitalism → 同前（修好前是 []）。 */
     for (let i = 0; i < STEM_SUFFIX.length; i++) {
       const suf = STEM_SUFFIX[i];
       if (s.length <= suf.length) continue;
@@ -102,7 +115,8 @@
       const stem = s.slice(0, -suf.length);
       if (stem.length >= 6) { push(stem); break; }
     }
-    return out.slice(0, 2);
+    STEM_PAIRS.forEach(p => { if (s.length > p[0].length && s.slice(-p[0].length) === p[0]) push(s.slice(0, -p[0].length) + p[1]); });
+    return out.slice(0, 3);
   };
 
   /* ---------------- 切词表：中日文词 → 候选串 ---------------- */

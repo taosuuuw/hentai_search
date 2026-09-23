@@ -37,6 +37,12 @@
     const el = u.$('#f-gw-state');
     if (el) { el.dataset.state = 'busy'; el.textContent = '检测本地网关…'; }
     const ok = await HS.net.gateway.probe(true);
+    /* ★r18 需求②④★ 只要网关一连上，就让它立刻把出口自检 / DoH 钉真 IP / 中继选择
+       以及四个源（E-Hentai / 拷贝漫画 / porn-comic / MangaDex）的路先热起来。
+       GW.warm 会把结论写进 HS.net._gwDiag —— 随后 net.probe 的「网关段」就能直接算出
+       **最终**结论（而不必等 /api/diag 那几十秒），临时横幅也就没有出场机会。
+       失败一律静默：预热拿不到只是回到原来的路径，不影响任何功能。 */
+    if (ok && HS.net.gateway.warm) HS.net.gateway.warm();
     paintGateway(ok, announce);
     return ok;
   }
@@ -102,15 +108,25 @@
     const b = u.$('#net-banner');
     if (!b) return;
     if (!probe || probe.verdict === 'ok') { b.hidden = true; return; }
+    /* ★r18 需求④★ 弹出网页时不该看到「部分网点没有连接」★
+       网关在线时，**临时结论**（浏览器侧探针最多 3.5s 就出结果）一律不弹横幅：
+       真机实测弹窗后 1 秒内它就写「N/M 个可达，其余浏览器直连失败」，而网关其实早就
+       把这些站接住了（/api/warm 立刻能证明）。只等最终结论 —— 那时还有真不可达的才提示。 */
+    const gwLive = !!(HS.net.gateway && HS.net.gateway.ok);
+    if (probe.provisional && gwLive) { b.hidden = true; return; }
     b.hidden = false;
     b.dataset.kind = (probe.verdict === 'offline' || probe.verdict === 'unknown') ? 'err' : 'warn';
     /* 全程不提 VPN：本地网关自带的「原路 → DoH 钉真 IP → 境内中继」三层补偿
        才是这里的兜底手段，文案要与探针结论一致。 */
     const gwHelps = !!(probe.gatewayTiers && Object.keys(probe.gatewayTiers).length);
+    /* ★r17★ 标题也要认「网关在不在」：临时结论里 gatewayTiers 还是 null（要等 /api/diag），
+       于是网关明明连着，标题却写「先试本地网关」——真机实测横幅因此自相矛盾
+       （描述行说「本地网关已连接」，标题行却叫用户去找网关）。GW.ok 是同步可知的。
+       （gwLive 已在函数开头声明：r18 需求④要在那里先把临时结论拦掉） */
     u.$('#net-banner-title').textContent =
       probe.verdict === 'offline' ? '当前设备离线'
         : probe.verdict === 'partial' ? '部分目标站点不可达' + (gwHelps ? '（其余已由本地网关打通）' : '')
-        : gwHelps ? '目标站点浏览器直连不通 —— 本地网关已接管'
+        : (gwHelps || gwLive) ? '目标站点浏览器直连不通 —— 本地网关已接管'
         : '部分目标站点取不到数据 —— 先试本地网关，再试公共 CORS 代理';
     u.$('#net-banner-desc').textContent = probe.detail;
     const list = u.$('#net-banner-list');
@@ -266,8 +282,11 @@
       const first = slangEl.querySelector('.hs-slang-chip[data-q]') || slangEl.querySelector('.hs-slang-x');
       if (first) { e.preventDefault(); first.focus(); }
     });
-    /* 手动改词后旧提示即失效，收起，避免泡泡停在旧位置误导 */
-    q.addEventListener('input', () => slangDismiss());
+    /* ★第 7 轮 ④：打字判定不在这里绑★
+       slangBind 只有泡泡**首次创建**时才跑（slangBox ← slangPaint ← slangRefresh），
+       而 slangRefresh 以前只在提交检索后调用 —— 冷启动、还没检索过时这段根本不执行，
+       所以「把 input 监听写进 slangBind」= 监听永远不注册（真机实测：打字出来了联想列表、
+       泡泡一个都没有）。改由 slangWatchInput() 在 bind() 里无条件挂一次。 */
   }
 
   function slangClose() {
@@ -315,7 +334,9 @@
       const inline = want + w <= limit;
       const maxLeft = Math.max(6, barRect.width - w - 8);
       el.setAttribute('data-flip', inline ? '0' : '1');
-      el.style.left = Math.round(Math.max(6, Math.min(inline ? want : want, maxLeft))) + 'px';
+      /* data-flip=1 时泡泡整块翻到搜索框下方，left 只需夹在盒内；两支以前写成了同一个
+         表达式（`inline ? want : want` 恒等），翻下去之后仍按 want 定位 —— 顺手清掉死分支。 */
+      el.style.left = Math.round(Math.max(6, Math.min(want, maxLeft))) + 'px';
       el.style.maxWidth = Math.round(Math.max(120, barRect.width - 12)) + 'px';
     } catch (e) { el.setAttribute('data-flip', '0'); }
   }
@@ -358,6 +379,43 @@
       slangCtx.hits = slangLookup(slangCtx.q).hits;
       slangRefresh(slangCtx.empty === true);
     }).catch(() => { /* 包拉不到就维持原样，静默 */ });
+  }
+
+  /** ④ 打字过程中就出泡泡：把判定链路挂到输入框上，**无条件**绑一次（不依赖泡泡是否已创建）。
+      三点注意：
+      ① IME 组字中不查：中文输入法会产生一串 isComposing 的 input 事件，拿拼音串查词典只会闪噪声；
+         组字结束（compositionend）再查一次，才是用户真正打进去的那个词。
+      ② 防抖 + token：连打时只查最后一次；每次 token +1，先前在途的补包回来认不出亲就作废。
+      ③ 手动改词后旧提示仍立刻失效 —— 由「重新判定」取代「直接收起」：新词没命中就
+         slangPaint([]) 主动收起，泡泡也不会停在旧锚点上。 */
+  let slangWatchBound = false;
+  function slangWatchInput() {
+    if (slangWatchBound) return;
+    const q = u.$('#q');
+    if (!q) return;
+    slangWatchBound = true;
+    q.addEventListener('input', e => {
+      if (e && (e.isComposing || e.inputType === 'insertCompositionText')) return;
+      slangTypeSoon();
+    });
+    q.addEventListener('compositionend', () => slangTypeSoon());
+  }
+
+  /** ④ 打字判定：防抖后走与「提交检索」完全相同的链路（命中分档 / 懒补包 / 画泡泡全部复用） */
+  const SLANG_TYPE_MS = 180;
+  let slangTypeTimer = 0;
+  function slangTypeSoon() {
+    if (!DICT) return;
+    if (slangTypeTimer) clearTimeout(slangTypeTimer);
+    slangTypeTimer = setTimeout(function () {
+      slangTypeTimer = 0;
+      const input = u.$('#q');
+      const raw = input ? String(input.value || '').trim() : '';
+      const r = slangLookup(raw);
+      slangCtx = { token: slangCtx.token + 1, q: raw, empty: null, hits: r.hits, dismissed: false };
+      slangRefresh(false);
+      slangLoadPending(r.pending, slangCtx.token);
+    }, SLANG_TYPE_MS);
   }
 
   /** 黑话 chip 上的 data-q-span（"起,止"）→ [起,止]；缺失/不合法返回 null */
@@ -777,6 +835,9 @@
 
     /* 输入只做 UI 记账：切换清空按钮的显隐，不碰检索 */
     input.addEventListener('input', () => { clear.hidden = !input.value; });
+    /* 第 7 轮 ④：黑话提示泡泡的「打字判定」也在此处无条件挂一次（纯旁路：不检索、不改 #q，
+       只在命中词典时把泡泡画出来；上面那条「input 一律不检索」的契约不受影响） */
+    slangWatchInput();
     clear.addEventListener('click', () => { input.value = ''; clear.hidden = true; input.focus(); });
     input.addEventListener('keydown', e => {
       if (e.key !== 'Enter') return;
@@ -871,6 +932,16 @@
     /* net:probe 会广播两次：浏览器探针出结果时的**临时结论**（≤3.5s），
        以及 /api/diag 跑完的最终结论。两次都刷状态，用户不必等网关自检跑完。 */
     HS.bus.on('net:probe', p => { paintChip(p); showBanner(p); });
+    /* ★r18 需求②④★ 预热结论一到就「兑现」成最终结论：此时网关段算得飞快
+       （net._gwDiag 已就绪），横幅要么不弹、要么直接说真话，没有中间态。
+       只兑现一次：避免与 boot 的探针互相触发。 */
+    let warmFolded = false;
+    HS.bus.on('net:warm', () => {
+      if (warmFolded) return;
+      warmFolded = true;
+      const c = HS.net.probeCached();
+      if (!c || c.provisional) probeNow(true, false);
+    });
     HS.bus.on('theme:set', applyTheme);
     HS.bus.on('blurcovers:set', applyBlurCovers);
     /* 代理设置变了 = 网络出口变了，属于「网络情况变化」，重探一次 */
@@ -903,6 +974,8 @@
     /* 最近浏览：必须在 results.js / reader.js 之后初始化 —— 它包装这两个模块的入口记账 */
     if (HS.recent && HS.recent.init) HS.recent.init();
     HS.settingsUI.init();
+    /* 右下角回顶按钮（独立模块，拿不到就跳过，不影响别的启动步骤） */
+    if (HS.totop && HS.totop.init) HS.totop.init();
     bind();
     bindHotkeys();
     bindFocusModality();
@@ -912,13 +985,13 @@
     renderWelcome();
     HS.sources.loadTags();
 
-    /* ★网络检测：在检索之前完成★
-       开机 260ms 就探一次（用户还没输完关键词，界面也不阻塞），
-       之后交给 initNetWatch()：只有观测到网络情况变化才重探，检索流程一律读缓存。 */
+    /* ★r18 需求②④★ 先把网关探明并预热，**再**做网络自检。
+       顺序反过来的话，网探针会先落一个「浏览器直连失败」的临时结论（本机被墙站失败得极快，
+       常常几十毫秒），横幅就抢在网关结论之前弹出来 —— 用户要的是「弹出时网点已经连好」。
+       网关不在时 probeGateway 也只是快失败（同源 /api/ping），拖不动后面的检测。 */
     initNetWatch();
-    setTimeout(() => probeNow(true, false), 260);
-    /* 本地网关探测（有就跑，没有也不影响） */
-    setTimeout(() => probeGateway(false), 680);
+    setTimeout(() => probeGateway(false), 120);
+    setTimeout(() => probeNow(true, false), 300);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

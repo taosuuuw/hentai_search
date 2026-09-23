@@ -1884,6 +1884,30 @@
     { key: 'slut', zh: '淫荡', en: 'slut', ja: 'ビッチ', aliases: ['slut', 'bitch', 'whore', 'ビッチ', '淫荡', '骚货'] },
     { key: 'virgin', zh: '处女', en: 'virgin', ja: '処女', aliases: ['virgin', 'virginity', '処女', '处女', '童贞'] },
     { key: 'defloration', zh: '破处', en: 'defloration', ja: '処女喪失', aliases: ['defloration', '処女喪失', '破处', '初体验'] },
+    /* ★「雌悬浮 / 日不落」= 同一种 XP 的两个中文叫法★（用户指定加入，2026-09-22）
+       含义：「日」到**双脚离地、落不下来** —— 被抱起 / 举着 / 吊着，半空里悬着做。
+       词源就是字面双关：日（干）+ 不落（脚不落地）；社区里还有第三个叫法「提干」。
+       同族但**别并进来**的：足コキ / footjob 是「用脚做」（方向相反）；
+       mating press / 屈曲位是「压在地上、脚在地上」；両足上げ 只是抬腿，人还在地上。
+       ★别名顺序 = 2026-09-22 实测的召回★（`tools/alias-probe.js` 打真实上游）：
+         suspended         nhentai 23/32 条 ← 英文侧真正存在的那个标签（见下）
+         standing sex      nhentai 24/24 条 ← 备用；站立的，不一定脚离地
+         carrying           nhentai  6 条（多为「抱着走」，精度差，只作兜底）
+         抱え上げ           pixiv   28 条，且条目**真的带这个 tag** ⇒ ja 位
+         宙吊り/駅弁         pixiv 各 36 条，但「吊着」/「便当」义项混杂，不收（只认识不收词）
+         日不落             jm 6 条 / copymanga 0
+         雌悬浮             jm 3 条 / copymanga 30 条（那 30 条是**子串命中「雌」**的噪声）
+         提干 / 悬空 / 双脚离地   → jm 全 0；copymanga 提干 30 条、双脚离地 29 条，
+                                    但都是子串误命中（科提 / 提裙蜜話 / 昴星團的雙腳）⇒ 不收
+         suspended congress → nhentai 0 条（该站用空格搜不到，只有 `suspended` 能打中）
+       「日不落」由词条的 `zhAlt` 显式声明为**第二个中文标签**（sources.js 的
+       S.zhAliasLane() 只在词条写了 zhAlt 时才给中文站多发一路 —— 不写就一个字的
+       行为都不变，中出 / 脚 那批词因此逐字节不受影响）。
+       jm 上 日不落 6 条 / 雌悬浮 3 条、两组只重叠 1 条，只发规范词等于整段漏掉
+       （两个词都发出去 = 8 条并集）。 */
+    { key: 'suspended', zh: '雌悬浮', zhAlt: '日不落', en: 'suspended', ja: '抱え上げ',
+      aliases: ['suspended', 'standing sex', 'carrying', 'carried', 'standing carry',
+        '抱え上げ', '日不落', '雌悬浮', '雌懸浮', '提干'] },
 
     /* —— 群体 / 关系 —— */
     { key: 'harem', zh: '后宫', en: 'harem', ja: 'ハーレム', aliases: ['harem', 'reverse harem', 'ハーレム', '后宫', '逆后宫'] },

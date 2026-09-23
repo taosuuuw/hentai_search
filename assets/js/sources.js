@@ -257,11 +257,18 @@
       return 'https://api.mangadex.org/manga?' + p.toString();
     };
 
+    /* ★r18 需求②★ MangaDex 是本机唯一「浏览器直连必死、网关必活」的源：
+       api.mangadex.org 被 DNS 投毒，浏览器腿每次都要白烧掉预算（per=9000ms）才轮得到网关，
+       于是同一个词时快时慢 —— 快的那次是缓存，慢的那次就是这 9 秒。
+       探针/预热结论说「浏览器打不通」时，直接把网关腿排到最前面（net.buildAttempts 的 proxyFirst）。 */
+    const mdFirst = !!(HS.net.browserBlocked && HS.net.browserBlocked('mangadex'));
+
     const urls = [];
     if (f.artist) {
       try {
         const au = await HS.net.fetchSource(
-          'https://api.mangadex.org/author?limit=4&name=' + encodeURIComponent(f.artist), { json: true });
+          'https://api.mangadex.org/author?limit=4&name=' + encodeURIComponent(f.artist),
+          { json: true, proxyFirst: mdFirst });
         u.uniq(((au && au.data) || []).map(x => x.id)).slice(0, 3)
           .forEach(id => urls.push(build(Object.assign({ authorOrArtist: id }, pageExtra))));
       } catch (e) { /* 退化为标题检索 */ }
@@ -269,7 +276,7 @@
     if (!urls.length) urls.push(build(pageExtra));
 
     const pages = await Promise.all(urls.map(url =>
-      HS.net.fetchSource(url, { json: true, allowProxy: true }).catch(() => null)));
+      HS.net.fetchSource(url, { json: true, allowProxy: true, proxyFirst: mdFirst }).catch(() => null)));
 
     let data = [];
     pages.forEach(pg => { if (pg && pg.data) data = data.concat(pg.data); });
@@ -573,8 +580,43 @@
       const lane = [s, n].filter(Boolean).join(' ').trim();
       if (lane) return lane;
     }
+    /* ★同义概念的「第二个中文标签」补一路★（说明见 S.zhAliasLane）
+       中文站（禁漫 / 拷贝 / 紳士）上同一概念的两个中文叫法常常是**两个不同的标签**，
+       而 termFor 按语言口径只发一个规范词 ⇒ 另一个标签下的作品整段看不到。
+       实测（2026-09-22）：jm 搜「日不落」6 条、「雌悬浮」3 条，两组**只重叠 1 条**；
+       把两个词都发出去 = 8 条并集。只对中文口径的源、且是**单个词**的同义概念查询生效
+       （多段查询每一段都已经各自发过上游，不存在整段被丢）。 */
+    if (it && it.concept && !/\s/.test(String(raw == null ? '' : raw).trim())) {
+      const lang = (ctx && ctx.srcId) ? langFor(ctx.srcId) : '';
+      if (lang === 'zh') {
+        const alt = S.zhAliasLane(it);
+        if (alt) return alt;
+      }
+    }
     return S.titleLaneFor(raw, it);
   }
+
+  /* 概念组在中文站上的「第二个中文标签」：**只在词条里显式写了 `zhAlt` 时才发**。
+     为什么不自动挑别名（原来的写法是「取第一个与规范中文名不同、且纯汉字的别名」）：
+     那等于给**所有**概念都加一次请求 —— 实测 `中出` 会多发 `内射`、`脚` 会多发 `足交`，
+     而 MEMORY 的回归红线要求 `中出 / 无修 / 巨乳 / 寝取 / 触手 / full color / 脚`
+     在各槽位发出的串**逐字节不变**（LESSONS §3-13 那类「代码变了、发出去的串也变了」
+     正是最难发现的一种回归）。所以改成数据驱动的白名单：谁的两套中文标签真的互补，
+     就在 dict.js 的词条里写 `zhAlt`。
+     实测依据（2026-09-22，`tools/alias-probe.js`，jm）：雌悬浮 3 条 / 日不落 6 条，
+     两组**只重叠 1 条** ⇒ 只发规范词等于把另一个标签下的作品整段漏掉（两个都发 = 8 条并集）。
+     调用方（laneOf → addTitleLane）的契约与「残余词当标题」那一路完全相同：
+     并集、只加不删、每源每页最多多发 1 次请求、失败 / 超时 / 0 条一律吞掉；
+     主路已经凑够条数时（各适配器在调用前判 items.length >= limit）根本不会发。 */
+  S.zhAliasLane = function (intent) {
+    const c = intent && intent.concept;
+    if (!c) return '';
+    const zh = String(c.zh == null ? '' : c.zh).trim();
+    const alt = String(c.zhAlt == null ? '' : c.zhAlt).trim();
+    if (!alt || alt === zh) return '';
+    if (!/^[\u3400-\u9fff]+$/.test(alt)) return '';      /* 中文站上只可能是纯汉字标签 */
+    return alt;
+  };
 
   function itemKey(it) { return String((it && (it.key || it.id)) || ''); }
 
@@ -733,8 +775,13 @@
 
   /** 网关路：单次请求（多关键词时阶梯的每一级都走它；网关明确报失败＝这一级不通） */
   async function gwNh(query, page, sort) {
+    /* ★第 11 轮★ 30000 → 9000：聚合器硬闸是 S.RUN_CAP_MS = 9500（本文件 :2231），
+       到点就把没回来的源标成「超过 9.5s 未返回」并**丢弃迟到结果**（:2362、:2373-2386），
+       所以等 30s 毫无意义，只会让「聚合超时」盖住网关那一侧的真实原因。
+       网关现在有 8000ms 函数级硬闸（tools/gateway.js 的 NH_HARD_MS），
+       9000 正好留出把真实错误带回前端显示的时间。 */
     const res = await HS.net.gateway.get('/api/nhentai/search',
-      { q: query, page: page, sort: sort }, 30000);
+      { q: query, page: page, sort: sort }, 9000);
     if (res && res.ok === false) throw new Error(res.error || '网关返回失败');
     return gwItems(res, 'nhentai', 'nhentai', 'nhentai（经网关）');
   }
@@ -859,29 +906,48 @@
     return s ? [s].concat(ehFilters(f)).join(' ') : '';
   }
 
+  /** 网关的 E-Hentai 失败响应 → 熔断信息（r18 起网关带结构化 cooldown 字段；
+      老网关没有该字段时退回文案特征判断，保证前后端不必同时升级）。 */
+  function ehCoolingOf(res) {
+    const c = res && res.cooldown;
+    if (c && (c.secs > 0 || c.banned)) return { secs: c.secs | 0, banned: !!c.banned, layer: c.layer || 'net' };
+    const s = String((res && res.error) || '');
+    if (/不再重试|限流封禁|按出口 IP 限流|temporarily banned|excessive request rate/i.test(s)) {
+      return { secs: 0, banned: /封禁|banned/i.test(s), layer: 'net' };
+    }
+    return null;
+  }
+
   async function ehentaiSearch(ctx) {
     const f = ctx.f || {}, limit = ctx.limit;
     const terms = ehTerms(ctx);
     if (!terms.length) throw new Error('E-Hentai 需要至少一个关键词或标签');
     const query = terms.join(' ');
     const page = Math.max(1, ctx.page || 1);
-    /* ★本源的硬预算★（与网关侧 EH_BUDGET_MS = 13s 对齐）
+    /* ★本源的硬预算★（与网关侧 EH_BUDGET_MS = 6s 对齐）
        旧实现给两次网关调用各 60000ms、并且是**串行**的（addTitleLane 在第一次之后），
        单源最坏 120s —— 而整个聚合器 22s 就把它判成超时，这就是「E-Hentai 老要等、老超时」。
-       现在：整源 15s 上限，网关单次 16s（网关自己 13s 内必回），
-       够时间才补第二路，永远不超过 15s。 */
-    const EH_BUDGET = 15000;
+       第 8 轮：整源 15s → 6s、网关单次 16s → 6s。理由：本机出口下 ehentai 100% 失败
+       （系统 DNS 沉洞 + SNI RST），失败形态是「先花 5.4s 走 DoH、再花 2.5s 走中继」，
+       把 15s 全吃满才报错；压到 6s 后它要么真拿到结果，要么快速如实失败。
+       9.5s 的聚合硬闸（S.RUN_CAP_MS）在它之后兜底。 */
+    const EH_BUDGET = 6000;
     const t0 = u.now();
     const left = () => EH_BUDGET - (u.now() - t0);
 
     /* ---- 路线 1（优先）：本地网关代取 ----
        网关有出口代理 + 完整请求头，也是唯一能给出 /torrents.php 兜底的那条路 */
-    let gwErr = null, gwAnswered = false, gwNote = '';
+    let gwErr = null, gwAnswered = false, gwNote = '', gwCooling = null;
     if (gwReady()) {
       try {
         const res = await HS.net.gateway.get('/api/ehentai/search',
-          { q: ctx.q || '', terms: query, page: page, limit: limit }, 16000);
-        if (res && res.ok === false) throw new Error(res.error || '网关返回失败');
+          { q: ctx.q || '', terms: query, page: page, limit: limit },
+          Math.max(2000, Math.min(6000, left() - 400)));
+        if (res && res.ok === false) {
+          const err = new Error(res.error || '网关返回失败');
+          err.hsCooldown = ehCoolingOf(res);   /* null = 不是熔断，照旧走直连兜底 */
+          throw err;
+        }
         gwAnswered = true;
         gwNote = String(res.note || '');
         let items = gwItems(res, 'ehentai', 'E-Hentai',
@@ -902,7 +968,21 @@
            把它渲染成一条红色失败只会让「随机关键词 50 次」里出现无谓的报错。 */
         if (items.length) return items;
         if (gwAnswered) return [];
-      } catch (e) { gwErr = e; gwAnswered = false; }
+      } catch (e) { gwErr = e; gwAnswered = false; gwCooling = (e && e.hsCooldown) || null; }
+    }
+
+    /* ★r18 需求⑤★ 熔断期间不再走「浏览器直连」兜底：
+       网关和浏览器在同一条出口上，网关已经判出「上游按出口 IP 限流」/「三条腿都没通」，
+       浏览器直连面对的是同一面墙 —— 实测这一路要白烧 4–5 秒（EH_BUDGET 6000ms 里被它吃掉
+       4500ms），然后同样失败；用户付的就是这个「每次搜索都要等好几秒」。
+       现在：拿到熔断结论就立刻如实交差（抛错 ⇒ UI 显示一条带原因的失败，**不是**「0 条结果」），
+       把时间和预算还给别的源。不影响恢复：出口一变（用户开/关代理）网关会立刻重新试
+       （网关侧 ehNetDownEgress / ehBanEgress 两条判据），冷却到期后也会自动重试。
+       ★r18 需求⑤ 续★：文案里不再出现倒计时（「约 N 秒后自动重试」），
+       用户明确要求别在每次搜索里看到「还要等多少秒」；剩余时间仍在结构化 cooldown 里。 */
+    if (gwCooling) {
+      throw new Error('E-Hentai 本轮跳过（网关已熔断，会自动重试，不影响其它源）：' +
+        ((gwErr && gwErr.message) || gwErr));
     }
 
     /* ---- 路线 2（兜底）：浏览器直连 / 公共 CORS 代理 ---- */
@@ -916,8 +996,15 @@
           ms: Math.max(3000, Math.min(9000, left() - 500)),
           budget: Math.max(4000, left())
         });
+        /* ★r17 修★（2026-09-23 真机复现）：以前 directAnswered = true 写在**封禁判定之前**，
+           于是「取到了页面但那是封禁页」这条路上：先置了成功标志 → 下一行抛错 → 被 catch 吃掉，
+           而标志**没有回滚** ⇒ 走到函数尾部 `if (gwAnswered || directAnswered) return []`
+           ⇒ UI 显示「✓ E-Hentai 返回 0 条」—— 用户看到的就是「ehentai 总是不返回结果」。
+           现在：先判定，确认是**真页面**之后才置成功标志。 */
+        if (/temporarily banned|Your IP address has been|excessive request rate/i.test(html)) {
+          throw new Error('E-Hentai 按出口 IP 限流封禁（这不是「0 条结果」）');
+        }
         directAnswered = true;
-        if (/temporarily banned|Your IP address has been/i.test(html)) throw new Error('E-Hentai 拒绝了当前出口 IP');
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const rows = u.$$('#gdt tr, table.itg tr', doc).filter(tr => u.$('a[href*="/g/"]', tr));
         if (rows.length) return rows.slice(0, limit).map(tr => ehRowItem(tr, f));
@@ -976,15 +1063,28 @@
 
   /** 网关返回的条目 → 统一卡片模型 */
   function gwItems(res, source, sourceName, fallbackNote) {
-    return ((res && res.items) || []).map(r => mk({
-      source, sourceName,
-      id: r.id, title: r.title, url: r.url, cover: r.cover,
-      artist: r.artist || '', pages: r.pages || null,
-      cats: r.cats || [],
-      tags: (r.tags || []).concat(r.cats || []),
-      adult: r.adult,
-      nsfw: true, note: r.note || fallbackNote || ''
-    }));
+    /* 第 8 轮：网关的五个「薄路由」统一改成 HTTP 200 + {ok:false,error} 报失败
+       （旧行为是进程内异常 → 502，前端只能看到「HTTP 502」）。
+       这里把原因原样抛出来，用户看到的是「站点被 Cloudflare 挡」这种可读原因。
+       已经在调用前自己判 ok===false 的源（nhentai / ehentai / wnacg 竞速）不受影响。 */
+    if (res && res.ok === false) throw new Error(res.error || (sourceName + '：网关返回失败'));
+    return ((res && res.items) || []).map(r => {
+      /* 绅士（wnacg）的网关条目只带分类号 `cate`（tools/gateway.js 的 wnParseItems），
+         前端原先只读 r.cats / r.tags ⇒ 分类号被静默丢掉，绅士卡片恒显示「无标签」。
+         这里把 cate 映射成与浏览器路径 wnTags() 同一个标签词，同时补进 cats（分类筛选要用）。
+         其它源没有 cate 字段 ⇒ cateLabel 为空串，行为与改动前逐字节一致。 */
+      const cateLabel = WN_CATE_LABEL[r.cate] || '';
+      const cats = (r.cats || []).concat(cateLabel ? [cateLabel] : []);
+      return mk({
+        source, sourceName,
+        id: r.id, title: r.title, url: r.url, cover: r.cover,
+        artist: r.artist || '', pages: r.pages || null,
+        cats: cats,
+        tags: (r.tags || []).concat(cats),
+        adult: r.adult,
+        nsfw: true, note: r.note || fallbackNote || ''
+      });
+    });
   }
 
   function gwTerms(ctx, srcId) {
@@ -1171,9 +1271,21 @@
     const page = Math.max(1, ctx.page || 1);
     const gwLimit = u.clamp(ctx.limit * 2, 20, 60);
     const ladder = gwLadder(ctx, 'copymanga');
+    /* ★r17★ 源内预算（与网关新闸门严格对齐）：
+       网关侧改成了「单节点竞速 7200ms / 函数级硬闸 7800ms」，前端单次就给 8200ms ——
+       必须让网关**先**回话（成功、或带着真实原因失败），否则前端先抛一句含糊的
+       「超时」，网关查出来的「哪个节点、什么错」永远带不回来。
+       再往上：聚合器 S.RUN_CAP_MS = 9500 到点**丢弃**迟到结果（本文件 :2269/:2365），
+       所以本源整体预算收到 8800ms，并且每一次 run() 只看**当时剩余**的时间：
+       阶梯换词（tryVariants）、补一路「整串当标题」（addTitleLane）这几路自然变成
+       「剩余多的多等、剩余少的少等」，绝不会出现「第一路烧 8s、第二路再来 8s」
+       把整源拖过 9.5s 被丢弃 —— 那正是拷贝漫画「偶尔不返回结果」的另一半原因。 */
+    const t0 = Date.now();
+    const TOTAL_MS = 8800;
+    const leftMs = () => TOTAL_MS - (Date.now() - t0);
     const run = v => HS.net.gateway.get('/api/copymanga/search', {
       q: v, page: page, limit: gwLimit
-    }, 35000).then(res => {
+    }, Math.max(1500, Math.min(8200, leftMs() - 300))).then(res => {
       const items = gwItems(res, 'copymanga', '拷贝漫画', '官方 API');
       if (!items.length) throw emptyErr('拷贝漫画返回 0 条');
       return items;
@@ -1207,9 +1319,12 @@
     const page = Math.max(1, ctx.page || 1);
     const mode = String(HS.settings.pixivMode || 'all') === 'r18' ? 'r18' : 'all';
     const cookie = String(HS.settings.pixivCookie || '').trim();
+    /* 单次 35s → 7s：本机出口下 Pixiv 的失败形态是「钉到真 IP 后 TLS 96ms 就被 RST」，
+       根本没有理由等 20 秒（实测 12 轮 p50 20478ms 全 502）；有代理时官方搜索通常 1–2s。
+       剩下的交给聚合器 9.5s 硬闸。 */
     const run = v => HS.net.gateway.get('/api/pixiv/search', {
       q: v, page: page, mode: mode, cookie: cookie
-    }, 35000).then(res => {
+    }, 7000).then(res => {
       const got = gwItems(res, 'pixiv', 'Pixiv', '官方搜索');
       if (!got.length) throw new Error('Pixiv 返回 0 条');
       return got;
@@ -1235,12 +1350,14 @@
     const page = Math.max(1, ctx.page || 1);
     const extra = (f.tags || [])[0] || '';
     const t0 = u.now();
-    /* 预算给 20 秒：聚合器硬上限 22 秒（RUN_CAP_MS），网关侧自己的总预算是 19 秒，
-       这一层只做「网关不答我也不干等」的保险丝。 */
-    const BUDGET = 20000;
+    /* 预算给 9.5 秒（= 聚合器硬闸 RUN_CAP_MS）：porn-comic 的私有中继实测 1.6–3.9s、偶发
+       5.4s，网关自己的总闸是 PC_HARD_MS = 9000（tools/gateway.js:3335）。旧值 8000
+       （内层 gateway.get 也写死 8000）会让偶发慢响应**在网关给出真实原因之前**被这一层砍掉，
+       用户只看到「超时」而不是「站点那一刻慢」。这一层只做「网关不答我也不干等」的保险丝。 */
+    const BUDGET = 9500;
     const run = v => {
       const left = BUDGET - (u.now() - t0);
-      if (left < 3500) {
+      if (left < 2500) {
         const e = new Error('porn-comic 本次检索预算已用尽（网关单次最坏十几秒，' +
           '阶梯到此为止；这是防「超时无返回」的硬闸，不是站点故障）');
         e.budget = 1;
@@ -1248,7 +1365,7 @@
       }
       return HS.net.gateway.get('/api/porncomic/search', {
         q: v, page: page, extra: extra
-      }, Math.min(left, 20000)).then(res => {
+      }, Math.min(left, 9500)).then(res => {
         const items = gwItems(res, 'porncomic', 'porn-comic', 'HTML');
         if (!items.length) {
           throw emptyErr((res && res.note) ? res.note : ('porn-comic 没有匹配「' + v + '」的作品'));
@@ -1322,9 +1439,13 @@
     const XL = HS.xlate;
     const off = (XL && typeof XL.offline === 'function') ? XL.offline(terms).map(c => c.q) : [];
     const base = off.concat([terms]).filter((v, i, a) => v && a.indexOf(v) === i).slice(0, 3);
-    /* 机器译名与上面的搜索**同时**发出：命中就不额外花时间，没命中才等它 */
+    /* 机器译名与上面的搜索**同时**发出：命中就不额外花时间，没命中才等它。
+       ★预算 2500 → 4000（第 16 轮实测）★：MyMemory 冷启动单语 1.1–1.6s、四语并行 1.2–4.7s，
+       2500ms 在冷启动时**经常一条候选都拿不到**（实测 /api/translate?q=资本主义&ms=2500 = 4664ms 超时）
+       ⇒ 中文词在西语站就成了「什么都不发、必然 0 条」。这里加预算几乎不花钱：
+       只有「第一波（离线词典 + 原词）全空」时才会 await 它，命中时它被直接丢弃。 */
     const onlineTask = (XL && typeof XL.expand === 'function' && XL.hasCJK(terms) && off.length < 3)
-      ? XL.expand(terms, { max: 8, ms: 2500 }).catch(() => [])
+      ? XL.expand(terms, { max: 8, ms: 4000 }).catch(() => [])
       : Promise.resolve([]);
 
     const merge = lists => {
@@ -1538,6 +1659,60 @@
     20: 'hanman', 21: 'hanman', 22: '3d'
   };
 
+  /* 列表里**每一条作品自己的**标签。绅士的标签在列表页上是两种形态，都不依赖会变的
+     CSS 类名（站点模板换过好几版，类名也跟着变），所以都用结构特征认：
+       · 分类 —— 容器 class 里的 `cate-<n>`（与网关 tools/gateway.js 的 wnParseItems 同一口径）
+       · 标签 —— 指向 `/albums-index-tag-<标签名>.html` 的链接（wnRound 也是用这个形状检索标签页）
+     关键词检索时 strip 为空，于是这些条目以前一条标签都没有（卡片上恒显示「无标签」）。
+     ★只往上爬 3 层，而且一旦某层找到了标签就停★：再往上是整个列表容器，会把别的作品的标签串进来。 */
+  const WN_CATE_ATTR = /cate-(\d+)/i;
+  function wnEntity(s) {
+    return String(s == null ? '' : s)
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  /* 纯字符串入参、不碰 DOM —— 这样这条判据能直接在 node 里断言，不必依赖 DOMParser */
+  function wnTags(html, strip) {
+    const out = [], seen = {};
+    const add = x => {
+      const v = wnEntity(x);
+      if (v && !seen[v]) { seen[v] = 1; out.push(v); }
+    };
+    add(strip);
+    const src = String(html == null ? '' : html);
+    add(WN_CATE_LABEL[(src.match(WN_CATE_ATTR) || [])[1]]);          /* 本条自己的所属分类 */
+    const linkRe = /<a\b[^>]*href\s*=\s*["']([^"']*albums-index-tag-[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let m;
+    while ((m = linkRe.exec(src))) {
+      const text = wnEntity(m[2]);
+      if (text) { add(text); continue; }
+      let path = m[1];                                               /* 链接文字为空 → 用地址里的标签名 */
+      path = path.slice(path.indexOf('albums-index-tag-') + 'albums-index-tag-'.length).replace(/\.html.*$/i, '');
+      try { add(decodeURIComponent(path)); } catch (e) { add(path); }
+    }
+    return out.slice(0, 16);
+  }
+  S.wnTags = wnTags;                       /* 暴露给验证用（tools/cardtags-check.js 直接断言） */
+
+  function wnBlockTags(node, strip) {
+    const keep = strip ? 1 : 0;
+    let box = node;
+    for (let d = 0; d < 3 && box; d++) {
+      const got = wnTags(box.outerHTML ? String(box.outerHTML) : '', strip);
+      if (got.length > keep) return got;
+      box = box.parentElement;
+    }
+    return wnTags(node && node.outerHTML ? String(node.outerHTML) : '', strip);
+  }
+  S.wnBlockTags = wnBlockTags;             /* 同上：验证用（只吃 outerHTML / parentElement，不需要真 DOM） */
+
   function wnParse(html, strip) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const out = [], seen = {};
@@ -1565,7 +1740,7 @@
       out.push(mk({
         source: 'wnacg', sourceName: '紳士漫畫',
         id, title, url: abs(href), cover: pick(node),
-        tags: strip ? [strip] : [], nsfw: true
+        tags: wnBlockTags(a, strip), nsfw: true
       }));
     };
 
@@ -1587,7 +1762,7 @@
         out.push(mk({
           source: 'wnacg', sourceName: '紳士漫畫',
           id, title, url: abs(href), cover: img,
-          tags: strip ? [strip] : [], nsfw: true
+          tags: wnBlockTags(a, strip), nsfw: true
         }));
       });
     }
@@ -1664,8 +1839,16 @@
         res = await HS.net.gateway.get('/api/wnacg/search',
           { q: term, page: wp, limit: limit, cat: catId }, 16000);
       } catch (e) { return null; }
-      if (!res || !res.ok || !((res.items || []).length)) return null;
-      return gwItems(res, 'wnacg', '紳士漫畫', '本地网关 · 镜像竞速');
+      /* ★r17 语义拆分★：
+         null  = 网关**没答复**（离线 / 报错）→ 交给浏览器兜底去赌；
+         []    = 网关**答复了、这一页确实 0 条**（网关有 note：镜像已应答）→ 这是真实答案，
+                绝不能再退回「10 镜像 × 3 路径」的浏览器兜底 —— 本机直连这些域名全 fetch failed，
+                兜底只会白烧 ~10s 再把整源拖到超时（用户报的「绅士偶尔不返回结果」里大半是它）。
+         [] 在 JS 里是真值，所以下面 `if (got) return got;` 会正确短路。 */
+      if (!res || !res.ok) return null;
+      const items = gwItems(res, 'wnacg', '紳士漫畫', '本地网关 · 镜像竞速');
+      if (!items.length) return [];
+      return items;
     };
     /* ★浏览器兜底路径也要有预算★：只有「网关这条路没给结果」时才会走到 wnRound，
        而它是 10 镜像 × 3 路径的 HTML 竞速 —— 实测「人妻」21.3s 里有大半耗在这里。
@@ -1739,6 +1922,10 @@
 
   /* ======================================================================
      6. Hitomi —— HTML 解析（实验性；需本地网关）
+     ★第 11 轮实测：hitomi.la 已全站改为 JS 渲染，检索这条路**拿不到任何结果**
+       （见下面 hitomiRound 的抛错注释与 tools/_hitomi-probe*.js 的取证）。
+       保留适配器是为了：① 在线阅读走 CDN 仍然可用；② 用户能看到真实原因，
+       而不是一个看起来像「这词没结果」的 0 条。
      ====================================================================== */
   /** Hitomi 单次检索（原逻辑原样搬进来，只把「检索词」变成参数） */
   async function hitomiRound(term, limit) {
@@ -1755,7 +1942,16 @@
         if (m && !seen[m[2]]) { seen[m[2]] = 1; nodes.push(a); }
       });
     }
-    if (!nodes.length) return [];
+    if (!nodes.length) {
+      /* ★第 11 轮★：hitomi.la 现在**所有**页面都是 JS 渲染的壳子 —— 实测 root /
+         search.html / tag 页一律 5789B 或 3687B，正文里 /g/<id> 链接 0 个、
+         galleryThumb 0 个（取证见 tools/_hitomi-probe.js / _hitomi-probe2.js）；
+         tools/gateway.js:5111-5140 早就记过同一件事：网关不执行 JS，所以
+         hitomi 的**检索**做不了（只有图集阅读能走 CDN 的 galleries/<id>.js）。
+         以前这里 `return []` 会让界面显示「Hitomi · 0 条」，看起来像「这个词没结果」，
+         实际是整个源失效 —— 现在如实抛错，把真正的原因端到用户面前。 */
+      throw new Error('hitomi.la 已改为 JS 渲染，HTML 里没有任何结果链接（该源检索暂不可用）');
+    }
 
     return nodes.slice(0, limit).map(node => {
       const a = node.tagName === 'A' ? node : (u.$('h1 a', node) || u.$('a[href]', node));
@@ -2085,8 +2281,8 @@
     },
     {
       id: 'hitomi', name: 'Hitomi', homepage: 'https://hitomi.la',
-      desc: 'HTML 解析（实验性）· 仅支持单词/标签检索',
-      flags: ['实验性', '需本地网关'], proxy: true, weight: 0.95,
+      desc: '⚠️ 上游已改为 JS 渲染，HTML 里取不到检索结果（在线阅读仍可用 CDN 数据）',
+      flags: ['实验性', '检索暂不可用'], proxy: true, weight: 0.95,
       off: true, search: hitomiSearch
     },
   ];
@@ -2111,8 +2307,13 @@
   };
 
   /* ---------------- 并行聚合器 ---------------- */
-  /* 全局上限：慢源不再拖着整个搜索不放，到点就把还没回来的源标记为超时 */
-  S.RUN_CAP_MS = 22000;
+  /* 全局上限：慢源不再拖着整个搜索不放，到点就把还没回来的源标记为超时。
+     第 8 轮：22s → 9.5s。验收口径是「随机关键词连搜 100 次，每次 10s 内返回」
+     （实测 22s 下 ≤10s 只有 1/100，p50 14.2s，整轮全被 ehentai/pixiv 这类
+     必然失败的源拖住）。9.5s 是硬闸：到点未回的源按「超时跳过」如实报告，
+     已经回来的结果照常渲染 —— 用户不会再有干等 14–20 秒的检索。
+     能正常返回的源实测最慢是绅士 wnacg 的 p50 7.4s / max 8.0s，仍在闸内。 */
+  S.RUN_CAP_MS = 9500;
 
   /**
    * 动态分配「每个源取多少条」：

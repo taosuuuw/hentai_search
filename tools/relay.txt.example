@@ -1,0 +1,23 @@
+# tools/relay.txt —— 自建中继配置（把这个文件复制成 relay.txt 再填）
+# ---------------------------------------------------------------------------
+# 为什么需要它：本机出口上，e-hentai.org 系统 DNS 直接 NXDOMAIN、DoH 给的候选 IP 带真 SNI
+# 直连全超时；www.pixiv.net 的 DoH 给的是 Cloudflare 真段 104.18.42.239，带真 SNI 直连
+# ~100ms 就被 ECONNRESET（TLS 握手里按 SNI 重置）。15 条公共中继候选 × 2 目标 = 0 成功
+# （cors.eu.org 429、allorigins 不可达、workers.dev / r.jina.ai / vercel.app 域名本身被墙）。
+# ⇒ 唯一出路是你自己的一台墙外中继，部署方式见 tools/relay-deploy.md（Cloudflare Pages 最省事）。
+#
+# 格式：每行一条，`地址` 后面可以用空格或 | 跟一个访问 key；`#` 之后是注释。
+#   例：https://my-relay.pages.dev mySecretKey
+#       https://my-relay.pages.dev|mySecretKey
+# 地址里可以写 {url} 占位（会被替换成 encodeURIComponent 之后的目标 URL）；
+# 不写占位就自动追加 ?url=<encoded>[&k=<key>]。
+#
+# ⚠ 改完这个文件必须**重启网关**才生效（网关只在启动时读一次）。
+# ⚠ 带 key 的话别把这个文件提交进仓库（.gitignore 已经把它排除了）。
+#
+# 自检：
+#   node tools/relay-check.js --live=1        # 用这里配好的中继打 e-hentai / pixiv
+#   curl "https://my-relay.pages.dev/__hs/ping?ip=1"   # 看中继自己的出口 IP（目标站看到的就是它）
+
+# ---- 在下面写你自己的中继（把本行开头的 # 去掉）----
+# https://my-relay.pages.dev mySecretKey

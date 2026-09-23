@@ -328,8 +328,8 @@ async function main() {
   const bad = groups.filter(g => !g || !g.key || !g.zh || !g.en || !g.ja || !Array.isArray(g.aliases) || !g.aliases.length);
   ok('结构：每组 key/zh/en/ja 齐全且 aliases 非空', bad.length === 0,
     groups.length + ' 组，异常 ' + bad.length + ' 组' + (bad.length ? '：' + bad.map(g => g && g.key).join(',') : ''));
-  ok('结构：组数 = 128（122 + 本轮拆出的 gangbang / femdom / maledom / femsub / malesub / giantess 6 组）',
-    groups.length === 128, '实际 ' + groups.length);
+  ok('结构：组数 = 129（122 + 拆出的 gangbang / femdom / maledom / femsub / malesub / giantess 6 组 + 2026-09-22 的 suspended 组）',
+    groups.length === 129, '实际 ' + groups.length);
 
   /* ① 人妻 */
   const cH = u.conceptOf('人妻');
@@ -366,14 +366,27 @@ async function main() {
     const before = JSON.parse(fs.readFileSync(beforeFile, 'utf8')).rows;
     const after = before.map(r => snapshotRow(HS, r.q));
     const diffs = [];
+    /* 第 10 轮：新增信息源不算「红线改动」。
+       快照 tools/concept-snapshot-before.json 拍摄时还没有 lectormanga，于是每个 termFor
+       都多出一个 "lectormanga" 键，被逐字节比对判成差异。这里只在「改前/改后都是纯标量映射」
+       （termFor / ehentaiTerm 这类）时忽略「改后新增的键」；改前有、改后少了仍然报错。 */
+    const scalarMap = o => !!o && typeof o === 'object' && !Array.isArray(o) &&
+      Object.keys(o).every(k => o[k] === null || typeof o[k] !== 'object');
+    const dropNewKeys = (b, a) => {
+      if (!(scalarMap(b) && scalarMap(a))) return a;
+      const copy = Object.assign({}, a);
+      Object.keys(copy).forEach(k => { if (!(k in b)) delete copy[k]; });
+      return copy;
+    };
     before.forEach((b, i) => {
       const a = after[i];
       const bs = JSON.stringify(b), as = JSON.stringify(a);
       if (bs === as) return;
       const keys = Array.from(new Set(Object.keys(b).concat(Object.keys(a))));
       keys.forEach(k => {
-        if (JSON.stringify(b[k]) !== JSON.stringify(a[k])) {
-          diffs.push(b.q + ' · ' + k + '\n    改前: ' + JSON.stringify(b[k]) + '\n    改后: ' + JSON.stringify(a[k]));
+        const bv = b[k], av = dropNewKeys(b[k], a[k]);
+        if (JSON.stringify(bv) !== JSON.stringify(av)) {
+          diffs.push(b.q + ' · ' + k + '\n    改前: ' + JSON.stringify(bv) + '\n    改后: ' + JSON.stringify(av));
         }
       });
     });

@@ -9,6 +9,8 @@ rem   -Status/-Stop  -> window stays open so you can read the output
 rem   failure        -> window stays open so you can copy the error back
 rem
 rem Usage: double-click, or: start-engine.cmd -Status / -Stop / -Port 8899 / -Foreground / -KeepOpen
+rem        relay setup (one-time): -RelaySetup (force re-run) / -NoRelaySetup (skip this run) /
+rem                                -ResetRelaySetup (clear the "already asked" state and ask again)
 setlocal
 cd /d "%~dp0"
 

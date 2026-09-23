@@ -29,20 +29,49 @@
   --shadow:        0 24px 60px -28px rgba(0,0,0,.95);
   --shadow-sm:     0 8px 24px -14px rgba(0,0,0,.8);
   --ring:          0 0 0 2px rgba(255,77,141,.35);
-  /* 液态玻璃（搜索条 + 拉手）：深色主题
-     第 2 轮「透明化」：填充整体压到几乎看不见，轮廓只靠 blur + 极淡亮边勾勒 */
-  --glass-fill:      rgba(255,255,255,.028);
-  --glass-fill-hi:   rgba(255,255,255,.05);
+  /* 液态玻璃（搜索条 + 拉手 + 黑话泡泡）：深色主题
+     第 5 轮「iOS 液态玻璃化」：材质拆成六件套 —— 透光底 / 环境折射 / 光学边缘 /
+     镜面边光 + 底部反光 + 内部雾气 / 厚投影 / 背景磨砂。
+     第 2 轮把填充压到近乎透明（.028），在纯色深底上等于没有材质（看不出玻璃），
+     这一轮把底抬回来、把亮边与投影做实，并让搜索框与黑话泡泡共用同一条材质规则
+     （见 .hs-searchbar, .hs-searchbar > .hs-slang-bubble 那一条），改一处两边同时变。 */
+  --glass-fill:      rgba(255,255,255,.062);
+  --glass-fill-hi:   rgba(255,255,255,.090);
+  --glass-float:     rgba(255,255,255,.15);
   --glass-seam:      rgba(255,255,255,.02);
+  --glass-rim:       rgba(255,255,255,.16);
   --glass-rim-top:   rgba(255,255,255,.14);
   --glass-rim-bot:   rgba(255,255,255,.03);
-  --glass-inner:     rgba(255,255,255,.08);
+  --glass-inner:     rgba(255,255,255,.42);
+  --glass-edge-bot:  rgba(255,255,255,.07);
+  --glass-bloom:     rgba(255,255,255,.05);
+  --glass-top:       rgba(255,255,255,.10);
   --glass-sheen:     rgba(255,255,255,.055);
-  --glass-drop:      0 16px 34px -24px rgba(0,0,0,.45), 0 1px 6px -4px rgba(0,0,0,.3);
+  --glass-drop:      0 18px 40px -22px rgba(0,0,0,.85), 0 2px 10px -5px rgba(0,0,0,.55);
+  --glass-blur:      blur(26px) saturate(190%) brightness(1.08);
+  --glass-tint:      transparent;
+  /* 环境折射：玻璃里透出来的一点环境色（取自 .hs-bg 的 accent 粉 / accent-2 紫） */
+  --glass-refract:
+    radial-gradient(120% 90% at 6% 0%, color-mix(in srgb, var(--accent) 13%, transparent) 0%, transparent 58%),
+    radial-gradient(130% 92% at 97% 100%, color-mix(in srgb, var(--accent-2) 12%, transparent) 0%, transparent 60%);
   --glass-btn:       rgba(255,255,255,.055);
   /* 搜索框上沿那条「极细线 + 微光」 */
   --glass-line:      rgba(255,255,255,.10);
   --glass-line-glow: rgba(255,255,255,.20);
+  /* 第 10 轮 ③：测光阴影（灯走到哪边，另一边就压暗）—— ::after 是 screen 混合只会加亮，
+     想让对侧「暗下去而不是发光」必须另起一层 multiply 用的深色（见 .hs-sb-shade）。 */
+  --glass-shade:     rgba(0,0,0,.55);
+  /* 第 18 轮 ①：测光「强度包络」。细框微光（.hs-sheet-grab::before 的 hs-line-glow）
+     在时间线两头（0% / 100%）是 opacity:0 —— 也就是用户说的「微光在两头消失」。
+     微光都消失了，搜索框上的测光不该还在满亮扫动，所以给灯层（::after）与测光阴影层
+     （.hs-sb-shade）各加一条同样 3.6s ease-in-out infinite alternate 的 opacity 包络：
+     两头落到 --sb-meter-floor / --sb-shade-floor（光照感暗下去、只剩基础玻璃材质），
+     微光进入平台期（18%-82%）时回到峰值。地板值刻意不同：灯压得更狠（.30），
+     阴影留一点（.26）免得两头变成一块死板的平玻璃。 */
+  --sb-meter-peak:   .85;   /* 灯层峰值（原 ::after 的 opacity: .85） */
+  --sb-meter-floor:  .30;   /* 灯层谷值（微光在两头隐没时） */
+  --sb-shade-peak:   1;     /* 阴影层峰值（原是默认 1） */
+  --sb-shade-floor:  .26;   /* 阴影层谷值 */
   --panic-bg:      #05050a;
   --shimmer:       linear-gradient(100deg, transparent 20%, rgba(255,255,255,.075) 45%, transparent 70%);
   --font: "Inter var", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI Variable",
@@ -64,19 +93,37 @@ html[data-theme="light"] {
   --fg-3:          #8b8c9e;
   --shadow:        0 24px 60px -30px rgba(30,30,60,.35);
   --shadow-sm:     0 8px 24px -16px rgba(30,30,60,.3);
-  /* 液态玻璃（搜索条 + 拉手）：浅色主题 —— 靠更透明的白面 + 极淡描边产生「光学边缘」 */
-  --glass-fill:      rgba(255,255,255,.40);
-  --glass-fill-hi:   rgba(255,255,255,.58);
+  /* 液态玻璃（搜索条 + 拉手 + 黑话泡泡）：浅色主题 —— 更实的白面 + 镜面高光边
+     与深色主题同名同义，只是数值按浅色调过（亮边要更亮、暗边要更淡，否则白玻璃糊成一片） */
+  --glass-fill:      rgba(255,255,255,.52);
+  --glass-fill-hi:   rgba(255,255,255,.66);
+  --glass-float:     rgba(255,255,255,.80);
   --glass-seam:      rgba(255,255,255,.26);
+  --glass-rim:       rgba(255,255,255,.72);
   --glass-rim-top:   rgba(255,255,255,.55);
   --glass-rim-bot:   rgba(16,16,32,.07);
-  --glass-inner:     rgba(255,255,255,.5);
+  --glass-inner:     rgba(255,255,255,.92);
+  --glass-edge-bot:  rgba(16,16,32,.06);
+  --glass-bloom:     rgba(255,255,255,.55);
+  --glass-top:       rgba(255,255,255,.30);
   --glass-sheen:     rgba(255,255,255,.4);
-  --glass-drop:      0 16px 34px -26px rgba(30,30,70,.20), 0 1px 6px -4px rgba(30,30,70,.12);
+  --glass-drop:      0 18px 40px -24px rgba(30,30,70,.30), 0 2px 10px -5px rgba(30,30,70,.16);
+  --glass-blur:      blur(26px) saturate(170%) brightness(1.02);
+  --glass-tint:      transparent;
+  --glass-refract:
+    radial-gradient(120% 90% at 6% 0%, color-mix(in srgb, var(--accent) 9%, transparent) 0%, transparent 58%),
+    radial-gradient(130% 92% at 97% 100%, color-mix(in srgb, var(--accent-2) 8%, transparent) 0%, transparent 60%);
   --glass-btn:       rgba(255,255,255,.46);
   /* 搜索框上沿那条「极细线 + 微光」 */
   --glass-line:      rgba(16,16,32,.10);
   --glass-line-glow: rgba(16,16,32,.10);
+  /* 第 10 轮 ③：浅色主题的测光阴影（白玻璃压暗要更轻，否则一压就发灰发脏） */
+  --glass-shade:     rgba(16,16,32,.26);
+  /* 第 18 轮 ①：浅色主题的强度包络（soft-light 混合本来就淡，谷值留高一点，别把框压没了） */
+  --sb-meter-peak:   .9;
+  --sb-meter-floor:  .36;
+  --sb-shade-peak:   1;
+  --sb-shade-floor:  .32;
   --panic-bg:      #eef0f5;
   --shimmer:       linear-gradient(100deg, transparent 20%, rgba(20,20,40,.05) 45%, transparent 70%);
 }
@@ -375,6 +422,7 @@ html.hs-top-auto .hs-top:focus-within { transform: none; }
 /* 设置入口要一眼能找到：顶栏按钮补图标 + 「设置」文字（之前是个空方块），页脚那个也带图标 */
 .hs-icon-btn-label {
   width: auto; height: 36px; display: inline-flex; align-items: center; gap: 6px;
+  flex: none;   /* 顶栏 .hs-top-actions 是 flex-wrap: wrap ⇒ 不许被挤压（挤了就看不到红点角标） */
   padding: 0 11px 0 10px;
   color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 45%, transparent);
   background: color-mix(in srgb, var(--accent-2) 12%, transparent);
@@ -403,22 +451,40 @@ html.hs-top-auto .hs-top:focus-within { transform: none; }
 }
 .hs-sub { color: var(--fg-3); font-size: 13.5px; margin-bottom: 22px; }
 
-/* 搜索框 —— 液态玻璃（Liquid Glass）主体
-   第 2 轮：填充压到近乎透明，只靠 blur(20px) + 极淡亮边/极淡外阴影勾出轮廓
+/* --------------------------------------------------------------------------
+   液态玻璃「材质」：搜索框 与 黑话提示泡泡（.hs-slang-bubble）共用同一条规则
+   （第 5 轮）为什么共用：这两个是同一块玻璃的大小两号 —— 以前各写各的配方，改一处另
+   一处就漂。现在材质只在这里定义一次，两边永远同步（tools/glass-check.js 守住这条）。
+   六件套：透光底(background-color) / 环境折射(background-image) / 光学边缘(border)
+          / 镜面边光 + 底部反光 + 内部雾气(box-shadow inset) / 厚投影 / 背景磨砂(backdrop-filter)
+   ⚠ --glass-tint 必须在这里给兜底值：var() 未定义会让整条 background-image 失效
+     （不是退化成透明，而是整条声明变成 none），所以默认 transparent 写在规则里。
+   ⚠ 这里不设 height、不碰 padding/border-radius：几何归 filters.js。 */
+.hs-searchbar,
+.hs-searchbar > .hs-slang-bubble {
+  --glass-tint: transparent;
+  background-color: var(--glass-fill);
+  background-image:
+    linear-gradient(var(--glass-tint), var(--glass-tint)),
+    var(--glass-refract),
+    linear-gradient(180deg, var(--glass-top), rgba(255,255,255,0) 58%);
+  border: 1px solid var(--glass-rim);
+  box-shadow:
+    inset 0 1px 0 var(--glass-inner),
+    inset 0 -1px 0 var(--glass-edge-bot),
+    inset 0 0 22px var(--glass-bloom),
+    var(--glass-drop);
+  -webkit-backdrop-filter: var(--glass-blur);
+          backdrop-filter: var(--glass-blur);
+}
+
+/* 搜索框本体 —— 只留几何与过渡，材质见上一条共用规则
    注意：不设 height、不动 padding/border-radius 之外的几何，避免与 filters.js 冲突 */
 .hs-searchbar {
   position: relative; display: flex; align-items: center; gap: 8px;
   padding: 8px 8px 8px 14px;
-  background: var(--glass-fill);
-  border: 1px solid var(--border);
   border-radius: 999px;
-  box-shadow:
-    inset 0 1px 0 var(--glass-inner),
-    inset 0 -1px 0 var(--glass-rim-bot),
-    var(--glass-drop);
-  -webkit-backdrop-filter: blur(20px) saturate(190%);
-          backdrop-filter: blur(20px) saturate(190%);
-  transition: background .18s, border-color .18s, box-shadow .18s;
+  transition: background-color .18s, border-color .18s, box-shadow .18s;
 }
 /* 搜索框上沿的「补面」：盖住拉手细线与搜索框之间那道 8px 缝（+2px 压边）。
    ⚠ 必须挂在 .hs-searchbar（而不是 .hs-searchwrap）上：搜索条是容器里最后一行内容，
@@ -426,59 +492,180 @@ html.hs-top-auto .hs-top:focus-within { transform: none; }
    实际落在搜索框底部，把底部压成一块方角实底（第 4 轮修掉的正是这个）。
    挂在搜索条上并改用 bottom:100% 之后，它永远贴着搜索框【上沿】，
    拉出筛选面板（容器 padding-top 被 JS 撑大）时也跟着搜索条一起走。
-   填充只用既有的 --glass-seam（近乎透明），材质靠 backdrop-filter 磨砂，没有新的不透明色。 */
+   填充只用既有的 --glass-seam（近乎透明），材质靠 backdrop-filter 磨砂，没有新的不透明色。
+   第 6 轮：补面多了一层「跟上面细线同相位」的微光，见下面的背景层与 hs-seam-glow。 */
 .hs-searchbar::before {
   content: ""; position: absolute;
   left: 0; right: 0; bottom: 100%; height: 10px;
   z-index: 0; pointer-events: none;
-  background: var(--glass-seam);
+  background-color: var(--glass-seam);
+  /* 顶部微光：把上面细线（.hs-sheet-grab::before）那道 96px 宽的循环微光，在搜索框上沿再
+     铺一道同相位的 —— 同一枚 --glass-line-glow 令牌、同样 96px 宽、同样 3.6s ease-in-out
+     infinite；两个元素都是首屏静态 HTML（index.html:88 与 :250），两条动画在首绘同一帧起跑，
+     所以两道光是一起走的。落点取补面的【底边】(100%)，正好压在搜索框上沿那条 1px 亮边上，
+     读起来就是「细线扫过的光落到了搜索框顶上」。只动 background-position、不动 opacity：
+     补面本身还要盖住那道 8px 缝，一改 opacity 会把缝闪出来。 */
+  background-image: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--glass-line-glow) 42%, transparent) 38%,
+    var(--glass-line-glow) 50%,
+    color-mix(in srgb, var(--glass-line-glow) 42%, transparent) 62%,
+    transparent 100%);
+  background-size: 96px 100%;
+  background-repeat: no-repeat;
+  background-position: -96px 100%;
+  /* 第 10 轮 ③：加 alternate（与上面细线同一条往返时间线），否则走到头会瞬跳回起点 */
+  animation: hs-seam-glow 3.6s ease-in-out infinite alternate;
   -webkit-backdrop-filter: blur(20px) saturate(190%);
           backdrop-filter: blur(20px) saturate(190%);
-  transition: background .2s, opacity .2s;
+  transition: background-color .2s, opacity .2s;
 }
-/* 拖拽 / 拉出时补面提亮 —— 纯颜色变化，不碰任何尺寸 */
-.hs-searchwrap[data-dragging="1"] .hs-searchbar::before { background: var(--glass-fill); }
-.hs-searchwrap:has(.hs-sheet[data-open="1"]) .hs-searchbar::before { background: var(--glass-fill); }
-/* 斜向折射高光：很淡，只做「液感」，不做彩色渐变海报 */
+@keyframes hs-seam-glow {
+  from { background-position: -96px 100%; }
+  to   { background-position: calc(100% + 96px) 100%; }
+}
+/* 拖拽 / 拉出时补面提亮 —— 纯颜色变化，不碰任何尺寸；⚠ 只能用 background-color：
+   background 简写会把上面那层微光（background-image）整条抹掉。 */
+.hs-searchwrap[data-dragging="1"] .hs-searchbar::before { background-color: var(--glass-fill); }
+.hs-searchwrap:has(.hs-sheet[data-open="1"]) .hs-searchbar::before { background-color: var(--glass-fill); }
+/* 光圈 / 测光灯光（第 7 / 8 / 9 轮，需求逐轮收窄）
+   第 7 轮：「我希望是整个搜索框，而不是顶部紧跟着细框微光的一小部分」
+   第 8 轮：「现在搜索框上的光照效果是一个光扇，这不是我想要的」
+   第 9 轮（当前口径，用户原话）：「搜索框的侧光效果不是整个框高光从高到暗，
+   而是相当于有一个随着细框的微光位置而变化的测光光源打在整个搜索框上」
+   ⇒ 所以既不是 radial 的窄扇，也不是「整框从亮到暗的单向渐变」，而是：
+     · ① 一盏**又宽又高的柔光灯**：亮心随细框微光左右移动（关键帧只推横轴），
+          灯的覆盖范围远大于搜索框（56% × 200% 半径）⇒ 整条框都在这盏灯下；
+     · ② 斜向折射高光（液感）保持不动；
+     · ③ 一层很淡的**基础照明**铺满整条框（处处不为 0）⇒ 任何一帧都不存在
+          「背光边一片死黑」，也就不是「从高到暗的渐变」。
+   三层同看 = 「一盏会走的灯打在整条搜索框上」。与细线（.hs-sheet-grab::before）
+   共用同一枚 --glass-line-glow 与同一条 3.6s ease-in-out infinite 时间线。
+   ⚠ 位移必须靠 hs-box-glow 关键帧写【三个】background-position：
+     background-position 是三层共用的属性，只写一个值会把另外两层一起挪走。 */
 .hs-searchbar::after {
   content: ""; position: absolute; inset: 1px; z-index: 0;
   border-radius: inherit; pointer-events: none;
-  background:
+  background-image:
+    radial-gradient(56% 200% at 50% 46%,
+      color-mix(in srgb, var(--glass-line-glow) 96%, transparent) 0%,
+      color-mix(in srgb, var(--glass-line-glow) 52%, transparent) 34%,
+      color-mix(in srgb, var(--glass-line-glow) 20%, transparent) 64%,
+      color-mix(in srgb, var(--glass-line-glow) 7%, transparent) 88%),
     linear-gradient(104deg,
       var(--glass-sheen) 0%,
       rgba(255,255,255,0) 38%,
       rgba(255,255,255,0) 62%,
       var(--glass-sheen) 100%),
-    linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0) 52%);
-  opacity: .8; mix-blend-mode: screen;
+    linear-gradient(180deg,
+      rgba(255,255,255,.06) 0%,
+      rgba(255,255,255,.028) 46%,
+      rgba(255,255,255,.034) 100%);
+  background-size: 200% 100%, 100% 100%, 100% 100%;
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-position: 100% 0, 0 0, 0 0;
+  /* 第 18 轮 ①：两条动画共用同一条 3.6s ease-in-out infinite alternate 时间线 ——
+     hs-box-glow 推灯的横轴（扫过去再扫回来），hs-meter-dim 同步推强度。 */
+  animation: hs-box-glow 3.6s ease-in-out infinite alternate,
+             hs-meter-dim 3.6s ease-in-out infinite alternate;
+  opacity: var(--sb-meter-peak); mix-blend-mode: screen;
   transition: opacity .18s;
 }
-html[data-theme="light"] .hs-searchbar::after { mix-blend-mode: soft-light; opacity: .9; }
+/* 只动横轴：100% = 两倍宽底片的左端（灯在左侧，与细框微光同一相位起跑），
+   0% = 右端（灯扫到右侧）；两端之间往返，整条框始终在这盏灯的光里。
+   （两倍宽底片 + 居中灯心：灯在屏幕上的位置 = 框宽 × (1 − 位置百分比)。）
+   第 10 轮 ③：加了 alternate（见下面的注释）—— 关键帧本身不动，所以这里是「左 → 右 → 左」往返。 */
+@keyframes hs-box-glow {
+  from { background-position: 100% 0, 0 0, 0 0; }
+  to   { background-position: 0% 0, 0 0, 0 0; }
+}
+/* 第 18 轮 ①（用户原话）：「起始页细框的微光在两头消失后，搜索框对应的测光光照感应该暗下来」。
+   细框微光的 hs-line-glow 在 0% / 100% 是 opacity:0、18%-82% 是 opacity:1（同一枚 3.6s
+   ease-in-out infinite alternate 时间线），所以测光强度照抄同一条包络：两头落到地板、
+   平台期满亮 —— 两盏灯一起「进出」，而不是微光没了、测光还在满亮扫。
+   ⚠ 只动 opacity：位置仍由 hs-box-glow / hs-sb-shade 推，两件事互不干扰。 */
+@keyframes hs-meter-dim {
+  0%   { opacity: var(--sb-meter-floor); }
+  18%  { opacity: var(--sb-meter-peak); }
+  82%  { opacity: var(--sb-meter-peak); }
+  100% { opacity: var(--sb-meter-floor); }
+}
+html[data-theme="light"] .hs-searchbar::after { mix-blend-mode: soft-light; opacity: var(--sb-meter-peak); }
+/* ---- 第 10 轮 ③：测光阴影层（用户原话）----
+   「搜索框的侧光效果开始和结束不够自然；我需要微光到右边时搜索框左边会暗下去而不是发光，
+    微光到左边也是一样。」
+   两件事：
+   · ① 时间线：hs-line-glow / hs-seam-glow / hs-box-glow 原来是 `infinite` 单向循环，
+     走到头会瞬跳回起点（真机实测：整框测光的位置在 0.9s→1.2s 之间从 0.77% 跳到 99.92%，
+     一整条框的亮度跟着闪一下；上沿那道微光同样会从最右瞬跳回最左）——这就是「开始和
+     结束不够自然」。四个动画一起加 `alternate` ⇒ 每盏灯都是「扫过去再扫回来」，两端都不再有断点，
+     而且它们仍是同一条 3.6s ease-in-out 时间线（同一帧起跑、同相位）。
+   · ② 对侧要真的暗下去：::after 是 `mix-blend-mode: screen`，原理上只会加亮、不可能压暗，
+     所以「左边暗下去」只能另起一层。这一层用 multiply：
+       底片 200% 宽 = 深色 → 中缝透明 → 深色，位置与灯【同向同相位】走
+       ⇒ 灯在屏幕最左（位置 100%）时，框里显示的是底片右半边 = 左边透明、右边压暗；
+          灯在最右（位置 0%）时反过来 = 左边压暗；
+          灯到正中（位置 50%）时两侧同暗、只有中间亮 —— 读起来就是一个测光光源，
+          而不是「整条框一起发光」。
+   它必须是 .hs-searchbar 的子元素（才能 inherit 圆角 + 覆盖整条框），
+   绝对定位、inset 与 ::after 一致、不吃指针；z-index 归 0 ⇒ 排在灯（::after）之下。
+   第 10 轮真机实测（tools/glow-truth-after3.json）：只开灯时**对侧仍比「无灯基线」亮 +16**
+   （::after 的基础照明层罩住整条框，screen 只会加亮），所以深色令牌必须够重，
+   才能把对侧压回基线以下 —— .40 时净 +4.2（还是发光），.55 才行。 */
+.hs-searchbar > .hs-sb-shade {
+  position: absolute; inset: 1px;
+  /* ★z-index: 1 是刻意的：::after（灯）的 z-index 是 auto(0)，阴影层要**压在灯之上**。
+     真机实测（tools/glow-truth-after4.json）压在灯下面时没用：灯的三层里有一层基础照明
+     罩住整条框，screen 混合把对侧又提回「无灯基线 +0.16」，等于还是整条发光；
+     改成 1 之后阴影乘的就是「已经被灯照亮的玻璃」⇒ 对侧才真的暗下去。
+     内容子元素同样是 z-index:1 但树序在后（阴影层是 form 的第一个子元素）⇒ 图标/输入框/
+     按钮仍画在阴影之上，不会被压暗。 */
+  z-index: 1;
+  border-radius: inherit; pointer-events: none;
+  background-image: linear-gradient(90deg,
+    var(--glass-shade) 0%,
+    transparent 50%,
+    var(--glass-shade) 100%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0;
+  mix-blend-mode: multiply;
+  /* 第 18 轮 ①：测光阴影也跟着强度包络走（同一条 3.6s ease-in-out infinite alternate）：
+     微光在两头隐没时，对侧的压暗也一起退掉 —— 否则会出现「灯已经暗了、半边框还黑着」。 */
+  animation: hs-sb-shade 3.6s ease-in-out infinite alternate,
+             hs-shade-dim 3.6s ease-in-out infinite alternate;
+  opacity: var(--sb-shade-peak);
+}
+@keyframes hs-sb-shade {
+  from { background-position: 100% 0; }
+  to   { background-position: 0% 0; }
+}
+/* 第 18 轮 ①：阴影层强度包络（与 hs-meter-dim 同相位、同平台期，只是峰值令牌不同） */
+@keyframes hs-shade-dim {
+  0%   { opacity: var(--sb-shade-floor); }
+  18%  { opacity: var(--sb-shade-peak); }
+  82%  { opacity: var(--sb-shade-peak); }
+  100% { opacity: var(--sb-shade-floor); }
+}
 .hs-searchbar > * { position: relative; z-index: 1; }
-/* 焦点反馈分两档（第 4 轮：鼠标点击不再出现高光边）
-   · 鼠标 / 触摸点进输入框：只提亮填充 + 图标转 accent —— 不画描边、不画外发光；
+/* 焦点反馈只剩一档（第 6 轮：鼠标 / 触摸点进输入框【不再】提亮整条搜索框）
+   · 鼠标 / 触摸点进输入框：整条搜索框的材质完全不动 —— 不换填充、也不把斜向高光推到满
+     （这两条就是用户说的「一点出光标整条框就亮起来」的高光，已按需求去掉）；
    · 键盘 Tab 进来（app.js 在按下 Tab 时给 <html> 挂 .hs-kb）：才画 accent 描边 + 外发光。
    为什么不用 :focus-visible 区分键鼠：Chromium 里文本输入框在【鼠标点击】时也会匹配
    :focus-visible（本机实测 qFocusVisible=true、qShadow 出现 2px 粉环），所以纯 CSS 做不到
-   「点击不高光、键盘有描边」；改用 Tab 触发的一次性开关，行为对齐 :focus-visible 的本意。 */
-.hs-searchbar:focus-within {
-  background: var(--glass-fill-hi);
-  border-color: var(--border);
-  box-shadow:
-    inset 0 1px 0 var(--glass-inner),
-    inset 0 -1px 0 var(--glass-rim-bot),
-    var(--glass-drop);
-}
+   「点击不高光、键盘有描边」；改用 Tab 触发的一次性开关，行为对齐 :focus-visible 的本意。
+   指针按下会摘掉 .hs-kb（app.js bindFocusModality），所以点过之后不会残留键盘描边。 */
 html.hs-kb .hs-searchbar:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--glass-rim));
   box-shadow:
     inset 0 1px 0 var(--glass-inner),
-    inset 0 -1px 0 var(--glass-rim-bot),
+    inset 0 -1px 0 var(--glass-edge-bot),
+    inset 0 0 22px var(--glass-bloom),
     var(--glass-drop),
     0 0 0 1.5px color-mix(in srgb, var(--accent) 34%, transparent),
     0 6px 20px -8px color-mix(in srgb, var(--accent) 42%, transparent);
 }
-.hs-searchbar:focus-within::after { opacity: 1; }
 /* 输入框自身不再吃全局 :focus-visible 的焦点环：那圈 2px 粉环在鼠标点击时同样会亮
    （用户说的「点击输入时一圈高光」）。键盘焦点统一改画在整条搜索框上（见上）。 */
 #q:focus-visible { box-shadow: none; }
@@ -488,11 +675,15 @@ html.hs-kb .hs-searchbar:focus-within {
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.6-3.6'/%3E%3C/svg%3E") center/contain no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.6-3.6'/%3E%3C/svg%3E") center/contain no-repeat;
 }
-.hs-searchbar:focus-within .hs-sb-ico { background: var(--accent); }
+/* 第 6 轮：放大镜图标不再跟着焦点转 accent —— 它保持上面那条规则里的主题色 --fg-3 */
 #q {
   flex: 1; min-width: 0; border: 0; background: none; outline: none;
   font-size: 16px; padding: 9px 2px;
-  color: var(--fg); caret-color: var(--accent);
+  color: var(--fg);
+  /* 第 6 轮：光标不再用品牌粉 —— 跟随系统。支持系统强调色的浏览器用 AccentColor；
+     不支持时整条声明失效，自动落到上一行的系统默认（= 当前 color，随深浅主题走）。 */
+  caret-color: auto;
+  caret-color: AccentColor;
 }
 #q::placeholder { color: var(--fg-3); opacity: 1; }
 #q::-webkit-search-cancel-button { display: none; }
@@ -519,16 +710,27 @@ html.hs-kb .hs-searchbar:focus-within {
   background: var(--grad); color: #fff; font-size: 10px; font-weight: 700;
   display: inline-grid; place-items: center;
 }
-/* 搜索按钮：同材质玻璃小胶囊（保留品牌渐变，叠一层顶部高光 + 折射） */
+/* 搜索按钮：同材质玻璃小胶囊（第 6 轮：不透明的品牌渐变降成「染色玻璃」——
+   品牌配色（accent→accent-2）与高/暗光逻辑（顶部内高光、底部内暗边、主题色外发光、
+   斜向折射、hover 提亮上浮、active 压回、busy 扫光）全部按原样保留，只把「实心」换成
+   「透光染色 + 磨砂」。光学边缘用 inset 0 0 0 1px 而不是 border：本元素没有 border，
+   走 padding 撑盒模型，加真边框会让整个胶囊长 2px。 */
 .hs-sb-go {
   position: relative; flex: none; overflow: hidden;
   padding: 10px 24px; border-radius: 999px; font-weight: 650; font-size: 14px;
-  background: var(--grad); color: #fff;
-  -webkit-backdrop-filter: blur(6px) saturate(150%);
-          backdrop-filter: blur(6px) saturate(150%);
+  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.28);
+  background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background-image:
+    linear-gradient(180deg, rgba(255,255,255,.20), rgba(255,255,255,0) 54%),
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--accent) 74%, transparent) 0%,
+      color-mix(in srgb, var(--accent-2) 68%, transparent) 100%);
+  -webkit-backdrop-filter: var(--glass-blur);
+          backdrop-filter: var(--glass-blur);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.38),
-    inset 0 -1px 0 rgba(0,0,0,.16),
+    inset 0 0 0 1px color-mix(in srgb, #fff 26%, transparent),
+    inset 0 1px 0 rgba(255,255,255,.52),
+    inset 0 -1px 0 rgba(0,0,0,.22),
     0 10px 24px -12px rgba(255,77,141,.85);
   transition: transform .16s, filter .16s, box-shadow .16s;
 }
@@ -1099,17 +1301,9 @@ html[data-theme="dark"] .hs-set-ico { background: rgba(255,255,255,.05); }
 .hs-about li::before { content: "•"; color: var(--accent); }
 
 /* ---------- 最近浏览（recent.js） ----------
-   顶栏那枚按钮复用 .hs-icon-btn / .hs-icon-btn-label；
+   顶栏那枚按钮就是一个纯 .hs-icon-btn（第 9 轮：用户要求去掉文字与条数角标，
+   所以这里不再有 .hs-recent-badge 的样式）；
    面板复用 .hs-modal 骨架，只有列表行是本功能自己的样式（前缀 .hs-rec-*）。 */
-.hs-recent-badge {
-  min-width: 16px; height: 16px; padding: 0 4px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 1;
-  color: #fff; background: var(--accent);
-  box-shadow: 0 0 0 1px var(--panel-solid);
-}
-.hs-icon-btn:hover .hs-recent-badge { background: var(--accent-2); }
-
 .hs-rec-card { width: min(720px, 100%); }
 .hs-rec-count {
   font-size: 11.5px; color: var(--fg-3);
@@ -1340,7 +1534,9 @@ html.hs-sheet-open .hs-hero .hs-sub { opacity: 0; transform: translateY(-6px); p
   background-repeat: no-repeat;
   background-position: -96px 0;
   opacity: 0;
-  animation: hs-line-glow 3.6s ease-in-out infinite;
+  /* 第 10 轮 ③：加 alternate —— 单向 infinite 走到头会瞬跳回起点，四盏灯（细线 / 上沿补面 /
+     整框测光 / 阴影）必须同一条时间线同方向往返，才不会各走各的、也才没有断点。 */
+  animation: hs-line-glow 3.6s ease-in-out infinite alternate;
 }
 @keyframes hs-line-glow {
   0%   { background-position: -96px 0; opacity: 0; }
@@ -1557,6 +1753,48 @@ html[data-theme="dark"] .hs-seg { background: rgba(0,0,0,.28); }
 /* 命中的检索策略（作品名 / IP 角色 / 体裁题材） */
 .hs-intent { color: var(--accent); font-weight: 650; }
 
+/* ---------- 右下角「迅速回顶」按钮 ----------
+   出现条件由 JS 写在 data-show 上（阈值 = max(480px, 视口高×0.6)，见 assets/js/totop.js），
+   这里只管表现：隐藏时同时关掉 visibility / pointer-events，并留 10px 下坠 + 缩小做入场。
+   层高 120 = 吸顶栏 40、卡片堆叠 80~97 之上，卡片放大器 260 / 链面板 320 / 阅读器 340
+   之下 —— 弹窗打开时被盖住，不会压在放大后的卡片上。
+   动效降级交给上方全局规则（html.hs-nomotion / prefers-reduced-motion 把 transition 压到瞬时）。 */
+.hs-totop {
+  position: fixed; right: 22px; bottom: 24px; z-index: 120;
+  display: grid; place-items: center;
+  width: 46px; height: 46px; padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
+  color: var(--fg-2);
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
+  box-shadow: var(--shadow-sm);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateY(10px) scale(.86);
+  transition: opacity .18s ease, transform .18s ease, visibility .18s linear,
+              background .16s ease, border-color .16s ease, color .16s ease;
+}
+.hs-totop[data-show="1"] {
+  opacity: 1; visibility: visible; pointer-events: auto;
+  transform: none;
+}
+.hs-totop svg { width: 21px; height: 21px; display: block; }
+.hs-totop:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-solid));
+  transform: translateY(-2px);
+}
+.hs-totop:active { transform: translateY(0) scale(.94); }
+.hs-totop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 640px) {
+  /* 窄屏贴边近一点、小一圈，别压住卡片右下角的操作按钮 */
+  .hs-totop { right: 14px; bottom: 16px; width: 42px; height: 42px; }
+  .hs-totop svg { width: 19px; height: 19px; }
+}
+
 /* 放大器入场：**线性**放缩（用户指定的手感），起点数值由 JS 写进自定义属性。
    全程保持卡片自己的倾斜角、**结束也不回正** —— 斜着摊开的卡片就放大成一张同样斜着的大卡片；
    轴心是卡片中心（transform-origin: center），所以看着就是"这张卡片原地长大"。 */
@@ -1720,7 +1958,20 @@ html[data-theme="dark"] .hs-csrow { background: rgba(0,0,0,.24); }
    也必须真正停住 —— 只保留静态星点 / 静态光晕，否则 0.001ms 的循环等于高频闪烁。 */
 html.hs-nomotion .hs-sb-go[data-busy="1"] .hs-sb-ring { display: none; }
 html.hs-nomotion .hs-sb-go:hover { transform: none; }
-html.hs-nomotion .hs-searchbar::after { opacity: .85; }
+/* 搜索框里那道满高扫光：同样停住，落回正中一段静态柔光。
+   降级只停「动」，不抹掉光 —— 和下面细线、上沿补面用的是同一套降级逻辑 */
+html.hs-nomotion .hs-searchbar::after {
+  animation: none;
+  background-position: 50% 0, 0 0, 0 0;
+  /* 第 18 轮 ①：降级时停住的必须是【峰值】亮度 —— 包络只在有动画时才有意义 */
+  opacity: var(--sb-meter-peak);
+}
+/* 第 10 轮 ③：测光阴影也停住，落回正中（灯在正中 ⇒ 两侧同暗，正好是静态的正确解） */
+html.hs-nomotion .hs-searchbar > .hs-sb-shade {
+  animation: none;
+  background-position: 50% 0;
+  opacity: var(--sb-shade-peak);
+}
 /* 星点：停在静态位置与中间亮度上，闪烁完全消失 */
 html.hs-nomotion .hs-bg::before {
   animation: none;
@@ -1753,11 +2004,27 @@ html.hs-nomotion .hs-sheet-grab::before {
   opacity: 1;
   background-position: 50% 0;
 }
+/* 搜索框上沿那道同步微光：同样停住，落回补面中段（不动 opacity，8px 缝还得继续盖） */
+html.hs-nomotion .hs-searchbar::before {
+  animation: none;
+  background-position: 50% 100%;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .hs-sb-go[data-busy="1"] .hs-sb-ring { display: none; }
   .hs-sb-go:hover { transform: none; }
-  .hs-searchbar::after { opacity: .85; }
+  .hs-searchbar::after {
+    animation: none;
+    /* 同上：落回正中一段静态柔光，光不消失、只是不再扫动（第 18 轮 ①：用峰值令牌） */
+    background-position: 50% 0, 0 0, 0 0;
+    opacity: var(--sb-meter-peak);
+  }
+  /* 第 10 轮 ③：测光阴影同步停住（与 html.hs-nomotion 那条同款） */
+  .hs-searchbar > .hs-sb-shade {
+    animation: none;
+    background-position: 50% 0;
+    opacity: var(--sb-shade-peak);
+  }
   /* 背景星点：停止闪烁，保留静态星点 */
   .hs-bg::before {
     animation: none; opacity: .6; filter: none;
@@ -1780,6 +2047,10 @@ html.hs-nomotion .hs-sheet-grab::before {
     animation: none;
     opacity: 1;
     background-position: 50% 0;
+  }
+  .hs-searchbar::before {
+    animation: none;
+    background-position: 50% 100%;
   }
 }
 
@@ -2016,11 +2287,17 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
 .hs-rd-col, .hs-rd-foot { padding-bottom: var(--hs-rd-pad-b); }
 
 /* ---------- 取数据 / 出错 ---------- */
+/* ★这一层只是「正在取回页面」的提示，绝不能吃掉指针★（用户要求：正在读取图片时也能点退出）
+   它是 inset:0 的全屏层、z-index 5，而关闭按钮在它下面的工具条里 —— 不写
+   pointer-events:none 时浏览器会把点击全给这一层，于是「退出」按不到；
+   而 Esc 走键盘、不受命中测试影响，所以症状看起来像「只有退出按钮失灵」。
+   注意这不只是个提示层的问题：长章节的取图动辄好几秒，用户想中途退出时最需要它可点。 */
 .hs-rd-loading {
   position: fixed; inset: 0; z-index: 5;
   display: flex; align-items: center; justify-content: center; gap: 10px;
   font-size: 13px; color: var(--fg-2);
   background: rgba(6,6,10,.66);
+  pointer-events: none;
 }
 .hs-rd-spin {
   width: 18px; height: 18px; border-radius: 50%;
@@ -2081,19 +2358,21 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   scrollbar-gutter: stable;
 }
 
-/* ---------- 放大态：按住拖动 = 平移图片（reader.js 的 panStart / panMove） ----------
-   这一块**只给出可拖的视觉与触屏语义**，位移本身由 JS 写 scrollLeft / scrollTop 完成。
-   · cursor: grab / grabbing —— 让用户一眼看出「这里能按住拖」；
-   · touch-action: none —— 只在 .is-zoom（放大态）下加：单指拖动要交给我们的指针处理，
-     否则浏览器会先拿去做原生滚动；100% 未放大时保持默认，
-     触屏依旧可以用原生滚动翻页（那里本来就不允许拖动平移）。 */
-.hs-rd.is-zoom .hs-rd-pg,
-.hs-rd.is-zoom .hs-rd-col,
-.hs-rd.is-zoom .hs-rd-img { cursor: grab; }
-.hs-rd.is-zoom .hs-rd-pg:active,
-.hs-rd.is-zoom .hs-rd-col:active,
-.hs-rd.is-zoom .hs-rd-img:active { cursor: grabbing; }
-.hs-rd.is-zoom .hs-rd-img img { -webkit-user-drag: none; user-select: none; }
+/* ---------- 按住拖动 = 平移图片（reader.js 的 panStart / panMove） ----------
+   第 7 轮：拖动不再限定放大态（用户要求「任何大小下都应该实现按住鼠标移动图片」），
+   所以下面两条的 .is-zoom 门控拿掉：
+   · cursor: grab / grabbing —— 任何倍率都给出「这里能按住拖」的视觉；
+   · -webkit-user-drag / user-select: none —— 任何倍率都不许触发图片原生拖拽
+     （否则按住一拖就是浏览器拖出半透明缩略图，我们的位移反而被抢走）；
+   · touch-action: none —— **仍然只在 .is-zoom（放大态）下加**：单指拖动交给我们的
+     指针处理；100% 时保持默认，触屏依旧能用原生滚动翻页（那里不需要拖）。 */
+.hs-rd .hs-rd-pg,
+.hs-rd .hs-rd-col,
+.hs-rd .hs-rd-img { cursor: grab; }
+.hs-rd .hs-rd-pg:active,
+.hs-rd .hs-rd-col:active,
+.hs-rd .hs-rd-img:active { cursor: grabbing; }
+.hs-rd .hs-rd-img img { -webkit-user-drag: none; user-select: none; }
 .hs-rd.is-zoom .hs-rd-col,
 .hs-rd.is-zoom[data-dir="h"] .hs-rd-pg { touch-action: none; }
 /* 自动连读插进来的章节分隔条：一次一页模式下就是当前页的标题条 */
@@ -2124,6 +2403,17 @@ html.hs-rd-open, body.hs-rd-open { overflow: hidden; }
   width: 100%; height: 100%; flex: none;
   max-width: none; max-height: none;
   object-fit: contain;
+}
+/* ★第 9 轮：≤100% 时把图片盒子挪到页盒正中★（相对位移，不动布局盒、不产生滚动区间）
+   实测（真机探针）：缩到 80% 时盒子中心偏页盒中心 (-134,-85)、60% 时 (-260,-169)，
+   视口中心对着的内容比例从 0.506 漂到 0.6356 / 0.8544 —— 这就是用户报的
+   「放大缩小图片会出现位置位移」。盒子是块级、宽度 = 100%×倍数，缩小时只会贴着
+   左上角变小，所以必须补 (页盒 − 盒子)/2 的位移把它钉在正中。
+   只在「非放大态」加：放大时盒子比页盒大，居中没有意义，而相对位移会额外撑出可滚区间。 */
+.hs-rd[data-dir="h"]:not(.is-zoom) .hs-rd-img {
+  position: relative;
+  left: calc((100% - 100% * var(--hs-rd-zoom, 1)) / 2);
+  top: calc((100% - 100% * var(--hs-rd-zoom, 1)) / 2);
 }
 /* 章末条浮层露出来时给图片让出空间，保证这一页仍然完整可见 */
 .hs-rd[data-dir="h"].is-chapend .hs-rd-img { padding-bottom: 130px; }
@@ -2298,15 +2588,19 @@ html.hs-nomotion .hs-chain { transition: none; }
   display: flex; align-items: center; gap: 6px;
   max-width: calc(100% - 12px);
   padding: 3px 6px 3px 9px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel-2) 88%, var(--accent));
   color: var(--fg-2);
   font-size: 12.5px; line-height: 1.5;
-  box-shadow: 0 8px 22px -12px rgba(0, 0, 0, .75);
-  -webkit-backdrop-filter: blur(12px) saturate(160%);
-          backdrop-filter: blur(12px) saturate(160%);
   animation: hs-slang-in .16s ease-out;
+  /* 材质来自上面那条共用规则（和搜索框是同一块玻璃），这里只覆盖三件事：
+     ① 更实的底 —— 它是浮在搜索条【之上】的小玻璃，太透就读不清里面的字；
+     ② 淡淡吸一口 accent —— 黑话泡泡自己的颜色身份（搜索框的 --glass-tint 是 transparent）；
+     ③ 更短的磨砂半径 —— 尺寸小，26px 会把泡泡里的字一起糊掉。
+     边框色直接写在这里而不去改 --glass-rim：自定义属性引用自己会成环失效。 */
+  --glass-fill: var(--glass-float);
+  --glass-tint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --glass-blur: blur(18px) saturate(180%) brightness(1.06);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--glass-rim));
 }
 /* 翻到搜索框下方时：贴住搜索框左沿文字结束处，避免被右侧按钮挤掉 */
 .hs-searchbar > .hs-slang-bubble[data-flip="1"] {
@@ -2318,9 +2612,13 @@ html.hs-nomotion .hs-chain { transition: none; }
 .hs-slang-bubble[data-flip="0"]::before {
   content: ""; position: absolute; left: -4px; top: 50%;
   width: 7px; height: 7px; transform: translateY(-50%) rotate(45deg);
-  background: inherit;
-  border-left: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  /* 不用 background: inherit —— 泡泡现在带渐变/折射层，inherit 会把那几层一起继承过来
+     又对不齐。改成「同一层 tint + 同一个底色」，泡泡在自身规则里把 --glass-fill 覆写成
+     --glass-float，伪元素继承自定义属性后自动同步。 */
+  background-color: var(--glass-fill);
+  background-image: linear-gradient(var(--glass-tint), var(--glass-tint));
+  border-left: 1px solid color-mix(in srgb, var(--accent) 40%, var(--glass-rim));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--glass-rim));
 }
 .hs-slang-lead { flex: none; color: var(--fg-3); font-size: 11.5px; white-space: nowrap; }
 .hs-slang-chips { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }

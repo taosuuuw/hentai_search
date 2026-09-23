@@ -384,6 +384,17 @@
     let blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok);
     let blockedNames = blocked.map(r => r.label).join('、');
 
+    /* ★r17★ 在告诉用户「先启动本地网关」之前，先弄清网关到底在不在。
+       真机实测（boot 里 probeNow 在 260ms、probeGateway 在 680ms）：网探针常常**先**把
+       临时结论写进缓存，于是网关明明在跑、E-Hentai / 紳士漫畫 都能搜到，横幅却在叫用户去
+       启动它 —— 用户据此以为「源坏了」。这里补一次同源 /api/ping（上限 1.2s，拿不到就按
+       不在处理），临时文案才说得准。首次探过之后 _probedAt 有值，不会反复重试。 */
+    if (!GW.ok && !GW._probedAt) {
+      try {
+        await Promise.race([GW.probe(true), new Promise(rs => setTimeout(rs, 1200))]);
+      } catch (e) { /* 检测失败就当网关不在 */ }
+    }
+
     let verdict, label, detail;
     if (!navigator.onLine) {
       verdict = 'offline'; label = '离线';
@@ -393,17 +404,28 @@
       detail = '全部目标站点均可连通，无需额外操作。若结果为空，可能是查询词或标签问题。';
     } else if (adultOk > 0) {
       verdict = 'partial'; label = '部分站点受限';
+      /* ★r17★ 这段是**临时结论**（浏览器侧探针最多 3.5s），而真正能把被墙站点打通的
+         /api/diag 要几十秒。以前无论网关在不在，临时文案都叫用户「先启动本地网关」——
+         真机实测：网关明明在跑、E-Hentai / 紳士漫畫 都能搜到，横幅却写着「先启动本地网关」，
+         用户因此以为源坏了。网关已连接时改说人话（先例见 line 304 的 gwHint）。 */
       detail = adultOk + '/' + adult.length + ' 个目标站点可达，其余（' + blockedNames +
-        '）浏览器直连失败。先启动本地网关再点一次「检测」—— 网关会用 DoH 钉真 IP / 境内中继' +
-        '尽量把它们也打通；也可以在「筛选 → CORS 代理」里换一条出口。';
+        '）浏览器直连失败。' +
+        (GW.ok
+          ? '本地网关已连接，正在用它逐个目标自检（DoH 钉真 IP / 中继），结论稍后自动更新' +
+            '—— 浏览器直连不通 ≠ 这些源搜不到，检索会优先走网关。'
+          : '先启动本地网关再点一次「检测」—— 网关会用 DoH 钉真 IP / 境内中继' +
+            '尽量把它们也打通；也可以在「筛选 → CORS 代理」里换一条出口。');
     } else if (by.domestic.ok) {
       verdict = 'restricted'; label = '目标站点直连受限';
       detail = '本机网络正常，但目标站点浏览器直连全部失败（典型的 DNS 污染 / 区域限制）。' +
-        '先启动本地网关（node tools/gateway.js 或 start-engine.cmd）再点「检测」：' +
-        '网关会用 DoH 多解析器钉真 IP、必要时走境内中继，多数站不依赖任何代理也能取到数据。';
+        (GW.ok
+          ? '本地网关已连接，正在用它逐个目标自检，结论稍后自动更新；检索会优先走网关。'
+          : '先启动本地网关（node tools/gateway.js 或 start-engine.cmd）再点「检测」：' +
+            '网关会用 DoH 多解析器钉真 IP、必要时走境内中继，多数站不依赖任何代理也能取到数据。');
     } else if (by.global.ok) {
       verdict = 'restricted'; label = '部分受限';
-      detail = '国际出口可达，但目标站点连接失败，多为 DNS 污染 —— 本地网关可用 DoH 钉真 IP 打通。';
+      detail = '国际出口可达，但目标站点连接失败，多为 DNS 污染 —— 本地网关可用 DoH 钉真 IP 打通。' +
+        (GW.ok ? '（本地网关已连接，检索会优先走网关）' : '');
     } else {
       verdict = 'unknown'; label = '网络异常';
       detail = '所有探测目标均不可达，请确认本机已联网（或代理设置是否正确）。';
@@ -455,7 +477,13 @@
         net._gwTiers = tiers;
         net._gwEgress = d.egress || '';
         adultOk = adult.filter(r => r.ok).length;
-        blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok);
+        /* ★r18★ 「这次没等到结论」（网关自检硬超时 unknown）与「被上游按出口 IP 限流封禁」
+           （banned）都**不算打不通** —— 把它们写进 blocked 就是用户抱怨的那个误报：
+           网关明明能取（第 17 轮已证 wnacg / hitomi 都能取），只是并行自检没在预算内等到答复。
+           从 blocked 里摘出去，只在描述里照实说「另有 N 个没等到结论」。 */
+        const softIds = Object.keys(tg).filter(k => tg[k] && (tg[k].unknown || tg[k].banned));
+        blocked = targets.filter(r => r.kind === 'target' && ADULT.indexOf(r.id) >= 0 && !r.ok &&
+          softIds.indexOf(r.id) < 0);
         blockedNames = blocked.map(r => r.label).join('、');
         /* 「网关靠哪一层打通的」：这里通常写满 doh / relay，
            文案要照实说「由本地网关打通」，不引导用户去开任何隧道。 */
@@ -464,15 +492,39 @@
           ? '（其中 ' + handled.length + ' 个由本地网关打通：' + handled.slice(0, 4).join('、') +
             (handled.length > 4 ? ' 等' : '') + '）'
           : '';
-        if (adultOk === adult.length && adultOk > 0) {
+        if (blocked.length === 0 && softIds.length) {
+          /* 「一个都没验出打不通」就是可达 —— 剩下的只是自检没等到答复 / 被上游限流，
+             都不该报警。这两种还要分开说：封禁有倒计时，会自己好。 */
+          const banIds = softIds.filter(k => tg[k] && tg[k].banned);
+          const unkIds = softIds.filter(k => tg[k] && tg[k].unknown);
+          verdict = 'ok'; label = '目标可达';
+          detail = adultOk + '/' + adult.length + ' 个目标站点可达' + handledText + '；' +
+            (banIds.length
+              ? '另有 ' + banIds.length + ' 个被上游按出口 IP 限流封禁（' + banIds.join('、') +
+                '，静默一会儿自动恢复，不是站点坏了）'
+              : '') +
+            (banIds.length && unkIds.length ? '；' : '') +
+            (unkIds.length
+              ? '还有 ' + unkIds.length + ' 个这次没等到自检结论（' + unkIds.slice(0, 4).join('、') +
+                (unkIds.length > 4 ? ' 等' : '') + '）—— 那是自检预算到了，不代表打不通，' +
+                '检索时会按真实链路走，稍后自动复查'
+              : '') + '。';
+        } else if (adultOk === adult.length && adultOk > 0) {
           verdict = 'ok'; label = '目标可达';
           detail = '全部目标站点均可连通' + (handledText || '（被墙的部分由本地网关出口打通）') +
             '，无需额外操作。若结果为空，可能是查询词或标签问题。';
         } else if (adultOk > 0) {
           verdict = 'partial'; label = '部分站点受限';
+          /* 被上游按出口 IP 限流封禁的（网关自检会带 banned 标记）要与「真打不通」分开说：
+             前者有倒计时、静默之后自己会好；混在一起说会让人以为源坏了（第 17 轮的教训）。 */
+          const bannedList = Object.keys(tg).filter(k => tg[k] && tg[k].banned);
           detail = adultOk + '/' + adult.length + ' 个目标站点可达' + handledText + '，其余（' +
-            blockedNames + '）连网关也打不通 —— 可在「筛选 → 本地网关」点「检测」看网关自检详情，' +
-            '或换一条 CORS 代理出口。';
+            blockedNames + '）连网关也打不通' +
+            (bannedList.length
+              ? '；另有 ' + bannedList.join('、') + ' 被上游按出口 IP 限流封禁（不在上面这份名单里 ——' +
+                '它有倒计时，静默之后自己会恢复）'
+              : '') +
+            ' —— 可在「筛选 → 本地网关」点「检测」看网关自检详情，或换一条 CORS 代理出口。';
         }
       } catch (e) { /* 自检失败不影响原本的判定 */ }
     }
@@ -589,6 +641,61 @@
   /** 让网关代取任意页面（带上正确的 Referer / UA，绕开跨域与防盗链） */
   GW.proxyUrl = function (url, referer) {
     return GW.url('/api/proxy', { url: url, referer: referer || '' });
+  };
+
+  /** ★r18 需求②④「从弹出网页开始」★ 预热：一进页面就让网关把出口自检 / DoH 钉 IP /
+      中继选择 / 图片主机钉 IP 全部跑掉。
+      · 结论直接塞进 net._gwDiag：随后 net.probe 的「网关段」就能**立刻**算出最终结论
+        （而不是等 /api/diag 那几十秒），临时横幅也就不用弹了；
+      · 用户第一次敲下关键词时，那条路已经是热的 —— 这笔钱付在弹窗时，不付在搜索时。
+      失败一律静默（拿不到预热结果不影响任何功能，退回原来的 /api/diag 路径）。 */
+  GW.warm = async function (ms) {
+    if (!GW.ok) { try { await GW.probe(true); } catch (e) { return null; } }
+    if (!GW.ok) return null;
+    try {
+      const d = await GW.get('/api/warm', {}, ms || 12000);
+      /* ★只有 full 的那一份才配当自检结论★：网关那边只要有一个目标是硬超时，
+         就会把 full 置 false —— 把「没等出结论」当成「连网关也打不通」，
+         正是用户抱怨的那个误报。不 full 就不落 _gwDiag，随后 net.probe 会退回真正的
+         /api/diag（那时横幅仍然不弹，因为 gateway 在线 + 临时结论被 showBanner 拦掉）。 */
+      if (d && d.full && d.targets && Object.keys(d.targets).length) {
+        net._gwDiag = d; net._gwDiagAt = Date.now();
+        const tiers = {};
+        Object.keys(d.targets).forEach(k => {
+          if (d.targets[k] && d.targets[k].ok) tiers[k] = d.targets[k].via || '';
+        });
+        net._gwTiers = tiers;
+        net._gwEgress = d.egress || '';
+      }
+      if (d) {
+        net._gwUpstream = d.upstream || null;
+        HS.bus.emit('net:warm', d);
+      }
+      return d;
+    } catch (e) { return null; }
+  };
+
+  /** ★r18 需求③★ 批量预取阅读器接下来要看的页。
+      传进来的就是页盒上的 data-url（/api/proxy?url=…&referer=…）—— 网关会把它拆回
+      (url, referer) 算缓存键，保证与真正取图时用的是**同一把 key**（否则预取全白做）。
+      失败/超时静默：预取是「顺手把后面的图先搬回来」，绝不能影响当前页。 */
+  GW.prefetch = function (urls, opt) {
+    if (!GW.ok || !urls || !urls.length) return Promise.resolve(null);
+    const o = opt || {};
+    const list = urls.filter(Boolean).slice(0, o.max || 16);
+    if (!list.length) return Promise.resolve(null);
+    return GW.get('/api/prefetch',
+      { urls: list.join('\n'), timeout: o.timeout || 9000 },
+      o.ms || 20000).catch(() => null);
+  };
+
+  /** 浏览器自己是不是打不通这个信息源（探针结论 + 网关结论交叉判断）。
+      网关的合并会把 t.ok 置回 true 并打上 viaGateway —— 那两个都算「浏览器直连不通」。 */
+  net.browserBlocked = function (id) {
+    const c = net._cache;
+    if (!c || !c.targets) return false;
+    const t = c.targets.filter(x => x.id === id)[0];
+    return !!(t && (t.ok === false || t.viaGateway === true));
   };
 
   GW.describe = function () {

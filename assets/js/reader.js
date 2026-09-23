@@ -331,6 +331,8 @@
       if (want) loadPage(list[i], i);
       else if (S.inWindow[i]) S.inWindow[i] = false;
     }
+    /* 窗口之后再往前要几页（需求③）：这一批是「下一屏就要用」的，值最高 */
+    prefetchAhead(hi + 1, n, list);
   }
 
   /** 横向：只加载当前页 ±1 —— 当前页必须**立刻**加载（一次只有一页在视口里） */
@@ -342,6 +344,7 @@
     const idx = u.clamp(S.hIdx >= 0 ? S.hIdx : 0, 0, n - 1);
     const lo = Math.max(0, idx - NEAR_H), hi = Math.min(n - 1, idx + NEAR_H);
     for (let i = lo; i <= hi; i++) loadPage(list[i], i);
+    prefetchAhead(hi + 1, n, list);
   }
 
   /** 滚动 → rAF 合并：真正的 src 交给下一帧的 pumpNear()（一次滚动只重算一次窗口，不抖） */
@@ -369,6 +372,37 @@
   /** 关掉阅读器时收住按需加载：丢掉还没执行的那次 pump（页盒随即被 clearPages 清空） */
   function releaseImages() {
     pumpPending = false;
+  }
+
+  /* ---------------- ★r18 需求③★ 提前把后面的页搬回来（交给网关批量预取） ----------------
+     为什么要预取：一页图的真实代价是「网关取上游 → 过图片缓存 → 回浏览器」，
+     而 loadPage 只让**窗口内**的页开始加载，窗口外是零成本空白 ——
+     于是每一次翻页都在付第一字节。这里在窗口之后再往前多要几页，
+     让网关并发搬进它自己的图片缓存（/api/prefetch 用与取图**同一把缓存键**），
+     用户真翻过去时就是命中缓存：更快，而且上游失败的那几页还有机会被重试一次。
+     约束：只认 data-url（真正的 /api/proxy?url=…&referer=… 地址）；同一页只问一次；
+     节流（PA_MIN_GAP_MS）避免连续滚动把网关打满；失败静默 —— 预取只是顺手，绝不能影响当前页。 */
+  const PA_LOOKAHEAD = 6;
+  const PA_MIN_GAP_MS = 1200;
+  let paAskedAt = 0;
+  function prefetchAhead(from, n, list) {
+    const g = HS.net && HS.net.gateway;
+    if (!g || !g.prefetch || !g.ok) return;
+    if (from >= n) return;
+    const now = Date.now();
+    if (now - paAskedAt < PA_MIN_GAP_MS) return;
+    paAskedAt = now;
+    const to = Math.min(n - 1, from + PA_LOOKAHEAD - 1);
+    const urls = [];
+    for (let i = from; i <= to; i++) {
+      const box = list[i];
+      if (!box || box.getAttribute('data-prefetched')) continue;
+      const du = box.getAttribute('data-url') || '';
+      if (!du) continue;
+      box.setAttribute('data-prefetched', '1');
+      urls.push(du);
+    }
+    if (urls.length) g.prefetch(urls, { max: PA_LOOKAHEAD, timeout: 9000 });
   }
 
   /** 标签页从前台 / 后台切回来时补一次按需加载。
@@ -784,6 +818,15 @@
     if (!root || !S) return;
     const z = S.zoom;
     root.style.setProperty('--hs-rd-zoom', String(z));
+    /* ★这里不再 clearPanShift()★（2026-09-23 第 11 轮真机取证修掉的）
+       原写法「换倍率就清掉拖拽位移」，在「100% 时先拖动图片、再按放大」这条真实操作上是错的：
+       100% 时页盒两轴余量都是 0，拖动只能走 <img> 的 transform 档（见 panPrepareShift：
+       pan.shift = !pan.sx && !pan.sy），位移一清，画面立刻弹回正中；紧接着 zoomAnchorApply()
+       想用 scrollLeft 把它补回来，而 scrollLeft 已经是 0、补不到负值 ⇒ 只能眼看着跳。
+       真机实测 5 种形状（竖/横/方/超宽/小图）在这条路径上**全部漂 47.7~49.6px**。
+       缩放本来就该保住拖拽后的位置：zoomAnchorResidual() 是按「panOffset 是活的」设计的
+       （那边用 `const pl = p.left - panOffset.x` 把位移反推出去）。所以清理动作只留给
+       「换页 goToIndex()」和「重新打开 RD.open()」两处。 */
     /* 溢出策略：★100% 时也保留 auto★（与「按住拖动不限放大态」配套，见 panStart）——
        否则图比一屏大时也没有滚动量，拖动就永远没有位移。
        代价只是「图比容器大」时可能出现细滚动条（scrollbar-gutter: stable 已在 CSS 里，
@@ -799,16 +842,221 @@
     if (el.zoomIn) el.zoomIn.disabled = z >= ZOOM_MAX - 1e-6;
   }
 
+  /* ---------------- 缩放锚点（第 7 轮，第 10 轮重做度量与残差）----------------
+     用户报告（第 7 轮）：「在线阅读放缩图片位置会位移，我希望中心线是保持原位的」。
+     老实现只改 --hs-rd-zoom：图片以自身左上角为基准变大，视口中心对着的那块内容
+     就被推走了（放大后画面整体往左上飘），所以看起来是「位置位移」。
+     修法：改倍率之前先记下「视口正中对着图上的哪一个点」（用相对画面盒的分数坐标），
+     改完量一次同一个点跑到哪儿了，把滚动量补回去 —— 中心线钉住不动。
+
+     ★第 10 轮为什么要重做度量★
+     第 9 轮的补丁用 img 元素盒子的分数坐标，但 object-fit:contain 会在元素盒里留白，
+     而元素盒的宽高比又 = 页盒 client 尺寸的宽高比 —— 一放大就冒出滚动条，
+     页盒的 clientWidth/clientHeight 同时变化（真机实测 846 → 831、1265 → 1235），
+     于是同一个「元素盒分数」在缩放前后指向的画面内容并不完全相同。
+     真机实测（tools/ui-truth-before.json，Chrome headless + CDP 真鼠标）：
+       100%→120% 漂 27.05px、120%→140% 漂 0.37px、140%→120% 漂 0.31px、
+       120%→100% 漂 123.08px —— 漂移全集中在跨越 100% 这个门槛的那一步。
+     第 10 轮：① 锚点改成「真正渲染出来的画面」的分数（picBox 用 naturalWidth/Height
+     算 contain 之后的画面矩形），与留白、与滚动条怎么变都无关；
+     ② 滚动补偿不再是唯一手段：页盒滚不动（≤100%）或滚不到位时，补一层残差位移
+     （与手动拖拽同一套 transform 机制），把那个物理点真正送回视口正中。 */
+  /** 一个「画面元素」的固有像素尺寸：<img> 看 naturalWidth/Height；禁漫还原用的
+      <canvas> 看位图尺寸（width/height 属性就是原图像素）；页盒兜底返回 0（这时
+      picBox 会退到「用元素自己的矩形」，与改动前一致）。 */
+  function natSize(node) {
+    if (!node) return { w: 0, h: 0 };
+    if (String(node.tagName || '').toLowerCase() === 'canvas') {
+      return { w: node.width || 0, h: node.height || 0 };
+    }
+    return { w: node.naturalWidth || 0, h: node.naturalHeight || 0 };
+  }
+
+  /** 一页里**真正显示出来**的那个元素：canvas → img → 页盒兜底。
+      ★为什么不能直接 u.$('.hs-rd-img img')★（2026-09-23 根因）
+      禁漫的页在 DOM 里同时躺着两样东西：先建的 <img>（分块还原完就被
+      `img.style.display='none'` 藏起来，src 还留着）和还原后的 <canvas class="hs-rd-canvas">。
+      用 `.hs-rd-img img` 会命中那个**隐藏的 img**：它的 getBoundingClientRect() 全是 0 ⇒
+      picBox() 退化成零矩形 ⇒ 锚点分数变成 0.5/0.5、滚动补偿算成 scrollLeft += (0 - 视口中心)
+      （被夹回 0）、残差又因 p.w<1 直接 return = **零补偿**（表现：放大后内容向右长出、
+      图片位置向右位移）；同一根因让 imgAtPoint() 把 transform 写到那个隐藏元素上
+      = 「100% / 缩小态按住拖不动」。所以这里按「谁有真实矩形就用谁」挑。 */
+  function pageVisual(pg) {
+    if (!pg) return null;
+    const cands = [u.$('.hs-rd-img canvas', pg), u.$('.hs-rd-img img', pg), u.$('.hs-rd-img', pg)];
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i];
+      if (!c) continue;
+      const r = c.getBoundingClientRect();
+      if (r.width >= 1 && r.height >= 1) return c;
+    }
+    return null;
+  }
+
+  function picBox(img) {
+    const r = img.getBoundingClientRect();
+    const n = natSize(img);
+    const nw = n.w, nh = n.h;
+    if (!nw || !nh || r.width < 1 || r.height < 1) {
+      return { left: r.left, top: r.top, w: r.width, h: r.height, el: r };
+    }
+    const s = Math.min(r.width / nw, r.height / nh);
+    const w = nw * s, h = nh * s;
+    return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, w: w, h: h, el: r };
+  }
+
+  /** 锚点要用「哪一页」：首选 .is-cur，纵向退到「视口正中命中的那张图」所在的页盒。
+      ★为什么必须兜这一层★
+      .is-cur 此前**只有横向的 paintHPage() 会写**（它开头就是 `if (!isH()) return;`），
+      纵向连续模式的 currentPageEl() 因此恒为 null —— 而 zoomAnchor() / zoomAnchorResidual()
+      都以它为入口，两个函数一起空转 ⇒ 纵向缩放是**零补偿**。
+      真机实测（tools/reader-zoom-v1.json，Chrome headless + CDP 真鼠标，视口 1280×900）：
+        100%→120% 图上那个点漂 79.14px、120%→140% 漂 105.80px、缩小同量级
+        （漂移 = |Δ倍数| × 锚点在该图上的分数 × 图高，正好等于「一点没补」的理论值）；
+        同一次运行的横向对照是 0.12–0.20px（锚点机制本身没问题，缺的只是「哪一页」）。 */
+  function anchorPageEl() {
+    const pg = currentPageEl();
+    if (pg || isH()) return pg;
+    const list = pageEls();
+    if (!list.length) return null;
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    let best = null, bestD = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const im = pageVisual(list[i]);
+      if (!im) continue;
+      const r = im.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return list[i];
+      const d = Math.abs((r.top + r.bottom) / 2 - cy);   /* 没有页盖住正中就取中心最近的一页 */
+      if (d < bestD) { bestD = d; best = list[i]; }
+    }
+    return best || list[currentIndex()] || null;
+  }
+
+  function zoomAnchor() {
+    if (!root) return null;
+    const pg = anchorPageEl();
+    if (!pg) return null;
+    const img = pageVisual(pg);
+    if (!img) return null;
+    const p = picBox(img);
+    return {
+      img: img,
+      fx: p.w > 1 ? (window.innerWidth / 2 - p.left) / p.w : 0.5,
+      fy: p.h > 1 ? (window.innerHeight / 2 - p.top) / p.h : 0.5,
+      cx: window.innerWidth / 2,
+      cy: window.innerHeight / 2
+    };
+  }
+
+  /** 位移写盘：与手动拖拽同一套（transform + transition:none），只是不经过 pan 状态机 */
+  function shiftApply(obj, x, y) {
+    if (!obj || !obj.style) return;
+    obj.style.transition = 'none';
+    obj.style.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0)';
+  }
+
+  function zoomAnchorApply(a) {
+    if (!a || !a.img || !a.img.isConnected) return;
+    const p = picBox(a.img);
+    const tx = p.left + a.fx * p.w;          /* 那个物理点现在在屏幕上的位置 */
+    const ty = p.top + a.fy * p.h;
+    /* 容器在缩放前后「能不能滚」会变（z=1 常常没余量，放大后才有），所以这里重新解一遍。
+       ★必须用 scrollPair()：老代码横向走 hBoxFor（h 模式=页盒，对），
+       纵向却走 vBoxFor（h 模式候选 .hs-rd-scroll / .hs-rd-col 全是 overflow:hidden、零余量，
+       兜底返回的元素根本不滚）⇒ 纵向补偿是空操作 = 用户看到的「左右翻页模式下放缩还是位移」。 */
+    const pair = scrollPair();
+    /* ★把「滚前还剩多少余量」记回锚点★：zoomAnchorResidual() 要靠它判断「这一轴的误差
+       到底是不是滚动已经尽力了」（见那边「为什么残差必须先问余量」）。
+       不记的话，残差会把「滚动本来补得挺好、只是亚像素没对齐」的轴也强行夹到边界上。 */
+    a.roomX = pair.x ? Math.max(0, pair.x.scrollWidth - pair.x.clientWidth) : 0;
+    a.roomY = pair.y ? Math.max(0, pair.y.scrollHeight - pair.y.clientHeight) : 0;
+    if (pair.y) pair.y.scrollTop += (ty - a.cy);   /* 往下飘了就往下滚，把点拉回视口正中 */
+    if (pair.x) pair.x.scrollLeft += (tx - a.cx);
+    else if (pair.y) pair.y.scrollLeft += (tx - a.cx);
+  }
+
+  /** 第 10 轮：滚动补不动的部分用位移补足（跨 100% 门槛时页盒滚不动，就靠这一层）。
+      夹住的条件是「补完以后整幅画面仍待在页盒里」：页盒是 overflow:hidden，
+      顶出去就把画面裁掉一条 —— 宁可留几十像素的位移，也不能切掉画面。 */
+  function zoomAnchorResidual(a) {
+    if (!a || !a.img || !a.img.isConnected) return;
+    /* ★纵向一律不走残差★：纵向的滚动余量总有上万像素（实测 100% 时 root 余量 7757px），
+       zoomAnchorApply() 那一步滚动补偿就够钉住锚点；而这里的位移会落到 <img> 的 transform 上，
+       纵向的 .hs-rd-img 是 overflow:hidden 且**只比图片本身大一圈**（style.css:2180），
+       一挪就被裁掉一条 —— 有位移反而更糟。横向才是必须靠它的一档（≤100% 时页盒两轴都没余量）。 */
+    if (!isH()) return;
+    const pg = anchorPageEl();
+    if (!pg) return;
+    /* ★为什么残差必须先问「这一轴的滚动还有没有余量」★（2026-09-23 真机取证修掉的）
+       zoomAnchorApply() 的滚动补偿在横图上其实**做对了**：真机实测横图 1600×900 在
+       h 模式 100%→120%，滚动把锚点落到离正中 0.29px。可紧接着这里跑第一遍残差时，
+       量到「画面自然位置在页盒上沿之上 13.76px」，而夹取区间是 [13.76, 19.10]
+       （两端同号 ⇒ **不含 0**），于是把 13.76px 的向下位移写到了 <img> 的 transform 上
+       —— 把已经对齐的画面硬推下去 13.76px。用户看到的就是「横图放大时图片会跳一下」，
+       实测漂移 13.51px（竖图 0.19px、方图 0.20px，唯独横图中招）。
+       根因不是夹取公式写错，而是**分工错了**：滚动已经把误差收到亚像素，
+       残差却还要在「自然位置本来就贴边」的画面上再插一脚。
+       所以这里的判据是「滚动是否已经无力」：
+         · 该轴缩放后有余量（room > 1）⇒ 误差交给滚动，残差不动这一轴；
+         · 余量为 0（≤100% 时页盒两轴都没得滚、或已经滚到尽头）⇒ 才由位移补足。
+       逐轴判断，而不是整体跳过：横图在 120% 时 x 有余量（给滚动）、y 没余量（给残差），
+       正是需要分开处理的组合。 */
+    const allowX = !(a.roomX > 1);
+    const allowY = !(a.roomY > 1);
+    if (!allowX && !allowY) return;              /* 两轴都有滚动余量：残差完全不介入 */
+    /* 跑两遍：第一遍补掉大头；第二遍吃掉「布局二次变化」（跨 100% 门槛时页盒 client
+       尺寸会变：滚动条出现/消失、CSS 居中规则切换）留下的零头。getBoundingClientRect()
+       已经含当前 transform，所以目标位移要**累加**在 panOffset 上，不能重新赋值。 */
+    for (let pass = 0; pass < 2; pass++) {
+      const p = picBox(a.img);
+      if (p.w < 1 || p.h < 1) return;
+      const b = pg.getBoundingClientRect();
+      const pl = p.left - panOffset.x, pt = p.top - panOffset.y;   /* 去掉位移后的原始画面位置 */
+      let dx = panOffset.x + (a.cx - (p.left + a.fx * p.w));
+      let dy = panOffset.y + (a.cy - (p.top + a.fy * p.h));
+      /* 页盒 overflow:hidden：位移必须保证画面仍「盖住」页盒（顶出去就裁掉一条画面）。
+         要求的两个 gap 一正一负时合法区间是**有序**区间 [min,max]：
+         画面比页盒大的时候两个 gap 都是负的，这时仍有合法位移区间（把画面往还盖得住
+         的方向挪），老代码把它当「空区间」直接归零 ⇒ 120% 时纵向残差 21.49 一直补不掉。 */
+      const gx = b.left - pl, hx = b.right - (pl + p.w);
+      const gy = b.top - pt, hy = b.bottom - (pt + p.h);
+      /* ★夹取只在「画面此刻确实盖住页盒」时才成立★（第 11 轮真机补修）
+         画面比页盒小的那一轴（≤100% 的留白轴）本来就没有「盖住」可言：这时按 gap 区间
+         夹取会把位移硬拉回 0 —— 用户拖到的位置在缩放时被弹回。真机实测：100% 拖 (130,95)
+         放大到 300% 再缩回 100%，竖图漂 45.18px、横图漂 105.76px（横图 x 轴正好填满页盒
+         ⇒ 夹取区间塌成 [0,0]，130px 的位移被整个抹掉）。而用户自己拖出缝之后，
+        那一轴当下就已经盖不住了 —— 盖不住就不夹，让残差如实把锚点钉回视口正中。 */
+      const coverX = p.left <= b.left + 0.5 && p.left + p.w >= b.right - 0.5;
+      const coverY = p.top <= b.top + 0.5 && p.top + p.h >= b.bottom - 0.5;
+      if (!allowX) dx = panOffset.x;
+      else if (coverX) dx = Math.max(Math.min(gx, hx), Math.min(Math.max(gx, hx), dx));
+      if (!allowY) dy = panOffset.y;
+      else if (coverY) dy = Math.max(Math.min(gy, hy), Math.min(Math.max(gy, hy), dy));
+      const moved = Math.abs(dx - panOffset.x) > 0.5 || Math.abs(dy - panOffset.y) > 0.5;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;         /* 已经对上：保持现状 */
+      if (!moved) return;                                          /* 第二遍没有新东西可补 */
+      panOffset = { x: dx, y: dy };
+      shiftApply(a.img, panOffset.x, panOffset.y);
+    }
+  }
+
   /** 设定缩放倍数：夹到 50%–300%，按**当前作品**记忆（S.zoomKey 在 RD.open 时算好） */
   function setZoom(v, quiet) {
     if (!S) return;
     const next = normZoom(v);
-    if (next === S.zoom) { paintZoom(); return; }
+    /* ★不能在这里对 `next === S.zoom` 早退：≤100% 时画面的位置靠 panOffset 上的残差位移维持，
+       早退分支只调 paintZoom()（写一遍 CSS 变量、不做锚点补偿）⇒ 点一下「100%」按钮
+       （比如 out2 之后已经是 100%）图片会猛地跳回正中（实测 128.42px）。
+       注：paintZoom 现在已不再清位移，这个早退不再有「清位移」的副作用，但上面的「漏补偿」仍然成立。 */
+    const anchor = zoomAnchor();              /* 必须在改 --hs-rd-zoom 之前量 */
     S.zoom = next;
     /* 作品主键在 RD.open 时就算好并存进 S —— 别在这里现算 item：S.item 是调用方给的对象，
        中途被换掉的话就会把倍率记到另一个作品头上 */
     zoomSet(S.zoomKey, next);
-    paintZoom();
+    paintZoom();                              /* 里面会 clearPanShift：先清掉旧位移再补偿 */
+    zoomAnchorApply(anchor);                  /* ① 滚动补偿 */
+    zoomAnchorResidual(anchor);               /* ② 滚动补不动的残差（≤100% 只能靠它） */
     if (!quiet) HS.toast('缩放 ' + Math.round(next * 100) + '%', 'info', 1100);
   }
 
@@ -1055,6 +1303,10 @@
       let pages = S.pagesByCh[idx];
       if (!pages) {
         const j = await fetchChapter(S.chapters[idx].id);
+        /* ★取章期间用户可能已经退出阅读器★（用户要求：正在加载图片时也能直接退出）
+           RD.close() 已把 S 置空，这里再往下写就是往 null 上写页、写进度 ——
+           退出后必须原地收手，不能继续渲染，也不能覆盖已保存的进度。 */
+        if (!open || !S) return;
         pages = j.pages || [];
         S.pagesByCh[idx] = pages;
         S.fetched[idx] = true;
@@ -1070,13 +1322,14 @@
       resetScroll();
       pumpNear();                         // 新章第 1 页（含后面几页）立刻开始加载，不等滚动
       if (isH()) paintHPage();            // 横向：只显示出第 1 页（paintHPage 里也会补 pumpH）
+      else markCurV(0);                   // 纵向：新章第 1 页就是「正在看的这一页」
       watchFoot();
       prefetchNext();
       progSave(true);                     // 换章 = 一次明确的进度变更，立刻落盘
     } catch (e) {
-      HS.toast('打开失败：' + ((e && e.message) || e), 'err', 4200);
+      if (open && S) HS.toast('打开失败：' + ((e && e.message) || e), 'err', 4200);
     } finally {
-      S.busy = false;
+      if (S) S.busy = false;              // S 已置空 = 阅读器已关：没有东西要解锁了
     }
   }
 
@@ -1107,6 +1360,8 @@
     el.footHint.textContent = '正在接上「' + chapLabel(nxt) + '」…';
     try {
       if (!S.fetched[nxt]) await prefetchNext();
+      /* 取章 / 加载期间退出阅读器：S 已置空，别再往已经拆掉的界面里塞页面 */
+      if (!open || !S) return;
       if (!S.fetched[nxt]) throw new Error(S.fetchErr[nxt] || '没有取到下一章的数据');
       const firstNew = pageEls().length;   // 新章首页在拼接后的页列表里是第几页
       el.pages.appendChild(u.el('div', { class: 'hs-rd-sep hs-rd-sep-in' }, u.esc(chapLabel(nxt))));
@@ -1119,9 +1374,9 @@
       /* 横向一次一页：接上以后直接把这一页翻到新章首页（瞬时换图；纵向维持原来的滚动位置不动） */
       if (isH()) goToIndex(firstNew);
     } catch (e) {
-      el.footHint.textContent = '自动连读失败：' + ((e && e.message) || e) + '（可点「下一话」重试）';
+      if (open && S) el.footHint.textContent = '自动连读失败：' + ((e && e.message) || e) + '（可点「下一话」重试）';
     } finally {
-      S.appending = false;
+      if (S) S.appending = false;
     }
   }
 
@@ -1156,6 +1411,9 @@
       const list = pageEls();
       if (!list.length) { paintProg(0); return; }
       const idx = currentIndex();
+      /* ★纵向也要标 .is-cur★（横向由 paintHPage() 标）：把「正在看的这一页」这个
+         共有概念在两种模式下都维护起来 —— 它是 currentPageEl() 的输入。 */
+      if (!isH()) markCurV(idx);
       schedulePump();                     // 滚过一屏就重算加载窗口（rAF 合并，滚动时不抖）
       paintProg(idx + 1);
       progSave(false);                    // 进度：800ms 防抖后落盘（每帧写盘会把主线程拖死）
@@ -1187,10 +1445,30 @@
     return cur;
   }
 
+  /** 纵向：把 .is-cur 标到 currentIndex() 那一页（横向由 paintHPage() 负责）。
+      为什么需要它：currentPageEl() 只认 .is-cur，而纵向此前没人写这个类 ⇒ 恒 null。
+      .is-cur 在纵向没有任何样式副作用（style.css 里 .hs-rd-pg.is-cur 的规则全部
+      限定在 [data-dir="h"] 下，见 style.css:2305-2307），纯粹是给 JS 读的标记。
+      缓存上一次的序号：滚动时每帧都要调它，已经标对就别去动 DOM。 */
+  let lastCurV = -1;
+  function markCurV(i) {
+    if (!el.pages || isH()) return;
+    const list = pageEls();
+    if (!list.length) return;
+    const k = u.clamp(typeof i === 'number' ? i : currentIndex(), 0, list.length - 1);
+    if (k === lastCurV && list[k] && list[k].classList.contains('is-cur')) return;
+    lastCurV = k;
+    for (let n = 0; n < list.length; n++) list[n].classList.toggle('is-cur', n === k);
+  }
+
   /** 停到第 i 页：横向只把这一页显示出来（瞬时，无动画），纵向把它滚到视野顶部 */
   function goToIndex(i) {
     const list = pageEls();
     if (!list.length) return;
+    /* 换页复位「图片拖动位移」（第 9 轮：位移现在是保留的，换页必须归零，
+       否则下一页会继承上一页拖出来的偏移）。页内的 scroll 偏移另有按页记忆，
+       见 paintHPage() —— 两者互不干扰。 */
+    clearPanShift();
     const idx = u.clamp(i, 0, list.length - 1);
     if (isH()) {
       S.hIdx = idx;
@@ -1198,6 +1476,7 @@
     } else {
       list[idx].scrollIntoView({ behavior: 'auto', block: 'start' });
       pumpNear();                         // 跳页后立刻按新位置（重新）算加载窗口
+      markCurV(idx);                      // 纵向：「正在看的这一页」= 刚跳到的这一页
     }
     paintProg(idx + 1);
     syncFoot();
@@ -1264,16 +1543,21 @@
   let tapFrom = null;
 
   /* ---------------- 按住拖动 = 平移图片（放大看图的主要手段） ----------------
-     为什么是「改滚动偏移」而不是 CSS transform：
+     位移有两种落点（第 7 轮定稿，判定见下面 panPrepareShift 的注释）：
+       · 容器有余量的轴 → 写 scrollLeft / scrollTop（首选：有真实边界、不会露空白）；
+       · 两个轴都装得下（整张图都在屏幕里）→ 平移 <img> 自己的 transform，抬手弹回。
+     为什么优先「改滚动偏移」而不是一路 transform：
        本文件的缩放（paintZoom）改的是**尺寸变量** --hs-rd-zoom，放大后超出的那部分
        本来就已经在滚动盒子里（纵向 X 在 .hs-rd-col，纵向 Y 在覆盖层 .hs-rd；
        横向在 .hs-rd-pg.is-cur，样式里给了 overflow:auto + scrollbar-gutter:stable）。
-       用 transform 平移会把 getBoundingClientRect().top 一起挪走，直接破坏
+       用 transform 平移**页盒**会把 getBoundingClientRect().top 一起挪走，直接破坏
        currentIndex() / visibleChapter() 的翻页判定与 goToIndex() 的 scrollIntoView，
-       属于高风险改动。所以这里只把指针位移翻译成 scrollLeft / scrollTop。
+       属于高风险改动 —— 所以第二种落点刻意只动 <img>：currentIndex() 量的是
+       .hs-rd-pg 的 rect（reader.js:1234），量不到 <img> 自己的位移。
      行为约定：
-       · 纵向模式：按住拖动一律可以上下拖（等于拖动手势滚动），左右只在放大后才有得拖；
-       · 横向模式：只有放大后才允许拖（没放大时保留「点一下翻左右页」的既有语义）；
+       · 任意倍率都能按住拖动（不再要求已放大，见 panStart 注释）；
+       · 图比一屏大：拖 = 滚那个方向，到底就停住（有真实边界）；
+       · 图整屏装得下：拖 = 图片跟着指针走（橡皮筋软限位），松手 220ms 弹回原位；
        · 位移小于 PAN_SLOP 时不算拖动 —— 「点一下翻页」「点重试按钮」完全不受影响；
        · 拖动一旦成立就 setPointerCapture，指针滑出图外也不会断。 */
   const PAN_SLOP = 4;
@@ -1282,6 +1566,144 @@
      单独用一个标志（而不是读 pan.moved）的原因：pointerup 在 window 上先把 pan 清掉，
      el.scroll 上那个「点一下翻页」的处理器可能已经看不到 pan 了 —— 用标志就不会漏判。 */
   let panMoved = false;
+
+  /* ---------------- 位移落点的判定与「拖动位移」的收尾（第 7 轮 / 第 9 轮） ----------------
+     用户要求：「任何大小下都应该实现按住鼠标移动图片的功能」（第 7 轮）；
+     第 9 轮追加：「左右翻页模式下，除放大之外都无法拖拽图片，需要修复」。
+     每个「按下 → 抬起」先看两个轴各自有没有滚动余量：
+       · 只要有一个轴装不下（有余量）→ 照旧拖滚动位置（有边界，也不会露空白）；
+       · 两个轴都装得下（整张图都在屏幕里，100% 时就是这一档）→ 拖的是
+         **图片自己的位移**：指针移动多少图就挪多少（橡皮筋软限位）。
+     ★第 9 轮改的正是这一档的收尾★：以前抬手 220ms 弹回原位 —— 探针实测拖 160px、
+     松手 400ms 后 transform 已经变回 none（itf: matrix(…,-157.4,0) → none），
+     所以用户看到的是「除了放大根本拖不动」。现在**抬手保留位移**（panOffset 累积，
+     下一次按下从当前位置继续拖），复位只发生在换倍率 / 换页 / 重开阅读器时
+     （都走 clearPanShift()）—— 拖不丢，也真的拖得动。
+     为什么只动 <img> 而不是页盒：见上面「按住拖动」那段的说明（页盒 rect 是翻页
+     判定的输入；<img> 的位移量不到，两种落点因此互不干扰）。
+     为什么不需要临时取消任何 overflow：位移目标是 <img>，它外面的裁切盒
+     （.hs-rd-img / 页盒）本来就跟视口同宽同高，挪开露出的那条边就在视口之内
+     （看见的是阅读器底色），所以视觉上成立，不用去动 overflow。
+     触屏语义保持原样：touch-action:none 仍然只在 .is-zoom（放大态）下加，
+     所以 100% 时单指拖动依旧交给浏览器原生滚动翻页，不会被这里抢走。 */
+  /** 已经累积下来的图片位移（像素）；换倍率 / 换页 / 重开阅读器时归零 */
+  let panOffset = { x: 0, y: 0 };
+
+  /** 当前页盒（横纵两种模式都靠 .is-cur 标出「正在看的这一页」） */
+  function currentPageEl() { return el.pages ? u.$('.hs-rd-pg.is-cur', el.pages) : null; }
+
+  /** 某个盒子在一条轴上的可滚余量（正数才滚得动） */
+  function roomOf(box, axis) {
+    if (!box) return 0;
+    return Math.max(0, axis === 'x' ? (box.scrollWidth - box.clientWidth)
+                                    : (box.scrollHeight - box.clientHeight));
+  }
+
+  /** 横向真正能滚的盒子：h 模式是当前页盒；v 模式先看 el.pages 再看 root */
+  function hBoxFor(pg) {
+    if (isH()) return pg || null;
+    const cands = [el.pages, el.scroll];
+    for (let i = 0; i < cands.length; i++) if (roomOf(cands[i], 'x') > 2) return cands[i];
+    return null;
+  }
+
+  /** 纵向真正能滚的盒子（vRef() 已按 scrollHeight 选过，这里再确认一次余量） */
+  function vBoxFor() {
+    const cands = [vRef(), el.scroll, el.pages];
+    for (let i = 0; i < cands.length; i++) if (roomOf(cands[i], 'y') > 2) return cands[i];
+    return vRef() || el.scroll || null;
+  }
+
+  /** 当前模式下「真正会滚」的那对盒子：横轴一个、纵轴一个。
+     ★拖动、缩放补偿必须用同一对盒子★ —— 量的点在 A 元素里、补回去的滚动却写在 B 元素上
+     （B 根本不滚），表现就是「拖了没反应」「放缩还是会位移」。
+       · 横向单页（h）：页盒 .hs-rd-pg 是唯一的滚动容器（overflow:auto，两个轴都它滚），
+         而 .hs-rd-scroll 与 .hs-rd-col 都是 overflow:hidden（零余量）⇒ 横纵都取页盒。
+       · 纵向连续（v）：纵轴是整列的 vRef()，横轴才是页盒 / root。 */
+  function scrollPair() {
+    const pg = currentPageEl();
+    if (isH()) return { x: pg, y: pg };
+    return { x: hBoxFor(pg), y: vBoxFor() };
+  }
+
+  /** 指针底下的那张图（没命中就退到当前页的图）—— 拖哪张就动哪张。
+      ★必须走 pageVisual()★：禁漫的页在 DOM 里可见的是还原出来的 <canvas>，而
+      `.hs-rd-img img` 命中的是那个被 display:none 藏起来的原图（rect 全 0），
+      位移就会写到看不见的元素上 = 按住拖了半天画面纹丝不动。 */
+  function imgAtPoint(x, y) {
+    const list = el.pages ? u.$$('.hs-rd-pg', el.pages) : [];
+    for (let i = 0; i < list.length; i++) {
+      const ob = pageVisual(list[i]);
+      if (!ob) continue;
+      const r = ob.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return ob;
+    }
+    return pageVisual(currentPageEl());
+  }
+
+  /** 橡皮筋软限位：超过 limit 之后增长越来越慢，最多到 limit*1.6 —— 拖不飞，也不生硬 */
+  function softPan(v, limit) {
+    const a = Math.abs(v);
+    if (a <= limit) return v;
+    const capped = limit * (1 + 0.6 * (1 - Math.exp(-(a - limit) / Math.max(1, limit))));
+    return v < 0 ? -capped : capped;
+  }
+
+  /** 软限位：100% 这一档图整屏装得下，能挪的范围由它定 —— 够把图推到一边去细看，
+      但推不到「丢」的程度（橡皮筋最多到 limit*1.6）。第 9 轮从 ~154px 放宽到 ~384px，
+      因为位移现在是**保留**的（不再弹回），范围太小等于「只能抖一下」。 */
+  function panShiftLimit() {
+    return Math.max(120, Math.min(420, (window.innerWidth || 800) * 0.30));
+  }
+
+  /** 写图片位移（拖动中不要 transition，否则跟手会拖出惯性感） */
+  function panShiftApply() {
+    if (!pan || !pan.obj) return;
+    pan.obj.style.transition = 'none';
+    pan.obj.style.transform = 'translate3d(' + pan.px.toFixed(1) + 'px,' + pan.py.toFixed(1) + 'px,0)';
+  }
+
+  /** 清掉图上的位移，并把累积量归零（换倍率 / 换页 / 重开 / 收尾都用它）。
+      目标既可能是 <img>，也可能是禁漫那种还原用的 <canvas> 或盒子本身，三样都清。 */
+  function clearPanShift() {
+    panOffset = { x: 0, y: 0 };
+    if (!el.pages) return;
+    const list = u.$$('.hs-rd-img img, .hs-rd-img canvas, .hs-rd-img', el.pages);
+    for (let i = 0; i < list.length; i++) {
+      if (!list[i].style.transform && !list[i].style.transition) continue;
+      list[i].style.transition = '';
+      list[i].style.transform = '';
+    }
+  }
+
+  /** 按下时决定这一轮拖动走「滚」还是走「临时位移」 */
+  function panPrepareShift(e) {
+    if (!pan) return;
+    pan.px = 0; pan.py = 0; pan.obj = null; pan.shift = false;
+    /* ★两个轴各解一次「真正会滚的盒子」★：h 模式两个轴都是页盒（老代码这里给
+       pan.yBox 留了 undefined，放大后纵向有滚动余量 ⇒ 走动分支时直接抛 TypeError，
+       指针处理就此断掉 = 「放大后无法上下拖拽」）。 */
+    const pair = scrollPair();
+    pan.xBox = pair.x; pan.yBox = pair.y;
+    pan.sx = roomOf(pan.xBox, 'x') > 2;
+    pan.sy = roomOf(pan.yBox, 'y') > 2;
+    /* ★两个轴都装得下 → 才算「整张图都在屏幕里」，这时拖动才落到临时位移上★
+       只要有一个轴装不下，就保持老语义（拖 = 滚那一个轴），不会出现
+       「斜着一拖整页横着飘」这种副作用。 */
+    pan.shift = !pan.sx && !pan.sy;
+    if (!pan.shift) {
+      /* 起点跟解析出来的盒子对齐（别用按下那一刻另一个元素上的读数） */
+      pan.l = pan.xBox ? pan.xBox.scrollLeft : 0;
+      pan.t = pan.yBox ? pan.yBox.scrollTop : 0;
+      return;
+    }
+    /* ★这里不再清位移★：位移是累积且保留的（第 9 轮），按下时把它作为起点，
+       所以「拖一下、松手、再拖一下」是接着走，而不是每次从 0 重来。 */
+    pan.obj = imgAtPoint(e.clientX, e.clientY);
+    if (!pan.obj) { pan.shift = false; return; }
+    pan.baseX = panOffset.x;
+    pan.baseY = panOffset.y;
+  }
 
   function panStart(e) {
     pan = null;
@@ -1293,30 +1715,25 @@
     if (e.target && e.target.closest &&
       e.target.closest('button, .hs-rd-retry, .hs-rd-bar, .hs-rd-chappick')) return;
     /* ★按住拖动不再要求已放大★（用户要求：任意倍率都能按住移动图片）
-       各模式下的实际位移（改动后）：
-         · 横向单页：写当前页盒子的 scrollLeft/scrollTop —— 100% 时页盒子按 contain 显示，
-           只要图比一屏大就有真实的横纵滚动量；图比一屏小则没有可滚的余量，位移自然是 0。
+       各模式下的实际位移：
+         · 横向单页：写当前页盒子的 scrollLeft/scrollTop —— 页盒子按 contain 显示，
+           只要图比一屏大就有真实的横纵滚动量；图比一屏小则没有可滚的余量。
          · 纵向连续：写 vRef() 的 scrollTop / el.pages 的 scrollLeft —— 纵向本来就在滚，
            按住拖动 = 直接拖滚动位置（100% 下同样成立，超出部分能拖着看）。
-       触屏语义保持原样：touch-action:none 仍然只在 .is-zoom（放大态）下加，
-       所以 100% 时单指拖动依旧交给浏览器原生滚动翻页，不会被这里抢走。 */
+       「图整屏装得下（两个轴都没有滚动余量）」的那一档由下面的 panPrepareShift()
+       接管：位移落到图片自己的 transform 上，抬手弹回（见上面那段说明）。 */
+    /* 拖动的盒子（xBox / yBox）与起点 scrollLeft / scrollTop 一律由下面的
+       panPrepareShift() 用 scrollPair() 解析 —— 目标只有一个来源，不会再出现
+       「按下那一刻读的是 A 元素、指针移动时写的是 B 元素」这种错配。
+       这里只负责记指针起点 + 确认这一模式下确实有可拖的容器。 */
     if (isH()) {
-      const list = pageEls();
-      const i = u.clamp(S.hIdx >= 0 ? S.hIdx : 0, 0, Math.max(0, list.length - 1));
-      let box = list[i];
-      /* 兜底：hIdx 万一和真实 .is-cur 页不一致，就用真正显示着的那一页，
-         绝不把位移写到一个 display:none 的页上（那样表现就是「拖不动」）。 */
-      const cur = u.$('.hs-rd-pg.is-cur', el.pages);
-      if (cur && (!box || !box.classList.contains('is-cur'))) box = cur;
-      if (!box) return;
-      pan = { id: e.pointerId, x: e.clientX, y: e.clientY,
-        kind: 'h', box: box, l: box.scrollLeft, t: box.scrollTop };
+      if (!currentPageEl()) return;           /* 一页都还没画出来，没什么可拖的 */
+      pan = { id: e.pointerId, x: e.clientX, y: e.clientY, kind: 'h' };
     } else {
-      const yBox = vRef() || root;
-      if (!yBox) return;
-      pan = { id: e.pointerId, x: e.clientX, y: e.clientY,
-        kind: 'v', yBox: yBox, l: (el.pages ? el.pages.scrollLeft : 0), t: yBox.scrollTop };
+      if (!vRef() && !root) return;
+      pan = { id: e.pointerId, x: e.clientX, y: e.clientY, kind: 'v' };
     }
+    panPrepareShift(e);                       /* 决定这一轮走「滚」还是走「临时位移」 */
   }
 
   /** 指针移动：★挂在 window 上★，而不是只挂 .hs-rd-scroll。
@@ -1335,13 +1752,18 @@
       try { if (host && host.setPointerCapture) host.setPointerCapture(e.pointerId); } catch (err) {}
     }
     if (e.cancelable) e.preventDefault();      /* 拖动中不要选中文字 / 触发图片原生拖拽 */
-    if (pan.kind === 'h') {
-      pan.box.scrollLeft = pan.l - dx;
-      pan.box.scrollTop = pan.t - dy;
-    } else {
-      if (el.pages) el.pages.scrollLeft = pan.l - dx;
-      pan.yBox.scrollTop = pan.t - dy;
+    if (pan.shift) {
+      /* 图整屏装得下：拖的是图片自己（橡皮筋软限位），**抬手保留位移**（第 9 轮）。
+         ★符号与下面「滚」那一档一致★：scrollLeft/scrollTop 变小 = 内容朝指针方向走，
+         所以位移写 +dx / +dy（老代码是 -dx / -dy，手感正好相反）。 */
+      const lim = panShiftLimit();
+      pan.px = softPan(pan.baseX + dx, lim);
+      pan.py = softPan(pan.baseY + dy, lim);
+      panShiftApply();
+      return;
     }
+    if (pan.sx && pan.xBox) pan.xBox.scrollLeft = pan.l - dx;
+    if (pan.sy && pan.yBox) pan.yBox.scrollTop = pan.t - dy;
   }
 
   /** 指针抬起 / 取消：只清 pan，panMoved 留给 onTapEnd 判「这是拖动不是点击」 */
@@ -1350,6 +1772,15 @@
     const host = el.scroll;
     try { if (host && host.releasePointerCapture && host.hasPointerCapture &&
       host.hasPointerCapture(pan.id)) host.releasePointerCapture(pan.id); } catch (e) {}
+    /* ★抬手保留位移★（第 9 轮）：不再弹回原位 —— 用户要的是「除了放大，100% 也能拖图片」，
+       弹回等于拖了白拖。位移上限由 panShiftLimit() 的软限位兜住，图不会被拖丢；
+       换倍率 / 换页 / 重开阅读器都会 clearPanShift() 复位。 */
+    if (pan.shift && pan.obj) {
+      panOffset = { x: pan.px || 0, y: pan.py || 0 };
+      pan.obj.style.transition = '';
+      pan.obj.style.transform = 'translate3d(' + panOffset.x.toFixed(1) + 'px,' +
+        panOffset.y.toFixed(1) + 'px,0)';
+    }
     pan = null;
   }
 
@@ -1420,9 +1851,10 @@
      加之前 window.pageYOffset = 1912，加完同一帧读就是 0）；close 只是把 class
      摘掉，位置不会自己回来 —— 用户看到的就是「在阅读器里按 Esc，整页跳回顶部」。
      修法：进阅读器之前把位置记下来，解锁之后还原。
-     时机：只能等 HS.results.closeCard() 的**反向动画**（340ms）也落位之后再补一次，
-     否则卡片幽灵态的复原会把还原过的滚动位置再顶一次；所以这里 rAF 一次 +
-     一次短延时兜底（只有又被打回顶部时才补，避免和用户自己的滚动打架）。
+     时机（第 7 轮修正）：解锁 + 复位要在 RD.close 的**最前面**做完，必须赶在
+     HS.results.closeCard() 量出 FLIP 终点之前（原因见 RD.close 里的时序说明）；
+     这一步自身仍带 rAF 一次 + 一次短延时兜底（只有又被打回顶部时才补），
+     用来兜住卡片反向动画 340ms 落位时的重排。
      另外确认过：关闭路径上**没有**别的 window.scrollTo / scrollTop=0 / scrollIntoView ——
      reader.js 里的 resetScroll() 只复位阅读器覆盖层自己的 el.scroll / el.pages，
      碰不到页面滚动位置。 */
@@ -1449,18 +1881,22 @@
     } catch (e) {}
   }
 
-  function restorePageScroll() {
+  /** 还原页面滚动。force=true 供「关闭阅读器」用：
+      那一刻 open 还是 true（close 的收尾逻辑还没跑完），但页面必须马上解锁复位 ——
+      原因见 RD.close 里的时序说明（要赶在 closeCard() 量矩形之前）。 */
+  function restorePageScroll(force) {
     const s = pageScrollSave;
     pageScrollSave = null;
     if (!s || (!s.y && !s.x)) return;                    // 本来就在最上面就什么都不用做
+    const live = () => (force === true || !open);
     const once = () => {
-      if (!open && Math.abs((window.pageYOffset || 0) - s.y) > 1) putPageScroll(s);
+      if (live() && Math.abs((window.pageYOffset || 0) - s.y) > 1) putPageScroll(s);
     };
     once();                                              // 解锁这一帧先立刻还原
     if (window.requestAnimationFrame) window.requestAnimationFrame(once);
     /* 卡片反向动画 340ms 之后才落位；只有「又被打回顶部」时才再补一次 */
     setTimeout(() => {
-      if (!open && (window.pageYOffset || 0) <= 1 && s.y > 1) putPageScroll(s);
+      if (live() && (window.pageYOffset || 0) <= 1 && s.y > 1) putPageScroll(s);
     }, 420);
   }
 
@@ -1506,6 +1942,7 @@
     el.tip.textContent = '';
     el.chapWrap.hidden = true;
     paintDir();                                          // 沿用上次的阅读方向（默认上下连续）
+    clearPanShift();                                     // 重新打开：清掉上次拖拽留下的临时位移（paintZoom 已不代劳）
     paintZoom();                                         // 这个作品自己的倍率（没记过 = 100%）
     resetScroll();
     closeChapPick();                                     // 每次打开都从「收起」开始
@@ -1584,6 +2021,7 @@
          否则打开时整列都是 display:none（看着是空白），要按一次方向键才出图。
          与 jumpChapter() 里那一行同款（本机实测：纵向打开正常，横向打开原本空白）。 */
       if (isH()) paintHPage();
+      else markCurV(0);                   // 纵向：首屏第 1 页就是「正在看的这一页」
       /* 定位到章内那一页。页盒的宽高比由 --hs-rd-ar 占位撑住，所以图片还没下载完
          scrollIntoView 也能落对位置（纵向走 scrollIntoView，横向走 paintHPage）。 */
       const want = u.clamp(startPage, 0, Math.max(0, firstPages.length - 1));
@@ -1616,7 +2054,23 @@
   };
 
   RD.close = function () {
-    /* 退出阅读器 = 直接回到"小卡片"状态：把放大卡片也一起收掉，不停在放大态 */
+    /* ★退出阅读器 = 直接回到"小卡片"状态★：把放大卡片也一起收掉，不停在放大态。
+       第 7 轮时序修正（用户报告：「退出时大卡片乱飘再回到原位变成小卡片」）——
+       必须先「解锁页面滚动 + 复位」，再让 results.closeCard() 去做反向动画：
+         closeCard() 会量小卡片当前的屏幕矩形当 FLIP 终点（results.js 的
+         --cm-x/--cm-y/--cm-r/--cm-s）；而阅读器开着时 html/body.hs-rd-open
+         （style.css:1917 `overflow:hidden`）把页面滚动夹在 0，
+         于是量到的终点是「页面在最顶部」时的坐标 —— 大卡片朝一个远离用户视口的方向
+         飞走，之后 restorePageScroll() 才把页面滚回原位，看起来就是「乱飘再回到原位」。
+       安全性：复位只写 window.scrollTo，不会重排卡片；closeCard() 后面摘掉
+       .hs-card-ghost（style.css `.hs-card-ghost{opacity:0;pointer-events:none}`）
+       也只改 opacity、同样不重排 —— 所以提前解锁不会把滚动位置又顶走。 */
+    const wasOpen = !!open;
+    if (wasOpen) {
+      document.body.classList.remove('hs-rd-open');
+      document.documentElement.classList.remove('hs-rd-open');
+      restorePageScroll(true);        /* force：这一刻 open 还是 true，必须显式要求还原 */
+    }
     try { if (HS.results && HS.results.closeCard) HS.results.closeCard(); } catch (e) {}
     if (!open) return;
     /* ★关闭 = 最后一次可靠的进度落盘时机★
@@ -1638,13 +2092,11 @@
       root.classList.remove('is-chapend');       // 横向章末浮层的让位状态一并清掉
     }
     clearPages();                                        // 关掉时清 src，释放大图
-    document.body.classList.remove('hs-rd-open');
-    document.documentElement.classList.remove('hs-rd-open');
     S = null;
-    /* 解锁之后再把页面滚回原来那一段（根因与时机见上面的说明）：
-       这一步必须在 HS.results.closeCard() 之后 —— 卡片的反向动画会重排，
-       还原要放到它也落位之后（restorePageScroll 里自己带了那一帧的兜底）。 */
-    restorePageScroll();
+    /* 注意：解锁与页面滚动复位已经在函数开头做完了（必须赶在 closeCard() 量矩形之前，
+       否则反向动画的终点是「页面在最顶部」的坐标 —— 见上面的时序说明）。
+       这里只把拖拽可能留下的临时位移收干净，避免下次打开残留。 */
+    clearPanShift();
   };
 
   /** 点同一个作品 = 切换开关；点别的作品 = 直接换过去 */

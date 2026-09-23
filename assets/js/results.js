@@ -194,19 +194,131 @@
    * 数字也算「粘着」—— `25年12月` / `10年間` 这种「年份 / 年数」写法必须留在弱档里。
    */
   const GLUE_RE = /[\u3400-\u9fff\u3040-\u30ff0-9a-z]/;
+  const KANA_RE = /[\u3040-\u30ff]/;                    /* 平假名 / 片假名 */
+  /* ★假名粘连要分情况★（本轮修正）：旧口径把假名与汉字一视同仁，于是日文标题里
+     「年」后面接助词的写法（`[アークナイツ] 年と私`、`年の秘書`）被判成「粘着」，
+     掉进系列档 —— 而这些**恰恰是角色本人的作品**：绅士 / 禁漫回来的日文标题基本都是这种形态。
+     现在按名字本身分档：名字不含假名（`年` / `林` / `陈`）时，只有**汉字 / 数字 / 拉丁字母**
+     才算粘连（`年上` / `年下` / `2026年7月号` / `10年間` / `辰年` / `年A` 全都不变，仍是粘着）；
+     名字含假名（`ニェン` / `ケルシー`）时保持旧口径 —— 那时后面的假名可能是名字的一部分
+     （`リン` 在 `リンゴ` 里），放宽会把「只是字面像」的条目错判成角色本人。 */
+  const HAN_NUM_LATIN_RE = /[\u3400-\u9fff0-9a-z]/;
   function standaloneCJK(text, name) {
     const t = String(text == null ? '' : text);
     const n = String(name == null ? '' : name).trim();
     if (!t || !n) return false;
+    const glue = KANA_RE.test(n) ? GLUE_RE : HAN_NUM_LATIN_RE;
     let from = 0;
     for (;;) {
       const at = t.indexOf(n, from);
       if (at < 0) return false;
       const pre = at > 0 ? t.charAt(at - 1) : '';
       const post = at + n.length < t.length ? t.charAt(at + n.length) : '';
-      if (!GLUE_RE.test(pre) && !GLUE_RE.test(post)) return true;
+      if (!glue.test(pre) && !glue.test(post)) return true;
       from = at + 1;
     }
+  }
+
+  /* ---------------- 单字 / 短词角色名：词典补解析 ----------------
+     core.js 的 NS.CHARACTERS 只登记 5 个名字（年 / 夕 / 令 / 陈 / 凯尔希），明日方舟等 IP
+     包里的其余单字名（林 / 空 / 芬 / 梅 / 锏 …）只存在于 assets/dict/ip/*.json，而那张表
+     **不参与查询解析**（core.js 的 charName 只认自己那 5 条）。于是这类查询的
+     intent.character 恒为空 ⇒ relevance 的角色档与 applyView 的 charFirst 全都不生效，
+     排序退化成「谁的字面里含这个字」——「林檎」「森林浴」排在了角色的作品前面。
+     这里补一次 HS.dict.lookup（dict-hint.js 提供的懒加载 IP 词典；没有 / 失败一律静默）：
+       · 只认**整串相等**的命中（搜「林檎」不能因此被当成在搜角色林）；
+       · 命中必须有 to.character；
+       · 系列取命中所在的**包 id**（包 id 就是系列键，如 arknights；core 层与内部占位不算），
+         这样 seriesHit 的跨源别名（明日方舟 / arknights / アークナイツ）照旧生效。
+     词典还没到（裸单字被 index.json 刻意排除在锚点之外，光靠查询词永远等不到包）时由
+     charPackPump() 请一次懒加载、charReload() 到齐后重排一次；两者都不改查询词。 */
+  const CHAR_Q_MAX = 4;          /* 单字 / 短词（凯尔希 3 字）才算角色名；更长的查询是作品名 */
+  const CHAR_PKG_MAX = 3;        /* 一轮最多请 dict-hint 拉几个包 */
+  let charCache = { q: '', ch: null, pk: -1 };
+  let charAsking = '';
+
+  /* 已加载的词典包个数：**负结果只在包集合没变时才算数**。
+     反例（实测踩到）：冷启动时「林」查不到（包没加载）→ 若把 null 也缓存住，
+     等 charReload() 把 arknights 拉回来重排时，charOf 会直接命中这口「空」缓存，
+     角色档永远不生效（锏 之所以看起来正常，只是缓存里当时装着别的查询词）。 */
+  function dictPackSig() {
+    try {
+      const D = HS.dict;
+      const l = D && typeof D.loaded === 'function' ? D.loaded() : null;
+      return l && l.length != null ? l.length : -1;
+    } catch (e) { return -1; }
+  }
+
+  function charOf(intent, q) {
+    if (intent && intent.character) return intent.character;    /* core.js 的 5 个名字：原样 */
+    if (!intent || intent.kind !== 'character') return null;
+    const qq = String(q == null ? '' : q).trim();
+    if (!qq || qq.length > CHAR_Q_MAX) return null;
+    const pk = dictPackSig();
+    if (charCache.q === qq && (charCache.ch || charCache.pk === pk)) return charCache.ch;
+    let ch = null;
+    const D = HS.dict;
+    if (D && typeof D.lookup === 'function') {
+      try {
+        const r = D.lookup(qq);
+        const hits = (r && r.hits) || [];
+        for (let i = 0; i < hits.length; i++) {
+          const h = hits[i];
+          const sp = h && h.span;
+          const to = (h && h.to) || null;
+          if (!to || !to.character) continue;
+          if (!sp || sp[0] !== 0 || sp[1] !== qq.length) continue;   /* 只认整串命中 */
+          const pkg = String(h.pkg || '');
+          const series = String(intent.series ||
+            (pkg && pkg.charAt(0) !== '@' && pkg !== 'core' ? pkg : ''));
+          const en = String(to.character);
+          ch = { zh: qq, en: en, ja: '', series: series, aliases: [en] };
+          break;
+        }
+      } catch (e) { ch = null; }    /* 词典异常绝不冒泡（与 dict-hint 的 C4 口径一致） */
+    }
+    charCache = { q: qq, ch: ch, pk: pk };
+    return ch;
+  }
+
+  /** 词典包还没到：请 dict-hint 按「查询词 + 结果里出现的系列写法」懒加载对应的 IP 包。
+      单字名本身不是锚点（assets/dict/ip/index.json 明确把它们排除在触发词之外），
+      而结果里的系列写法（明日方舟 / arknights / アークナイツ）都是锚点 —— 探针串据此组织。 */
+  function charPackPump(q, intent, items) {
+    const qq = String(q == null ? '' : q).trim();
+    if (!qq || qq.length > CHAR_Q_MAX) return;
+    if (!intent || intent.kind !== 'character' || intent.character) return;
+    if (charAsking === qq || charOf(intent, qq)) return;    /* 已请过 / 已经解析出来 */
+    const D = HS.dict;
+    if (!D || typeof D.lookup !== 'function' || typeof D.load !== 'function') return;
+    charAsking = qq;
+    const words = [];
+    if (intent.series) words.push(String(intent.series));
+    (items || []).forEach(function (it) {
+      if (it && it.series && words.length < 4) words.push(String(it.series));
+    });
+    let pending = [];
+    try {
+      const probe = (qq + ' ' + u.uniq(words).slice(0, 4).join(' ')).trim();
+      pending = (D.lookup(probe) || {}).pending || [];
+    } catch (e) { return; }
+    if (!pending.length) return;
+    Promise.all(pending.slice(0, CHAR_PKG_MAX).map(function (id) {
+      try { return D.load(id); } catch (e) { return null; }
+    })).then(function () {
+      /* 上面那次 probe 借用了 lastQuery（PROBE 按 lastQuery 解析锚点），这里还回去 */
+      try { D.lookup(qq); } catch (e) { /* 静默 */ }
+      charReload(qq);
+    }, function () { charReload(qq); });
+  }
+
+  /** 词典到齐后重排一次：只在「还是同一次检索 + 首屏已经画好」时重画，否则什么都不做 */
+  function charReload(q) {
+    if (!q || R.q !== q) return;
+    if (R.streaming || R.appendMode || (R.page || 1) !== 1) return;
+    if (!R.raw || !(R.items || []).length) return;
+    charCache = { q: '', ch: null, pk: -1 };        /* 词典到齐了：角色重新解析一遍再排 */
+    try { R.render(R.raw, { page: 1 }); } catch (e) { /* 重画失败：保持现有结果 */ }
   }
 
   /** 一件作品是否命中某个查询段（b 传条目正文可以复用，避免每段拼一次） */
@@ -546,6 +658,11 @@
    */
   function relevance(item, q, f) {
     const it = R.intent || (q ? u.classifyQuery(q) : null);
+    /* 解析出的角色：core.js 的 5 个名字（年 / 夕 / 令 / 陈 / 凯尔希）或**词典补解析**出来的
+       单字名（林 / 空 / 芬 / 梅 / 锏…）。下面「系列命中」与「角色档」两道判据共用它：
+       补解析出来的角色必须走角色档，不能继续落到系列命中的字面分支（否则「林檎 / 森林浴」
+       照样靠字面拿 +9，角色的作品反而一分不拿 —— 这正是单字检索排不出正确次序的第二个原因）。 */
+    const ch0 = it ? charOf(it, q) : null;
     let s = weightOf(item.source) * 10;
     s += item.cover && item.cover.indexOf('data:') !== 0 ? 3 : 0;
     if (q) {
@@ -570,11 +687,11 @@
        和「这一本就是这个角色」差不多的分；再叠上标签量 / 页数 / 汉化，系列泛内容就能
        反超真角色（用户反馈的「明日方舟标签顶到前面」）。
        现在整体压到 CHAR_WEAK(5) 与 CHAR_STRONG(20) 之间，只当同档内的次序微调。
-       守卫收紧为 `!it.character`：**没有解析出具体角色**的 character 意图
+       守卫是 `!ch0`：**没有解析出具体角色**的 character 意图
        （`明日方舟` 本身、以及 `年上` / `年下` / `去年` / `三年` 这些字面兜底段）
        走这一支，数值与原版逐字节一致 —— 这一档是回归红线，一个字都没动。
-       解析出具体角色的查询（`年` / `夕` / `令` / `陈` / `凯尔希`）走下面的角色档。 */
-    if (it && it.kind === 'character' && !it.character) {
+       解析出具体角色的查询（core.js 的 `年` / `夕` / `令` / `陈` / `凯尔希`，以及本轮起由 IP 词典补解析出来的 `林` / `空` / `芬` / `梅` / `锏` …）走下面的角色档。 */
+    if (it && it.kind === 'character' && !ch0) {
       const key = String(it.series || q || '').toLowerCase();
       if (key) {
         if ((item.tags || []).some(x => String(x).toLowerCase().indexOf(key) >= 0)) s += 9;
@@ -640,8 +757,8 @@
            按 _charTier 分段（见那里的注释）。这里给的 CHAR_STRONG / CHAR_WEAK 只负责
            让 _score 与档位口径一致（同档内仍是「更贴合名字的在前」）。
        与 segHit 一样**只加分、只分区、不过滤**，一条结果都不会被删掉。 */
-    if (it && it.character) {
-      const ch = it.character;
+    if (ch0) {
+      const ch = ch0;
       item._charTier = 0;                               // 先归零，后面按判据抬档
       const names = u.uniq([ch.zh, ch.en, ch.ja].concat(ch.aliases || []).map(x => String(x == null ? '' : x).trim()));
       const lower = names.map(n => n.toLowerCase());
@@ -752,6 +869,10 @@
     });
     /* 多关键词：先命中段数、再名字档 / 贴合度，最后旧分数 */
     out.sort(cmpHit);
+    /* 短词角色名还没解析出来（IP 词典包没加载）：请 dict-hint 懒加载一次，到齐后重排。
+       放在这里是因为探针串要用「结果里出现的系列写法」（明日方舟 / arknights / アークナイツ
+       都是锚点）—— 裸单字被 index.json 刻意排除在锚点之外，单靠查询词等不到包。 */
+    charPackPump(q, R.intent || null, out);
     return preferZh(out);
   };
 
@@ -902,7 +1023,9 @@
       非角色查询（没有 intent.character）**原样返回**：一次数组分配都不做。 */
   function charFirst(list) {
     const qi = R.intent;
-    if (!qi || !qi.character) return list;
+    /* 角色档只对「解析出了具体角色」的查询生效：core.js 的 5 个名字，或词典补解析出来的
+       单字名（林 / 空 / …）。两者都没有 ⇒ 原样返回，一个字节都不走这条路。 */
+    if (!qi || (!qi.character && !charOf(qi, R.q))) return list;
     const seg = [[], [], [], []];
     (list || []).forEach(it => {
       const t = (it && it._charTier) || 0;
@@ -1663,7 +1786,13 @@
   /** 标签行（卡片与放大视图共用）：R18G / AI 词高亮，纯数字的 tag id 不显示 */
   function tagNodes(it, limit) {
     const out = [];
-    const allTags = (it.tags || []).map(t => String(t)).filter(t => t && !/^\d+$/.test(t.trim()));
+    /* ★展示优先用「从原站取回的完整标签」★（cardtags.js 写进 it.srcTags）：
+       检索接口往往不带标签（nhentai 的 v2 检索只回数字 tag_ids、MangaDex 也不带），
+       于是这些卡片恒显示「无标签」。取回的那一份**只用于显示**，绝不写回 it.tags ——
+       it.tags 参与「同系列 / 同标签」堆叠判定与跨源去重，放宽它的条数会连带改变
+       堆叠与排序，那是另一件事。 */
+    const list0 = (it.srcTags && it.srcTags.length) ? it.srcTags : it.tags;
+    const allTags = (list0 || []).map(t => String(t)).filter(t => t && !/^\d+$/.test(t.trim()));
     const list = allTags.slice(0, limit || 6);
     list.forEach(t => {
       const tl = t.toLowerCase();
@@ -1742,6 +1871,18 @@
     const tagBox = u.el('div', { class: 'hs-card-tags' });
     tagNodes(it, 6).forEach(n => tagBox.appendChild(n));
     body.appendChild(tagBox);
+    /* ★再从原站补一次完整标签★（cardtags.js）：检索接口不带标签的源（nhentai /
+       MangaDex）在这里按作品 id 取回，**进入视口时**才发请求（一屏 6–12 张，
+       不是一次 30+ 张），取回来只重画这一张卡片的标签行 ——
+       不动别的 DOM，滚动中重排会让卡片跳位。失败静默：保持原来那份。 */
+    if (HS.cardTags && HS.cardTags.observe) {
+      HS.cardTags.observe(card, it, function (tags) {
+        if (!tags || !tags.length) return;
+        it.srcTags = tags;
+        tagBox.innerHTML = '';
+        tagNodes(it, 6).forEach(n => tagBox.appendChild(n));
+      });
+    }
     card.appendChild(body);
 
     const actions = u.el('div', { class: 'hs-card-actions' });
@@ -1893,7 +2034,12 @@
     if (moreLocal) txt = '已显示 ' + shown + ' / ' + layoutN + ' 张，继续向下滚动加载更多';
     else if (R.loadingMore) txt = '正在向各源索取更多结果…';
     else if (R.exhausted) txt = '已经到底了 · 共 ' + R.items.length + ' 条可检索结果';
-    else txt = '已显示 ' + shown + ' 张，继续向下滚动会向各源索取更多';
+    else {
+      txt = '已显示 ' + shown + ' 张，继续向下滚动会向各源索取更多';
+      /* 逐源到底的证据，把「还在等哪个源」说清楚：用户看到「到底了」时能对上账 */
+      const pd = R._pageStat && R._pageStat.pending;
+      if (pd && pd.length) txt += '（还有 ' + pd.length + ' 个源可能有更多）';
+    }
     foot.innerHTML = '<span class="hs-foot-hint">' + u.esc(txt) + '</span>';
   }
 
@@ -2106,6 +2252,13 @@
       R.items = [];
       R.sourceFilter = null;
       R.seriesOnly = null;
+      /* ★第 12 轮（用户需求④）★：「汉化/中文」也是一个结果页筛选位（R.zhOnly），
+         但旧代码只在 R.reset() 里清它，全新检索（回车 / 点搜索）不清 ——
+         于是「先点汉化/中文，再输新关键词回车」会出现：新结果仍然只留汉化，
+         而「全部」chip 又同时是亮的（sourceFilter 已归零），用户看到的就是
+         「标签没被自动取消勾选」。这里与 sourceFilter / seriesOnly 一起归零。
+         追加检索（page > 1）不清：那时是同一轮检索的延续，筛选必须保持。 */
+      R.zhOnly = false;
       R.exhausted = false;
       R.loadingMore = false;
       /* ★必须一起清掉 pageBusy★
@@ -2117,6 +2270,9 @@
       R.clearMoreWatch();
       R._shown = 0;
       R._dryRounds = 0;
+      /* 逐源「到底」证据表：全新检索必须归零，否则上一轮的「已到尽头」会跟着新关键词走 */
+      R._pageState = R.pageStateNew();
+      R._pageStat = null;
       R._zhDupDropped = 0;      // 全新检索从零开始数「追加去重丢了几条」（仅用于自测 / 调试）
       R.order = [];
     }
@@ -2169,6 +2325,82 @@
     grid.appendChild(frag);
   };
 
+  /* ---------------- 分页「到底」判定（纯函数：不碰 DOM，可直接用 node:vm 自测） ----------------
+     用户口径：「往下滑可以一直刷新，直到确实没有任何作品可以被检索」。
+     所以「到底」必须由**每个源各自的观测**推出来，不能用「这一批去重后没多」这种全局代理：
+     旧口径是 `fresh.length < Math.max(4, pageSize() * 0.15)`（默认 pageSize=60 → 阈值 9），
+     可很多源每页本来就只回 5~8 条 —— 第二页一到就误判到底，正是「向下滑不刷新新作品」。
+
+     每个源各自累计三类证据，各自达阈值才算**这个源**走到了尽头：
+       · ok 且 rawCount === 0                  → EMPTY：这一页本来就是空的（真末页）
+       · ok 且 rawCount > 0，但整批 key 都见过 → DUP  ：这个源没有真分页（再要还是同一批）
+       · !ok                                    → FAIL ：这个源本轮失败 / 超时
+     阈值 EMPTY×2 / DUP×3 / FAIL×3；任何一个源后来又吐出没见过的条目 → 当场撤销它的
+     done（「复活」），宁可多要一轮也不许提前收手。
+     全部参与源都到尽头 → exhausted（确实没有作品可检索了）。
+     全局兜底：连续 PAGE_DRY_CAP 轮跨源去重后一条新的都没多 → 收手（防「源永远说还有货」空转）。
+     三个阈值是调出来的：2/3/3 在「多源交错分页」下不提前收手，又不至于空转太多轮。 */
+  const PAGE_EMPTY_CAP = 2, PAGE_DUP_CAP = 3, PAGE_FAIL_CAP = 3, PAGE_DRY_CAP = 6;
+  const PAGE_SEEN_CAP = 800;      // 每个源记住的 key 上限（够判断「这批全见过」即可）
+
+  function pageKey(it) { return (it && (it.key || it.id)) || ''; }
+
+  R.pageStateNew = function () { return { src: {}, dry: 0 }; };
+
+  /**
+   * 推进一轮追加的「到底」状态。
+   * @param {object}  prev    上一轮的 state（R.pageStateNew() 的产物）
+   * @param {Array}   results 本轮各源返回（{ src:{id}, ok, rawCount, items }）
+   * @param {boolean} grew    本轮跨源去重后总数有没有增加
+   * @returns {{state:object, exhausted:boolean, pending:string[], stopped:string[], added:number, dryStop:boolean}}
+   */
+  R.pageStateNext = function (prev, results, grew) {
+    const st = { src: {}, dry: grew ? 0 : ((prev && prev.dry) || 0) };
+    /* 拷贝上一轮：本轮没回报的源保留原状态，别因为一次超时把它从「已到尽头」里抹掉 */
+    Object.keys((prev && prev.src) || {}).forEach(id => { st.src[id] = Object.assign({}, prev.src[id]); });
+    let added = 0;
+    (results || []).forEach(r => {
+      const id = (r && r.src && r.src.id) || '__unknown';
+      const s = st.src[id] || (st.src[id] = { empty: 0, dup: 0, fail: 0, seen: {}, done: false, by: '' });
+      if (!s.seen) s.seen = {};
+      if (!r || !r.ok) {
+        s.fail = (s.fail || 0) + 1; s.empty = 0; s.dup = 0;
+        if (s.fail >= PAGE_FAIL_CAP) { s.done = true; s.by = 'fail'; }
+        return;
+      }
+      s.fail = 0;
+      const rawN = (typeof r.rawCount === 'number') ? r.rawCount : ((r.items || []).length);
+      if (!rawN) {
+        s.empty = (s.empty || 0) + 1; s.dup = 0;
+        if (s.empty >= PAGE_EMPTY_CAP) { s.done = true; s.by = 'empty'; }
+        return;
+      }
+      s.empty = 0;
+      let fresh = 0;
+      (r.items || []).forEach(it => {
+        const k = pageKey(it);
+        if (!k) { fresh++; return; }              // 没有稳定 key 的条目一律当新条目，不误判
+        if (!s.seen[k]) { fresh++; s.seen[k] = 1; }
+      });
+      added += fresh;
+      if (fresh) { s.dup = 0; if (s.done) { s.done = false; s.by = ''; } }   // 复活：这源还有货
+      else if ((s.dup = (s.dup || 0) + 1) >= PAGE_DUP_CAP) { s.done = true; s.by = 'dup'; }
+      const ks = Object.keys(s.seen);
+      if (ks.length > PAGE_SEEN_CAP) { for (let i = 0; i < ks.length - PAGE_SEEN_CAP; i++) delete s.seen[ks[i]]; }
+    });
+    if (!grew) st.dry = ((prev && prev.dry) || 0) + 1;
+    const ids = Object.keys(st.src);
+    const pending = ids.filter(id => !st.src[id].done);
+    const stopped = ids.filter(id => st.src[id].done && st.src[id].by === 'fail');
+    /* 只有「所有参与源都到尽头」才算真到底；没有任何源时不许判到底（否则首屏就永久锁死） */
+    const exhausted = ids.length > 0 && pending.length === 0;
+    const dryStop = !exhausted && st.dry >= PAGE_DRY_CAP;
+    return {
+      state: st, exhausted: exhausted || dryStop, dryStop: dryStop,
+      pending: pending, stopped: stopped, added: added
+    };
+  };
+
   R.render = function (results, meta) {
     meta = meta || {};
     R.streaming = false;
@@ -2182,25 +2414,22 @@
       /* 追加：先剔掉「与已经铺开的中文版重复的语言变体」，再进池子（第一页 / 全新检索不受影响）。 */
       const kept = dropZhLangDup(fresh, flatten(R._pages));
       R._pages = R._pages.concat([{ ok: true, items: kept, src: { id: '__page' } }]);
-      /* ★不再用「原始返回条数」判到底★
-         旧口径是 `fresh.length < Math.max(4, pageSize() * 0.15)`（默认 pageSize=60 → 阈值 9）：
-         它量的是「各源这一页总共回了多少条**原始**行」，既没扣掉跨源去重、也没扣掉语言变体，
-         更与「有没有拿到**新**作品」无关。很多源每页本来就只回 5~8 条，
-         于是第二页一到就被判成「已经到底」，之后滚动加载再也发不出请求 ——
-         这正是用户报的「向下滑不刷新新作品」。
-         真正的判据只有两个：① 这一页原始返回就是空的；② 连续几轮去重后一条新的都没多
-         （下面的 _dryRounds）。两个都不成立就不许判到底。 */
-      if (!fresh.length) R.exhausted = true;
     } else {
       R._pages = [{ ok: true, items: fresh, src: { id: '__page' } }];
     }
     R._partial = [];
     rebuild();
-    /* 干燥轮次：追加后一条新条目都没多 → 这些源没有真分页（再要还是同一批），
-       跨源去重后什么都不剩。连续两轮没进展就判定到底，避免「继续向下滚动」永远转圈。 */
+    /* ★「到底」一律交给 pageStateNext() 按**每源各自的证据**判定★
+       旧代码在这里用两个全局代理判到底：① 本页原始返回为空；② 连续两轮去重后没多。
+       两个都会提前收手 —— 多源交错分页时，这一轮空的是甲源、乙源还有货；
+       「没多」也可能只是这批全是跨源重复。改成逐源累计证据后，
+       只有**所有参与源都到尽头**才 exhausted，滚动加载因此能一直要下去。 */
     if (page > 1) {
-      if (R.items.length > hadBefore) R._dryRounds = 0;
-      else if ((R._dryRounds = (R._dryRounds || 0) + 1) >= 2) R.exhausted = true;
+      const j = R.pageStateNext(R._pageState, results, R.items.length > hadBefore);
+      R._pageState = j.state;
+      R._pageStat = j;
+      R._dryRounds = j.state.dry;
+      R.exhausted = !!j.exhausted;     // 可升可降：源「复活」时要把到底状态撤回来
     }
 
     const okSrc = results.filter(r => r.ok && r.items && r.items.length).length;
@@ -2334,6 +2563,7 @@
     R.page = 1; R.exhausted = false; R.loadingMore = false; R.pageBusy = false;
     R.clearMoreWatch();
     R._dryRounds = 0; R._zhDupDropped = 0;
+    R._pageState = R.pageStateNew(); R._pageStat = null;
     R._layout = []; R._shown = 0; R._nodes = []; R._rendered = 0; R._dirty = false; R._dom = {};
     R.order = []; R.appendMode = false;
     u.$('#results-grid').innerHTML = '';
@@ -2608,6 +2838,17 @@
     const tags = u.$('[data-cm-tags]', cm);
     tags.innerHTML = '';
     tagNodes(it, 30).forEach(n => tags.appendChild(n));
+    /* 放大器里也补一次（优先级高于卡片：这张用户已经点开了）。取回来就地重画；
+       回调回来时这张可能已经关掉 / 换成了别的作品，所以必须先核对 cm.__item。 */
+    if (HS.cardTags && HS.cardTags.enrich) {
+      HS.cardTags.enrich(it, function (list) {
+        if (!list || !list.length) return;
+        if (cm.hidden || cm.__item !== it) return;
+        it.srcTags = list;
+        tags.innerHTML = '';
+        tagNodes(it, 30).forEach(n => tags.appendChild(n));
+      });
+    }
 
     const rows = [['信息源', (it.sourceName || it.source) +
       ((it.alsoOn || []).length ? '（也出现在 ' + it.alsoOn.join(' / ') + '）' : '')]];
